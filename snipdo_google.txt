@@ -1,0 +1,6 @@
+$pythonExe = "C:\Users\EDY\AppData\Local\Programs\Python\Python311\python.exe"
+# 指向 Google 脚本
+$scriptPath = "D:\test\translate\google_translate.py"
+$inputText = $args -join " "
+
+Start-Process -FilePath $pythonExe -ArgumentList "`"$scriptPath`" `"$inputText`"" -WindowStyle Hidden
