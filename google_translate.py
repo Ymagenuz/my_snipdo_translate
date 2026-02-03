@@ -1,9 +1,10 @@
 import sys
 import os
 from urllib.parse import unquote
+# 引入 html 库用于转义字符，防止原文中包含 < > 等符号破坏 HTML 结构
+import html 
 from deep_translator import GoogleTranslator
 
-# 引入 PyQt6 库
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QTextEdit, 
                              QPushButton, QLabel, QFrame, QGraphicsDropShadowEffect,
                              QHBoxLayout, QSizePolicy)
@@ -24,96 +25,130 @@ class TranslationWindow(QWidget):
         self.initUI()
         self.copy_to_clipboard()
 
+    def text_to_html(self, text, is_translation=False):
+        """
+        核心优化函数：将纯文本转换为带有样式的 HTML
+        """
+        # 1. 安全转义，防止 <script> 等注入或显示错误
+        safe_text = html.escape(text)
+        
+        # 2. 将换行符转换为段落，增加段落间距
+        # 过滤掉空的行，避免出现过大的空白
+        paragraphs = [p for p in safe_text.split('\n') if p.strip()]
+        
+        if is_translation:
+            # === 译文样式 (中文优化) ===
+            # line-height: 160% (1.6倍行高，中文阅读的最佳舒适区)
+            # margin-bottom: 12px (段落间距，防止文字堆叠)
+            # text-align: justify (两端对齐，让块状感更强，更整洁)
+            style = "margin-bottom: 12px; line-height: 1.6; text-align: justify;"
+            html_content = "".join([f'<p style="{style}">{p}</p>' for p in paragraphs])
+            
+            # 外层包裹，设置全局字体颜色
+            return f'<div style="color: #2c3e50; font-family: Microsoft YaHei UI, sans-serif;">{html_content}</div>'
+        else:
+            # === 原文样式 (英文优化) ===
+            # 颜色稍浅 (#5f6368)
+            # 字体稍微紧凑一点，模拟“注解”的感觉
+            style = "margin-bottom: 6px; line-height: 1.4;"
+            html_content = "".join([f'<p style="{style}">{p}</p>' for p in paragraphs])
+            return f'<div style="color: #5f6368; font-family: Segoe UI, sans-serif;">{html_content}</div>'
+
     def initUI(self):
         # 1. 窗口基础设置
         self.setWindowTitle('Google 翻译')
-        self.resize(700, 600) # 稍微调高一点，容纳更多层次
-        self.setStyleSheet("background-color: #F5F7FA;") # 使用更柔和的灰蓝色背景
+        self.resize(720, 750) # 稍微加宽，增加呼吸感
+        self.setStyleSheet("background-color: #F5F7FA;") 
         
         # 窗口居中
         center_point = QScreen.availableGeometry(QApplication.primaryScreen()).center()
         frame_geometry = self.frameGeometry()
         frame_geometry.moveCenter(center_point)
         self.move(frame_geometry.topLeft())
-        
-        # 窗口置顶
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
 
         # 2. 主布局
         main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setContentsMargins(25, 25, 25, 25) # 增加边距
         main_layout.setSpacing(15)
 
-        # ================= 卡片区域 (包含原文和译文) =================
+        # ================= 卡片区域 =================
         self.card_frame = QFrame()
         self.card_frame.setStyleSheet("""
             QFrame {
                 background-color: #FFFFFF;
-                border-radius: 12px;
+                border-radius: 16px; /* 更圆润的边角 */
                 border: 1px solid #EAEAEA;
             }
         """)
         
-        # 添加阴影效果 (让卡片浮起来)
         shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(20)
-        shadow.setXOffset(0)
-        shadow.setYOffset(4)
-        shadow.setColor(QColor(0, 0, 0, 20)) # 淡淡的黑色阴影
+        shadow.setBlurRadius(25)
+        shadow.setYOffset(5)
+        shadow.setColor(QColor(0, 0, 0, 15)) # 更淡更高级的阴影
         self.card_frame.setGraphicsEffect(shadow)
 
         card_layout = QVBoxLayout(self.card_frame)
-        card_layout.setContentsMargins(20, 20, 20, 20)
-        card_layout.setSpacing(10)
+        card_layout.setContentsMargins(25, 25, 25, 25)
+        card_layout.setSpacing(12)
 
         # --- A. 原文部分 (辅助信息) ---
-        lbl_origin = QLabel("原文 / Original")
-        lbl_origin.setStyleSheet("color: #909399; font-size: 12px; font-weight: bold; border: none;")
+        lbl_origin = QLabel("ORIGINAL TEXT") # 全大写更具设计感
+        lbl_origin.setStyleSheet("""
+            color: #909399; 
+            font-size: 11px; 
+            font-weight: 700; 
+            letter-spacing: 1px; /* 增加字间距 */
+        """)
         card_layout.addWidget(lbl_origin)
 
         self.txt_origin = QTextEdit()
-        self.txt_origin.setPlainText(self.original_text)
+        # 【关键修改】使用 setHtml 而不是 setPlainText
+        self.txt_origin.setHtml(self.text_to_html(self.original_text, is_translation=False))
         self.txt_origin.setReadOnly(True)
-        self.txt_origin.setMaximumHeight(80) # 限制高度，不要喧宾夺主
-        # 样式：灰色文字，背景透明，无边框
+        self.txt_origin.setMaximumHeight(100)
+        # 样式：移除默认边框，左侧增加一条装饰线，增加层次感
         self.txt_origin.setStyleSheet("""
             QTextEdit {
-                background-color: transparent;
-                color: #606266;
+                background-color: #FAFAFA; /* 极淡的灰色背景区分 */
                 border: none;
-                font-family: 'Segoe UI', 'Microsoft YaHei UI';
+                border-left: 3px solid #DCDFE6; /* 左侧装饰线 */
+                padding-left: 8px; /* 文字离装饰线的距离 */
                 font-size: 13px;
-                line-height: 140%;
             }
         """)
         card_layout.addWidget(self.txt_origin)
 
-        # --- 分割线 ---
+        # --- 分割线 (虚线更轻盈) ---
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
-        line.setStyleSheet("background-color: #EBEEF5; border: none; max-height: 1px;")
+        line.setStyleSheet("background-color: transparent; border-top: 1px dashed #E0E0E0; max-height: 1px; margin: 5px 0;")
         card_layout.addWidget(line)
 
         # --- B. 译文部分 (核心信息) ---
-        lbl_result = QLabel("译文 / Translation")
-        lbl_result.setStyleSheet("color: #409EFF; font-size: 12px; font-weight: bold; border: none; margin-top: 5px;")
+        lbl_result = QLabel("TRANSLATION")
+        lbl_result.setStyleSheet("""
+            color: #409EFF; 
+            font-size: 11px; 
+            font-weight: 700; 
+            letter-spacing: 1px;
+            margin-top: 5px;
+        """)
         card_layout.addWidget(lbl_result)
 
         self.txt_result = QTextEdit()
-        self.txt_result.setPlainText(self.translated_text)
+        # 【关键修改】使用 setHtml 处理译文
+        self.txt_result.setHtml(self.text_to_html(self.translated_text, is_translation=True))
         self.txt_result.setReadOnly(True)
-        # 样式：深色文字，大字号，美化滚动条
+        
+        # 样式：纯净背景，强调内容
         self.txt_result.setStyleSheet("""
             QTextEdit {
                 background-color: transparent;
-                color: #303133;
                 border: none;
-                font-family: 'Segoe UI', 'Microsoft YaHei UI';
                 font-size: 16px;
-                font-weight: 500;
-                line-height: 160%;
             }
-            /* 美化滚动条 */
+            /* 滚动条样式保持不变，因为很好看 */
             QScrollBar:vertical {
                 border: none;
                 background: #F0F0F0;
@@ -135,31 +170,30 @@ class TranslationWindow(QWidget):
         """)
         card_layout.addWidget(self.txt_result)
 
-        # 将卡片添加到主布局
         main_layout.addWidget(self.card_frame)
 
         # ================= 底部按钮区域 =================
         btn_layout = QHBoxLayout()
-        btn_layout.addStretch(1) # 弹簧，把按钮顶到右边
+        btn_layout.addStretch(1)
 
-        self.close_btn = QPushButton("关闭 (已复制)")
+        self.close_btn = QPushButton("Copy & Close") # 英文按钮更简洁
         self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.close_btn.clicked.connect(self.close)
         
-        # 按钮样式：蓝色主色调，更现代
         self.close_btn.setStyleSheet("""
             QPushButton {
                 background-color: #409EFF;
                 color: white;
                 border: none;
-                border-radius: 6px;
-                padding: 8px 20px;
-                font-family: 'Microsoft YaHei UI';
+                border-radius: 8px; /* 更圆润 */
+                padding: 10px 24px; /* 更大的点击区域 */
+                font-family: 'Segoe UI', 'Microsoft YaHei UI';
                 font-size: 14px;
-                font-weight: bold;
+                font-weight: 600;
             }
             QPushButton:hover {
                 background-color: #66B1FF;
+                transform: translateY(-1px); /* 悬停微动效果需要复杂动画，这里仅改色 */
             }
             QPushButton:pressed {
                 background-color: #3A8EE6;
