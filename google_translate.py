@@ -1,14 +1,14 @@
 import sys
 import os
 from urllib.parse import unquote
-import html 
 from deep_translator import GoogleTranslator
 
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QTextEdit, 
                              QPushButton, QLabel, QFrame, QGraphicsDropShadowEffect,
-                             QHBoxLayout, QSizePolicy)
-from PyQt6.QtGui import QColor, QScreen, QCursor
-from PyQt6.QtCore import Qt
+                             QHBoxLayout)
+from PyQt6.QtGui import (QColor, QScreen, QTextCursor, QTextCharFormat, 
+                         QPalette, QTextBlockFormat, QFont)
+from PyQt6.QtCore import Qt, pyqtSignal
 
 # ================= 配置区域 =================
 PROXY_URL = 'http://127.0.0.1:7897' 
@@ -16,64 +16,199 @@ os.environ['HTTPS_PROXY'] = PROXY_URL
 os.environ['HTTP_PROXY'] = PROXY_URL
 # ===========================================
 
+class InteractiveTextEdit(QTextEdit):
+    """
+    支持鼠标悬停检测 + 自动滚动的文本框
+    """
+    hover_index_changed = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMouseTracking(True)
+        self.segment_ranges = []    # [(start, end), ...]
+        self.current_highlight_index = -1
+        
+        # 优化滚动条样式，使其更现代、不突兀
+        self.setStyleSheet("""
+            QTextEdit {
+                border: none;
+                background-color: transparent;
+            }
+            QScrollBar:vertical {
+                border: none;
+                background: #F0F0F0;
+                width: 6px;
+                border-radius: 3px;
+            }
+            QScrollBar::handle:vertical {
+                background: #C0C4CC;
+                min-height: 20px;
+                border-radius: 3px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #909399;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+        """)
+
+    def set_segments(self, ranges):
+        self.segment_ranges = ranges
+
+    def mouseMoveEvent(self, event):
+        cursor = self.cursorForPosition(event.pos())
+        pos = cursor.position()
+        
+        found_index = -1
+        # 查找当前位置属于哪一段
+        for i, (start, end) in enumerate(self.segment_ranges):
+            if start <= pos < end: 
+                found_index = i
+                break
+        
+        if found_index != self.current_highlight_index:
+            self.current_highlight_index = found_index
+            self.hover_index_changed.emit(found_index)
+        
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self.current_highlight_index = -1
+        self.hover_index_changed.emit(-1)
+        super().leaveEvent(event)
+
+    def highlight_segment(self, index):
+        """高亮指定段落"""
+        if index < 0 or index >= len(self.segment_ranges):
+            self.setExtraSelections([])
+            return
+
+        start, end = self.segment_ranges[index]
+        
+        if start == end: # 空行不高亮
+            self.setExtraSelections([])
+            return
+
+        selection = QTextEdit.ExtraSelection()
+        cursor = self.textCursor()
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        selection.cursor = cursor
+        
+        fmt = QTextCharFormat()
+        # 柔和的淡黄色高亮
+        fmt.setBackground(QColor("#FFF8C5")) 
+        selection.format = fmt
+        # 全宽高亮，视觉更整洁
+        selection.format.setProperty(QTextCharFormat.Property.FullWidthSelection, True)
+
+        self.setExtraSelections([selection])
+
+    def scroll_to_segment(self, index):
+        """滚动视图以确保指定段落可见"""
+        if index < 0 or index >= len(self.segment_ranges):
+            return
+
+        start, _ = self.segment_ranges[index]
+        cursor = self.textCursor()
+        cursor.setPosition(start)
+        self.setTextCursor(cursor)
+        self.ensureCursorVisible()
+
+
 class TranslationWindow(QWidget):
-    def __init__(self, original_text, translated_text):
+    def __init__(self, original_segments, translated_segments):
         super().__init__()
-        self.original_text = original_text
-        self.translated_text = translated_text
+        self.original_segments = original_segments
+        self.translated_segments = translated_segments
         self.initUI()
+        
+        # 填充内容
+        self.populate_text(self.txt_origin, self.original_segments, is_translation=False)
+        self.populate_text(self.txt_result, self.translated_segments, is_translation=True)
+        
         self.copy_to_clipboard()
 
-    def text_to_html(self, text, is_translation=False):
-        safe_text = html.escape(text)
-        paragraphs = [p for p in safe_text.split('\n') if p.strip()]
+    def populate_text(self, text_edit: InteractiveTextEdit, segments, is_translation=False):
+        """
+        核心修复：使用 setFamilies 和 setPixelSize 完美还原设计稿字体
+        修复：setLineHeight 必须传入 int 类型 (.value)
+        """
+        text_edit.clear()
+        cursor = text_edit.textCursor()
+        ranges = []
         
-        # 字体栈：英文优先 Segoe UI，中文回退到微软雅黑
-        font_family = "'Segoe UI', 'Microsoft YaHei UI', sans-serif"
-
+        # 1. 字体栈：英文 Segoe UI 优先，中文雅黑候补
+        font = QFont()
+        font.setFamilies(["Segoe UI", "Microsoft YaHei UI", "sans-serif"])
+        
+        block_fmt = QTextBlockFormat()
+        
         if is_translation:
-            # 译文：行高 1.5 (稍微紧凑一点点)，段间距 10px
-            style = "margin-bottom: 10px; line-height: 1.5; text-align: justify;"
-            html_content = "".join([f'<p style="{style}">{p}</p>' for p in paragraphs])
-            return f'<div style="color: #2c3e50; font-family: {font_family}; font-size: 15px;">{html_content}</div>'
+            # 译文样式：15px, 1.5倍行高
+            font.setPixelSize(15) 
+            color = QColor("#2c3e50")
+            # FIX: Added .value here
+            block_fmt.setLineHeight(150, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
+            block_fmt.setBottomMargin(12) 
         else:
-            # 原文：行高 1.4
-            style = "margin-bottom: 6px; line-height: 1.4;"
-            html_content = "".join([f'<p style="{style}">{p}</p>' for p in paragraphs])
-            return f'<div style="color: #606266; font-family: {font_family}; font-size: 13px;">{html_content}</div>'
+            # 原文样式：13px, 1.4倍行高
+            font.setPixelSize(13)
+            color = QColor("#606266")
+            # FIX: Added .value here
+            block_fmt.setLineHeight(140, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
+            block_fmt.setBottomMargin(6)
+        
+        char_fmt = QTextCharFormat()
+        char_fmt.setFont(font)
+        char_fmt.setForeground(color)
+
+        for segment in segments:
+            start_pos = cursor.position()
+            
+            # insertText 会保留所有空格和制表符
+            cursor.insertText(segment, char_fmt)
+            cursor.setBlockFormat(block_fmt)
+            
+            end_pos = cursor.position()
+            ranges.append((start_pos, end_pos))
+            
+            cursor.insertBlock()
+        
+        text_edit.set_segments(ranges)
+        text_edit.moveCursor(QTextCursor.MoveOperation.Start)
+
+    def sync_highlight(self, index):
+        self.txt_origin.highlight_segment(index)
+        self.txt_origin.scroll_to_segment(index)
+        
+        self.txt_result.highlight_segment(index)
+        self.txt_result.scroll_to_segment(index)
 
     def initUI(self):
-        # 1. 智能计算窗口大小
-        # 基础宽度 680 (比之前窄一点，更精致)
-        # 高度根据字数动态调整：少于100字用小窗口，多于100字用大窗口
-        text_len = len(self.translated_text)
-        base_width = 680
-        if text_len < 50:
-            base_height = 350
-        elif text_len < 200:
-            base_height = 480
-        else:
-            base_height = 650
+        total_text = "".join(self.translated_segments)
+        text_len = len(total_text)
+        
+        base_width = 720 
+        if text_len < 50: base_height = 350
+        elif text_len < 200: base_height = 500
+        else: base_height = 700
             
         self.setWindowTitle('Google 翻译')
         self.resize(base_width, base_height)
         self.setStyleSheet("background-color: #F5F7FA;") 
         
-        # 窗口居中
         center_point = QScreen.availableGeometry(QApplication.primaryScreen()).center()
         frame_geometry = self.frameGeometry()
         frame_geometry.moveCenter(center_point)
-        # 重新应用大小，防止居中计算后尺寸重置
         self.resize(base_width, base_height) 
         self.move(frame_geometry.topLeft())
-        
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
 
-        # 2. 主布局 - 【关键修改】减少外部留白
         main_layout = QVBoxLayout()
-        # 从 25 减少到 12，让卡片几乎填满窗口，减少"大窗口小内容"的感觉
         main_layout.setContentsMargins(12, 12, 12, 12) 
-        main_layout.setSpacing(0) # 移除布局间距，由内部控制
+        main_layout.setSpacing(0)
 
         # ================= 卡片区域 =================
         self.card_frame = QFrame()
@@ -84,7 +219,6 @@ class TranslationWindow(QWidget):
                 border: 1px solid #EAEAEA;
             }
         """)
-        
         shadow = QGraphicsDropShadowEffect()
         shadow.setBlurRadius(20)
         shadow.setYOffset(4)
@@ -92,7 +226,6 @@ class TranslationWindow(QWidget):
         self.card_frame.setGraphicsEffect(shadow)
 
         card_layout = QVBoxLayout(self.card_frame)
-        # 内部留白保持适中，给文字呼吸空间
         card_layout.setContentsMargins(20, 20, 20, 20)
         card_layout.setSpacing(10)
 
@@ -104,20 +237,12 @@ class TranslationWindow(QWidget):
         header_layout.addStretch()
         card_layout.addLayout(header_layout)
 
-        self.txt_origin = QTextEdit()
-        self.txt_origin.setHtml(self.text_to_html(self.original_text, is_translation=False))
+        self.txt_origin = InteractiveTextEdit()
         self.txt_origin.setReadOnly(True)
-        # 【关键修改】限制原文高度，不要喧宾夺主
-        self.txt_origin.setMaximumHeight(80) 
-        self.txt_origin.setStyleSheet("""
-            QTextEdit {
-                background-color: #FAFAFA;
-                border: none;
-                border-left: 2px solid #E4E7ED;
-                padding-left: 6px;
-                font-size: 13px;
-            }
-        """)
+        self.txt_origin.setMaximumHeight(120) 
+        # 原文背景淡灰
+        self.txt_origin.setStyleSheet("background-color: #FAFAFA; border-left: 2px solid #E4E7ED; padding-left: 4px;")
+        self.txt_origin.hover_index_changed.connect(self.sync_highlight)
         card_layout.addWidget(self.txt_origin)
 
         # --- 分割线 ---
@@ -131,57 +256,32 @@ class TranslationWindow(QWidget):
         lbl_result.setStyleSheet("color: #409EFF; font-size: 10px; font-weight: 700; letter-spacing: 1px; margin-top: 2px;")
         card_layout.addWidget(lbl_result)
 
-        self.txt_result = QTextEdit()
-        self.txt_result.setHtml(self.text_to_html(self.translated_text, is_translation=True))
+        self.txt_result = InteractiveTextEdit()
         self.txt_result.setReadOnly(True)
-        # 译文不设最大高度，让它填充剩余所有空间
-        self.txt_result.setStyleSheet("""
-            QTextEdit {
-                background-color: transparent;
-                border: none;
-                font-size: 16px;
-            }
-            QScrollBar:vertical {
-                border: none;
-                background: #F0F0F0;
-                width: 5px;
-                border-radius: 2px;
-            }
-            QScrollBar::handle:vertical {
-                background: #C0C4CC;
-                min-height: 20px;
-                border-radius: 2px;
-            }
-        """)
+        self.txt_result.setStyleSheet("background-color: transparent;")
+        self.txt_result.hover_index_changed.connect(self.sync_highlight)
         card_layout.addWidget(self.txt_result)
 
         main_layout.addWidget(self.card_frame)
 
-        # ================= 底部按钮区域 =================
-        # 将按钮放入卡片内部还是外部？
-        # 放在外部会让窗口看起来更长。为了紧凑，我们把按钮做得更扁平，紧贴卡片下方
-        
+        # ================= 底部按钮 =================
         btn_layout = QHBoxLayout()
-        btn_layout.setContentsMargins(0, 8, 0, 0) # 上方留一点空隙
+        btn_layout.setContentsMargins(0, 8, 0, 0)
         btn_layout.addStretch(1)
 
         self.close_btn = QPushButton("Copy & Close") 
         self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.close_btn.clicked.connect(self.close)
-        
         self.close_btn.setStyleSheet("""
             QPushButton {
                 background-color: #409EFF;
                 color: white;
                 border: none;
                 border-radius: 6px;
-                padding: 6px 16px; /* 减小按钮尺寸 */
-                font-family: 'Segoe UI', 'Microsoft YaHei UI'; 
-                font-size: 13px;
-                font-weight: 600;
+                padding: 6px 16px;
+                font-family: 'Segoe UI', 'Microsoft YaHei UI'; font-weight: 600; font-size: 13px;
             }
             QPushButton:hover { background-color: #66B1FF; }
-            QPushButton:pressed { background-color: #3A8EE6; }
         """)
         btn_layout.addWidget(self.close_btn)
 
@@ -190,7 +290,8 @@ class TranslationWindow(QWidget):
 
     def copy_to_clipboard(self):
         clipboard = QApplication.clipboard()
-        clipboard.setText(self.translated_text)
+        full_text = "\n".join(self.translated_segments)
+        clipboard.setText(full_text)
 
 def main():
     if len(sys.argv) > 1:
@@ -198,16 +299,39 @@ def main():
         clean_text = raw_text.replace("-URLENCODED_ALT_TEXT", "").strip()
         text_to_translate = unquote(clean_text)
     else:
-        text_to_translate = "Hello world, this is a test for the new UI design."
+        # 测试用例：包含缩进、代码、中英文混合
+        text_to_translate = (
+            "def calculate_sum(a, b):\n"
+            "    # This function adds two numbers\n"
+            "    result = a + b\n"
+            "    return result\n"
+            "\n"
+            "Here is a normal paragraph to test the font rendering.\n"
+            "中文测试：这里应该显示为微软雅黑，且清晰易读。"
+        )
 
+    # 1. 预处理
+    original_segments = text_to_translate.split('\n')
+    translated_segments = []
+    
+    # 2. 逐行翻译
     try:
-        translated_text = GoogleTranslator(source='auto', target='zh-CN').translate(text_to_translate)
-        final_content = translated_text
+        translator = GoogleTranslator(source='auto', target='zh-CN')
+        for seg in original_segments:
+            if not seg.strip():
+                translated_segments.append("") 
+            else:
+                # 分离缩进
+                stripped = seg.lstrip()
+                indent = seg[:len(seg) - len(stripped)]
+                res = translator.translate(stripped)
+                translated_segments.append(indent + res)
+            
     except Exception as e:
-        final_content = f"翻译出错: {str(e)}"
+        translated_segments = [f"Error: {str(e)}"]
 
     app = QApplication(sys.argv)
-    window = TranslationWindow(text_to_translate, final_content)
+    window = TranslationWindow(original_segments, translated_segments)
     window.show()
     sys.exit(app.exec())
 
