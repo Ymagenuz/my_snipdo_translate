@@ -1,9 +1,12 @@
 import sys
 import os
-import tkinter as tk
-from deep_translator import GoogleTranslator
-# 1. 引入解码库，专门对付 %20 这种符号
 from urllib.parse import unquote
+from deep_translator import GoogleTranslator
+
+# 引入 PyQt6 库
+from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QTextEdit, QPushButton, QLabel
+from PyQt6.QtGui import QFont, QIcon, QScreen
+from PyQt6.QtCore import Qt
 
 # ================= 配置区域 =================
 PROXY_URL = 'http://127.0.0.1:7897' 
@@ -11,142 +14,119 @@ os.environ['HTTPS_PROXY'] = PROXY_URL
 os.environ['HTTP_PROXY'] = PROXY_URL
 # ===========================================
 
+class TranslationWindow(QWidget):
+    def __init__(self, content):
+        super().__init__()
+        self.content = content
+        self.initUI()
+        self.copy_to_clipboard()
+
+    def initUI(self):
+        # 1. 窗口基础设置
+        self.setWindowTitle('Google 翻译结果')
+        self.resize(600, 420)
+        self.setStyleSheet("background-color: #F3F3F3;") # 整体背景灰白
+        
+        # 窗口居中逻辑
+        center_point = QScreen.availableGeometry(QApplication.primaryScreen()).center()
+        frame_geometry = self.frameGeometry()
+        frame_geometry.moveCenter(center_point)
+        self.move(frame_geometry.topLeft())
+        
+        # 窗口置顶
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+
+        # 2. 布局管理器 (垂直布局)
+        layout = QVBoxLayout()
+        layout.setContentsMargins(15, 15, 15, 15) # 页边距
+        layout.setSpacing(10) # 控件间距
+
+        # 3. 文本框 (核心组件)
+        self.text_edit = QTextEdit()
+        
+        # === 核心功能：只读但可选中 ===
+        self.text_edit.setReadOnly(True) 
+        
+        # === 核心美化：使用 CSS 设置样式 ===
+        # line-height: 160% -> 解决“字堆在一起”
+        # font-family -> 优先用 Segoe UI (英文好看)，后备 Microsoft YaHei (中文)
+        # padding -> 内边距
+        # border -> 去掉边框，更现代
+        css_style = """
+            QTextEdit {
+                background-color: #FFFFFF;
+                color: #333333;
+                border: 1px solid #E0E0E0;
+                border-radius: 8px;
+                padding: 15px;
+                font-family: 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
+                font-size: 16px;
+                line-height: 160%; 
+            }
+        """
+        self.text_edit.setStyleSheet(css_style)
+        
+        # 设置文本 (PyQt 支持 HTML，所以我们可以用 HTML 进一步微调，也可以直接设纯文本)
+        self.text_edit.setPlainText(self.content)
+        
+        layout.addWidget(self.text_edit)
+
+        # 4. 底部按钮
+        self.close_btn = QPushButton("关闭 (已自动复制)")
+        self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_btn.clicked.connect(self.close)
+        
+        # 按钮样式
+        btn_style = """
+            QPushButton {
+                background-color: #FFFFFF;
+                border: 1px solid #CCCCCC;
+                border-radius: 6px;
+                padding: 10px;
+                font-family: 'Microsoft YaHei UI';
+                font-size: 14px;
+                color: #555555;
+            }
+            QPushButton:hover {
+                background-color: #E6E6E6;
+                color: #000000;
+            }
+        """
+        self.close_btn.setStyleSheet(btn_style)
+        layout.addWidget(self.close_btn)
+
+        self.setLayout(layout)
+
+    def copy_to_clipboard(self):
+        clipboard = QApplication.clipboard()
+        clipboard.setText(self.content)
+
 def main():
+    # 1. 参数处理逻辑 (保持不变)
     if len(sys.argv) > 1:
-        # 获取原始参数
         raw_text = " ".join(sys.argv[1:])
-        
-        # ===========================================
-        # 🧹 清洗数据 (关键步骤)
-        # ===========================================
-        
-        # 1. 去掉 SnipDo 可能添加的奇怪前缀
         clean_text = raw_text.replace("-URLENCODED_ALT_TEXT", "").strip()
-        
-        # 2. 进行 URL 解码
         text_to_translate = unquote(clean_text)
-        
     else:
         text_to_translate = "Hello world"
 
+    # 2. 翻译逻辑
     try:
-        # 3. 翻译清洗后的文本
         translated_text = GoogleTranslator(source='auto', target='zh-CN').translate(text_to_translate)
-        
-        show_popup(translated_text)
-
+        final_content = translated_text
     except Exception as e:
-        show_popup(f"翻译出错: {str(e)}\n\n原始文本: {text_to_translate}")
+        final_content = f"翻译出错: {str(e)}\n\n原始文本: {text_to_translate}"
 
-def show_popup(content):
-    """
-    创建一个自定义窗口，包含可复制的文本框 (UI + 中英文混排优化版)
-    """
-    root = tk.Tk()
-    root.title("Google 翻译结果")
+    # 3. 启动 PyQt 界面
+    app = QApplication(sys.argv)
     
-    # === 窗口设置 ===
-    window_width = 600
-    window_height = 400
+    # 设置全局高分屏支持 (防止在 4K 屏上模糊)
+    # PyQt6 默认处理得比较好，通常不需要额外设置
     
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
-    x_cordinate = int((screen_width/2) - (window_width/2))
-    y_cordinate = int((screen_height/2) - (window_height/2))
+    window = TranslationWindow(final_content)
+    window.show()
     
-    root.geometry(f"{window_width}x{window_height}+{x_cordinate}+{y_cordinate}")
-    root.attributes('-topmost', True)
-    root.configure(bg="#F5F5F5") 
-
-    # === 自动复制 ===
-    try:
-        root.clipboard_clear()
-        root.clipboard_append(content)
-        root.update()
-    except:
-        pass
-
-    # === UI 布局 ===
-    text_frame = tk.Frame(root, bg="#F5F5F5", padx=10, pady=10)
-    text_frame.pack(expand=True, fill='both')
-
-    scrollbar = tk.Scrollbar(text_frame)
-    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-    # 1. 基础文本框 (默认使用中文字体)
-    # 注意：这里 font 设置的是全局基础字体（推荐微软雅黑）
-    base_font_size = 12
-    text_area = tk.Text(
-        text_frame, 
-        font=("微软雅黑", base_font_size), 
-        bg="#FFFFFF",
-        fg="#333333",
-        wrap=tk.WORD, 
-        padx=15, pady=15,
-        spacing1=10,
-        spacing2=6,
-        spacing3=5,
-        relief=tk.FLAT,
-        yscrollcommand=scrollbar.set
-    )
-    text_area.pack(side=tk.LEFT, expand=True, fill='both')
-    scrollbar.config(command=text_area.yview)
-    
-    # 插入内容
-    text_area.insert(tk.END, content)
-
-    # ==========================================
-    # 🎨 核心修改：配置英文专用样式 (Tag)
-    # ==========================================
-    
-    # 定义一个名为 "english_style" 的标签
-    # 字体：Segoe UI (Windows原生英文字体) 或 Arial，看起来比微软雅黑的英文更紧凑、现代
-    # 颜色：稍微深一点点，或者保持一致
-    text_area.tag_config("english_style", font=("Segoe UI", base_font_size))
-    
-    # === 自动查找英文并应用样式 ===
-    # 逻辑：从头搜到尾，找到所有 [a-zA-Z0-9] 也就是字母和数字
-    start_pos = "1.0"
-    while True:
-        # 搜索正则表达式匹配的字符
-        # count=count_var 用来记录匹配到的长度
-        count_var = tk.IntVar()
-        pos = text_area.search(r'[a-zA-Z0-9\.]+', start_pos, stopindex=tk.END, count=count_var, regexp=True)
-        
-        if not pos:
-            break
-            
-        # 计算结束位置 (例如 "1.0" + 5个字符 = "1.5")
-        end_pos = f"{pos}+{count_var.get()}c"
-        
-        # 给这段文本加上 "english_style" 标签
-        text_area.tag_add("english_style", pos, end_pos)
-        
-        # 更新下一次搜索的起始位置
-        start_pos = end_pos
-
-    # ==========================================
-
-    # 底部按钮
-    btn_frame = tk.Frame(root, pady=8, bg="#F5F5F5")
-    btn_frame.pack(fill='x')
-
-    def close_window():
-        root.destroy()
-        
-    tk.Button(
-        btn_frame, 
-        text="关闭 (已自动复制)", 
-        command=close_window, 
-        height=2, 
-        bg="#E0E0E0",
-        relief=tk.GROOVE,
-        font=("微软雅黑", 10)
-    ).pack(fill='x', padx=20)
-
-    root.mainloop()
-
-
+    sys.exit(app.exec())
 
 if __name__ == "__main__":
     main()

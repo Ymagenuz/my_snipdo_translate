@@ -1,6 +1,15 @@
-$pythonExe = "C:\Users\EDY\AppData\Local\Programs\Python\Python311\python.exe"
+# 1. 注意这里改成了 pythonw.exe (专门用于运行无界面的后台脚本或GUI脚本)
+$pythonExe = "C:\Users\EDY\AppData\Local\Programs\Python\Python311\pythonw.exe"
+
 # 指向 Google 脚本
-$scriptPath = "D:\test\translate\google_translate.py"
+$scriptPath = "D:\test\my_snipdo_translate\google_translate.py"
+
+# 获取脚本所在的目录 (为了设置工作目录，防止找不到依赖)
+$scriptDir = Split-Path -Parent $scriptPath
+
 $inputText = $args -join " "
 
-Start-Process -FilePath $pythonExe -ArgumentList "`"$scriptPath`" `"$inputText`"" -WindowStyle Hidden
+# 2. 启动进程
+# - 移除了 -WindowStyle Hidden (因为 pythonw 本身就没有黑框)
+# - 增加了 -WorkingDirectory (确保 PyQt 能找到所有 DLL 依赖)
+Start-Process -FilePath $pythonExe -ArgumentList "`"$scriptPath`" `"$inputText`"" -WorkingDirectory $scriptDir
