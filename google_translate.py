@@ -40,56 +40,113 @@ def main():
 
 def show_popup(content):
     """
-    创建一个自定义窗口，包含可复制的文本框
+    创建一个自定义窗口，包含可复制的文本框 (UI + 中英文混排优化版)
     """
     root = tk.Tk()
     root.title("Google 翻译结果")
     
-    # 设置窗口大小和位置 (宽x高)
-    window_width = 500
-    window_height = 350
+    # === 窗口设置 ===
+    window_width = 600
+    window_height = 400
     
-    # 获取屏幕尺寸以计算居中位置
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
     x_cordinate = int((screen_width/2) - (window_width/2))
     y_cordinate = int((screen_height/2) - (window_height/2))
     
     root.geometry(f"{window_width}x{window_height}+{x_cordinate}+{y_cordinate}")
-    
-    # 窗口置顶
     root.attributes('-topmost', True)
+    root.configure(bg="#F5F5F5") 
 
-    # === 核心功能：自动复制到剪贴板 ===
+    # === 自动复制 ===
     try:
         root.clipboard_clear()
         root.clipboard_append(content)
-        root.update() # 保持剪贴板更新
+        root.update()
     except:
         pass
 
     # === UI 布局 ===
+    text_frame = tk.Frame(root, bg="#F5F5F5", padx=10, pady=10)
+    text_frame.pack(expand=True, fill='both')
+
+    scrollbar = tk.Scrollbar(text_frame)
+    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+    # 1. 基础文本框 (默认使用中文字体)
+    # 注意：这里 font 设置的是全局基础字体（推荐微软雅黑）
+    base_font_size = 12
+    text_area = tk.Text(
+        text_frame, 
+        font=("微软雅黑", base_font_size), 
+        bg="#FFFFFF",
+        fg="#333333",
+        wrap=tk.WORD, 
+        padx=15, pady=15,
+        spacing1=10,
+        spacing2=6,
+        spacing3=5,
+        relief=tk.FLAT,
+        yscrollcommand=scrollbar.set
+    )
+    text_area.pack(side=tk.LEFT, expand=True, fill='both')
+    scrollbar.config(command=text_area.yview)
     
-    # 1. 创建一个文本框 (Text Widget)，支持多行和复制
-    # wrap=tk.WORD 表示按单词换行
-    text_area = tk.Text(root, font=("微软雅黑", 11), wrap=tk.WORD, padx=10, pady=10)
-    text_area.pack(expand=True, fill='both')
-    
-    # 插入翻译内容
+    # 插入内容
     text_area.insert(tk.END, content)
 
-    # 2. 底部按钮区域
-    btn_frame = tk.Frame(root, pady=5)
+    # ==========================================
+    # 🎨 核心修改：配置英文专用样式 (Tag)
+    # ==========================================
+    
+    # 定义一个名为 "english_style" 的标签
+    # 字体：Segoe UI (Windows原生英文字体) 或 Arial，看起来比微软雅黑的英文更紧凑、现代
+    # 颜色：稍微深一点点，或者保持一致
+    text_area.tag_config("english_style", font=("Segoe UI", base_font_size))
+    
+    # === 自动查找英文并应用样式 ===
+    # 逻辑：从头搜到尾，找到所有 [a-zA-Z0-9] 也就是字母和数字
+    start_pos = "1.0"
+    while True:
+        # 搜索正则表达式匹配的字符
+        # count=count_var 用来记录匹配到的长度
+        count_var = tk.IntVar()
+        pos = text_area.search(r'[a-zA-Z0-9\.]+', start_pos, stopindex=tk.END, count=count_var, regexp=True)
+        
+        if not pos:
+            break
+            
+        # 计算结束位置 (例如 "1.0" + 5个字符 = "1.5")
+        end_pos = f"{pos}+{count_var.get()}c"
+        
+        # 给这段文本加上 "english_style" 标签
+        text_area.tag_add("english_style", pos, end_pos)
+        
+        # 更新下一次搜索的起始位置
+        start_pos = end_pos
+
+    # ==========================================
+
+    # 底部按钮
+    btn_frame = tk.Frame(root, pady=8, bg="#F5F5F5")
     btn_frame.pack(fill='x')
 
     def close_window():
         root.destroy()
         
-    # 一个大的关闭按钮
-    tk.Button(btn_frame, text="关闭 (已自动复制)", command=close_window, height=2).pack(fill='x', padx=10)
+    tk.Button(
+        btn_frame, 
+        text="关闭 (已自动复制)", 
+        command=close_window, 
+        height=2, 
+        bg="#E0E0E0",
+        relief=tk.GROOVE,
+        font=("微软雅黑", 10)
+    ).pack(fill='x', padx=20)
 
-    # 运行窗口
     root.mainloop()
+
+
 
 if __name__ == "__main__":
     main()
