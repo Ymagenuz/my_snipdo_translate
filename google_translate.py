@@ -180,11 +180,32 @@ class TranslationWindow(QWidget):
         text_edit.moveCursor(QTextCursor.MoveOperation.Start)
 
     def sync_highlight(self, index):
-        self.txt_origin.highlight_segment(index)
-        self.txt_origin.scroll_to_segment(index)
+        # 1. 高亮当前鼠标所在的文本框（左侧或右侧）
+        # 发送信号的发送者
+        sender = self.sender()
         
-        self.txt_result.highlight_segment(index)
-        self.txt_result.scroll_to_segment(index)
+        # 如果是原文触发的
+        if sender == self.txt_origin:
+            self.txt_origin.highlight_segment(index)
+            # 尝试高亮译文（带越界检查）
+            # 只有当译文行数足够时才联动，否则不操作，避免崩溃或乱指
+            if index < len(self.translated_segments):
+                self.txt_result.highlight_segment(index)
+                self.txt_result.scroll_to_segment(index)
+            else:
+                # 如果越界，清除译文的高亮
+                self.txt_result.highlight_segment(-1)
+
+        # 如果是译文触发的
+        elif sender == self.txt_result:
+            self.txt_result.highlight_segment(index)
+            # 尝试高亮原文（带越界检查）
+            if index < len(self.original_segments):
+                self.txt_origin.highlight_segment(index)
+                self.txt_origin.scroll_to_segment(index)
+            else:
+                self.txt_origin.highlight_segment(-1)
+
 
     def initUI(self):
         total_text = "".join(self.translated_segments)
@@ -299,83 +320,38 @@ def main():
         clean_text = raw_text.replace("-URLENCODED_ALT_TEXT", "").strip()
         text_to_translate = unquote(clean_text)
     else:
-        # 测试用例
+        # 测试用例：长难句，测试上下文能力
         text_to_translate = (
-            "def calculate_sum(a, b):\n"
-            "    # This function adds two numbers\n"
-            "    result = a + b\n"
-            "    return result\n"
-            "\n"
-            "Here is a normal paragraph to test the font rendering.\n"
-            "中文测试：这里应该显示为微软雅黑，且清晰易读。"
+            "The quick brown fox jumps over the lazy dog. "
+            "This is a sentence that spans across \n"
+            "multiple lines to test if the translator can \n"
+            "understand the full context correctly."
         )
 
-    # 1. 预处理
+    # 1. 预处理原文用于显示
     original_segments = text_to_translate.split('\n')
-    translated_segments = []
     
-    # --- 优化开始 ---
-    
-    # 准备两个列表：一个存缩进，一个存待翻译的纯文本
-    indents = []
-    texts_to_send = []
-    
-    # 记录空行的索引，以便后续还原
-    # (虽然 Google 可能会忽略空字符串，但为了对齐，我们手动处理)
-    
-    for seg in original_segments:
-        if not seg.strip():
-            indents.append("")
-            texts_to_send.append("") # 占位
-        else:
-            stripped = seg.lstrip()
-            indent = seg[:len(seg) - len(stripped)]
-            indents.append(indent)
-            texts_to_send.append(stripped)
-            
+    # 2. 全文翻译 (追求最高质量)
     try:
         translator = GoogleTranslator(source='auto', target='zh-CN')
+        # 直接发送整个字符串，让 Google 自己处理换行和语境
+        res_text = translator.translate(text_to_translate)
         
-        # 过滤掉空行发送给 API (避免 API 报错或产生无用请求)
-        # 记录非空行的原始索引，以便插回
-        non_empty_indices = [i for i, t in enumerate(texts_to_send) if t]
-        non_empty_texts = [texts_to_send[i] for i in non_empty_indices]
-        
-        if non_empty_texts:
-            # === 核心优化：一次性批量翻译 ===
-            # 这通常只消耗 1 次 HTTP 请求的时间
-            translated_results = translator.translate_batch(non_empty_texts)
-            
-            # 将翻译结果填回对应位置
-            final_results = [""] * len(original_segments)
-            
-            # 1. 填回翻译好的内容
-            for i, idx in enumerate(non_empty_indices):
-                # 容错：万一返回数量不一致（极少发生），做个保护
-                if i < len(translated_results):
-                    final_results[idx] = indents[idx] + translated_results[i]
-                else:
-                    final_results[idx] = indents[idx] + non_empty_texts[i] # 回退到原文
-            
-            # 2. 处理原本就是空行的
-            for i in range(len(original_segments)):
-                if i not in non_empty_indices:
-                    final_results[i] = ""
-                    
-            translated_segments = final_results
+        # 将结果按行切割，以便放入文本框显示
+        # 注意：这里的行数可能和 original_segments 不一样，但这没关系
+        if res_text:
+            translated_segments = res_text.split('\n')
         else:
-            translated_segments = [""] * len(original_segments)
-
+            translated_segments = [""]
+            
     except Exception as e:
-        # 错误处理：如果批量翻译失败，显示错误信息
-        translated_segments = [f"Error: {str(e)}"] * len(original_segments)
-
-    # --- 优化结束 ---
+        translated_segments = [f"Error: {str(e)}"]
 
     app = QApplication(sys.argv)
     window = TranslationWindow(original_segments, translated_segments)
     window.show()
     sys.exit(app.exec())
+
 
 
 if __name__ == "__main__":
