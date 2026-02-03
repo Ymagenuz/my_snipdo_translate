@@ -4,8 +4,10 @@ from urllib.parse import unquote
 from deep_translator import GoogleTranslator
 
 # 引入 PyQt6 库
-from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QTextEdit, QPushButton, QLabel
-from PyQt6.QtGui import QFont, QIcon, QScreen
+from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QTextEdit, 
+                             QPushButton, QLabel, QFrame, QGraphicsDropShadowEffect,
+                             QHBoxLayout, QSizePolicy)
+from PyQt6.QtGui import QColor, QScreen, QCursor
 from PyQt6.QtCore import Qt
 
 # ================= 配置区域 =================
@@ -15,19 +17,20 @@ os.environ['HTTP_PROXY'] = PROXY_URL
 # ===========================================
 
 class TranslationWindow(QWidget):
-    def __init__(self, content):
+    def __init__(self, original_text, translated_text):
         super().__init__()
-        self.content = content
+        self.original_text = original_text
+        self.translated_text = translated_text
         self.initUI()
         self.copy_to_clipboard()
 
     def initUI(self):
         # 1. 窗口基础设置
-        self.setWindowTitle('Google 翻译结果')
-        self.resize(600, 420)
-        self.setStyleSheet("background-color: #F3F3F3;") # 整体背景灰白
+        self.setWindowTitle('Google 翻译')
+        self.resize(700, 600) # 稍微调高一点，容纳更多层次
+        self.setStyleSheet("background-color: #F5F7FA;") # 使用更柔和的灰蓝色背景
         
-        # 窗口居中逻辑
+        # 窗口居中
         center_point = QScreen.availableGeometry(QApplication.primaryScreen()).center()
         frame_geometry = self.frameGeometry()
         frame_geometry.moveCenter(center_point)
@@ -36,94 +39,162 @@ class TranslationWindow(QWidget):
         # 窗口置顶
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
 
-        # 2. 布局管理器 (垂直布局)
-        layout = QVBoxLayout()
-        layout.setContentsMargins(15, 15, 15, 15) # 页边距
-        layout.setSpacing(10) # 控件间距
+        # 2. 主布局
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(15)
 
-        # 3. 文本框 (核心组件)
-        self.text_edit = QTextEdit()
-        
-        # === 核心功能：只读但可选中 ===
-        self.text_edit.setReadOnly(True) 
-        
-        # === 核心美化：使用 CSS 设置样式 ===
-        # line-height: 160% -> 解决“字堆在一起”
-        # font-family -> 优先用 Segoe UI (英文好看)，后备 Microsoft YaHei (中文)
-        # padding -> 内边距
-        # border -> 去掉边框，更现代
-        css_style = """
-            QTextEdit {
+        # ================= 卡片区域 (包含原文和译文) =================
+        self.card_frame = QFrame()
+        self.card_frame.setStyleSheet("""
+            QFrame {
                 background-color: #FFFFFF;
-                color: #333333;
-                border: 1px solid #E0E0E0;
-                border-radius: 8px;
-                padding: 15px;
-                font-family: 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
-                font-size: 16px;
-                line-height: 160%; 
+                border-radius: 12px;
+                border: 1px solid #EAEAEA;
             }
-        """
-        self.text_edit.setStyleSheet(css_style)
+        """)
         
-        # 设置文本 (PyQt 支持 HTML，所以我们可以用 HTML 进一步微调，也可以直接设纯文本)
-        self.text_edit.setPlainText(self.content)
-        
-        layout.addWidget(self.text_edit)
+        # 添加阴影效果 (让卡片浮起来)
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(20)
+        shadow.setXOffset(0)
+        shadow.setYOffset(4)
+        shadow.setColor(QColor(0, 0, 0, 20)) # 淡淡的黑色阴影
+        self.card_frame.setGraphicsEffect(shadow)
 
-        # 4. 底部按钮
-        self.close_btn = QPushButton("关闭 (已自动复制)")
+        card_layout = QVBoxLayout(self.card_frame)
+        card_layout.setContentsMargins(20, 20, 20, 20)
+        card_layout.setSpacing(10)
+
+        # --- A. 原文部分 (辅助信息) ---
+        lbl_origin = QLabel("原文 / Original")
+        lbl_origin.setStyleSheet("color: #909399; font-size: 12px; font-weight: bold; border: none;")
+        card_layout.addWidget(lbl_origin)
+
+        self.txt_origin = QTextEdit()
+        self.txt_origin.setPlainText(self.original_text)
+        self.txt_origin.setReadOnly(True)
+        self.txt_origin.setMaximumHeight(80) # 限制高度，不要喧宾夺主
+        # 样式：灰色文字，背景透明，无边框
+        self.txt_origin.setStyleSheet("""
+            QTextEdit {
+                background-color: transparent;
+                color: #606266;
+                border: none;
+                font-family: 'Segoe UI', 'Microsoft YaHei UI';
+                font-size: 13px;
+                line-height: 140%;
+            }
+        """)
+        card_layout.addWidget(self.txt_origin)
+
+        # --- 分割线 ---
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setStyleSheet("background-color: #EBEEF5; border: none; max-height: 1px;")
+        card_layout.addWidget(line)
+
+        # --- B. 译文部分 (核心信息) ---
+        lbl_result = QLabel("译文 / Translation")
+        lbl_result.setStyleSheet("color: #409EFF; font-size: 12px; font-weight: bold; border: none; margin-top: 5px;")
+        card_layout.addWidget(lbl_result)
+
+        self.txt_result = QTextEdit()
+        self.txt_result.setPlainText(self.translated_text)
+        self.txt_result.setReadOnly(True)
+        # 样式：深色文字，大字号，美化滚动条
+        self.txt_result.setStyleSheet("""
+            QTextEdit {
+                background-color: transparent;
+                color: #303133;
+                border: none;
+                font-family: 'Segoe UI', 'Microsoft YaHei UI';
+                font-size: 16px;
+                font-weight: 500;
+                line-height: 160%;
+            }
+            /* 美化滚动条 */
+            QScrollBar:vertical {
+                border: none;
+                background: #F0F0F0;
+                width: 6px;
+                margin: 0px;
+                border-radius: 3px;
+            }
+            QScrollBar::handle:vertical {
+                background: #C0C4CC;
+                min-height: 20px;
+                border-radius: 3px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #909399;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+        """)
+        card_layout.addWidget(self.txt_result)
+
+        # 将卡片添加到主布局
+        main_layout.addWidget(self.card_frame)
+
+        # ================= 底部按钮区域 =================
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch(1) # 弹簧，把按钮顶到右边
+
+        self.close_btn = QPushButton("关闭 (已复制)")
         self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.close_btn.clicked.connect(self.close)
         
-        # 按钮样式
-        btn_style = """
+        # 按钮样式：蓝色主色调，更现代
+        self.close_btn.setStyleSheet("""
             QPushButton {
-                background-color: #FFFFFF;
-                border: 1px solid #CCCCCC;
+                background-color: #409EFF;
+                color: white;
+                border: none;
                 border-radius: 6px;
-                padding: 10px;
+                padding: 8px 20px;
                 font-family: 'Microsoft YaHei UI';
                 font-size: 14px;
-                color: #555555;
+                font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #E6E6E6;
-                color: #000000;
+                background-color: #66B1FF;
             }
-        """
-        self.close_btn.setStyleSheet(btn_style)
-        layout.addWidget(self.close_btn)
+            QPushButton:pressed {
+                background-color: #3A8EE6;
+            }
+        """)
+        btn_layout.addWidget(self.close_btn)
 
-        self.setLayout(layout)
+        main_layout.addLayout(btn_layout)
+        self.setLayout(main_layout)
 
     def copy_to_clipboard(self):
         clipboard = QApplication.clipboard()
-        clipboard.setText(self.content)
+        clipboard.setText(self.translated_text)
 
 def main():
-    # 1. 参数处理逻辑 (保持不变)
+    # 1. 参数处理逻辑
     if len(sys.argv) > 1:
         raw_text = " ".join(sys.argv[1:])
         clean_text = raw_text.replace("-URLENCODED_ALT_TEXT", "").strip()
         text_to_translate = unquote(clean_text)
     else:
-        text_to_translate = "Hello world"
+        text_to_translate = "Hello world, this is a test for the new UI design."
 
     # 2. 翻译逻辑
     try:
         translated_text = GoogleTranslator(source='auto', target='zh-CN').translate(text_to_translate)
         final_content = translated_text
     except Exception as e:
-        final_content = f"翻译出错: {str(e)}\n\n原始文本: {text_to_translate}"
+        final_content = f"翻译出错: {str(e)}"
 
     # 3. 启动 PyQt 界面
     app = QApplication(sys.argv)
     
-    # 设置全局高分屏支持 (防止在 4K 屏上模糊)
-    # PyQt6 默认处理得比较好，通常不需要额外设置
-    
-    window = TranslationWindow(final_content)
+    # 传入 原文 和 译文 两个参数
+    window = TranslationWindow(text_to_translate, final_content)
     window.show()
     
     sys.exit(app.exec())
