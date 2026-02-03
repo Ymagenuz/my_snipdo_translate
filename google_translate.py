@@ -299,7 +299,7 @@ def main():
         clean_text = raw_text.replace("-URLENCODED_ALT_TEXT", "").strip()
         text_to_translate = unquote(clean_text)
     else:
-        # 测试用例：包含缩进、代码、中英文混合
+        # 测试用例
         text_to_translate = (
             "def calculate_sum(a, b):\n"
             "    # This function adds two numbers\n"
@@ -314,26 +314,69 @@ def main():
     original_segments = text_to_translate.split('\n')
     translated_segments = []
     
-    # 2. 逐行翻译
+    # --- 优化开始 ---
+    
+    # 准备两个列表：一个存缩进，一个存待翻译的纯文本
+    indents = []
+    texts_to_send = []
+    
+    # 记录空行的索引，以便后续还原
+    # (虽然 Google 可能会忽略空字符串，但为了对齐，我们手动处理)
+    
+    for seg in original_segments:
+        if not seg.strip():
+            indents.append("")
+            texts_to_send.append("") # 占位
+        else:
+            stripped = seg.lstrip()
+            indent = seg[:len(seg) - len(stripped)]
+            indents.append(indent)
+            texts_to_send.append(stripped)
+            
     try:
         translator = GoogleTranslator(source='auto', target='zh-CN')
-        for seg in original_segments:
-            if not seg.strip():
-                translated_segments.append("") 
-            else:
-                # 分离缩进
-                stripped = seg.lstrip()
-                indent = seg[:len(seg) - len(stripped)]
-                res = translator.translate(stripped)
-                translated_segments.append(indent + res)
+        
+        # 过滤掉空行发送给 API (避免 API 报错或产生无用请求)
+        # 记录非空行的原始索引，以便插回
+        non_empty_indices = [i for i, t in enumerate(texts_to_send) if t]
+        non_empty_texts = [texts_to_send[i] for i in non_empty_indices]
+        
+        if non_empty_texts:
+            # === 核心优化：一次性批量翻译 ===
+            # 这通常只消耗 1 次 HTTP 请求的时间
+            translated_results = translator.translate_batch(non_empty_texts)
             
+            # 将翻译结果填回对应位置
+            final_results = [""] * len(original_segments)
+            
+            # 1. 填回翻译好的内容
+            for i, idx in enumerate(non_empty_indices):
+                # 容错：万一返回数量不一致（极少发生），做个保护
+                if i < len(translated_results):
+                    final_results[idx] = indents[idx] + translated_results[i]
+                else:
+                    final_results[idx] = indents[idx] + non_empty_texts[i] # 回退到原文
+            
+            # 2. 处理原本就是空行的
+            for i in range(len(original_segments)):
+                if i not in non_empty_indices:
+                    final_results[i] = ""
+                    
+            translated_segments = final_results
+        else:
+            translated_segments = [""] * len(original_segments)
+
     except Exception as e:
-        translated_segments = [f"Error: {str(e)}"]
+        # 错误处理：如果批量翻译失败，显示错误信息
+        translated_segments = [f"Error: {str(e)}"] * len(original_segments)
+
+    # --- 优化结束 ---
 
     app = QApplication(sys.argv)
     window = TranslationWindow(original_segments, translated_segments)
     window.show()
     sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()
