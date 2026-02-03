@@ -27,32 +27,31 @@ class TranslationWindow(QWidget):
 
     def text_to_html(self, text, is_translation=False):
         """
-        核心优化函数：将纯文本转换为带有样式的 HTML
+        优化后的 HTML 生成：
+        统一优先使用 Segoe UI 渲染英文，微软雅黑渲染中文。
         """
-        # 1. 安全转义，防止 <script> 等注入或显示错误
         safe_text = html.escape(text)
-        
-        # 2. 将换行符转换为段落，增加段落间距
-        # 过滤掉空的行，避免出现过大的空白
         paragraphs = [p for p in safe_text.split('\n') if p.strip()]
         
+        # 核心修改：字体栈 (Font Stack)
+        # 1. Segoe UI: 负责英文、数字、标点 (Windows 原生西文字体)
+        # 2. Microsoft YaHei UI: 负责中文 (当 Segoe UI 缺字时自动替补)
+        font_family = "'Segoe UI', 'Microsoft YaHei UI', sans-serif"
+
         if is_translation:
-            # === 译文样式 (中文优化) ===
-            # line-height: 160% (1.6倍行高，中文阅读的最佳舒适区)
-            # margin-bottom: 12px (段落间距，防止文字堆叠)
-            # text-align: justify (两端对齐，让块状感更强，更整洁)
-            style = "margin-bottom: 12px; line-height: 1.6; text-align: justify;"
+            # === 译文样式 ===
+            # 中文阅读：行高 1.4，段间距 2px，颜色深灰
+            style = "margin-bottom: 2px; line-height: 1.4; text-align: justify;"
             html_content = "".join([f'<p style="{style}">{p}</p>' for p in paragraphs])
             
-            # 外层包裹，设置全局字体颜色
-            return f'<div style="color: #2c3e50; font-family: Microsoft YaHei UI, sans-serif;">{html_content}</div>'
+            return f'<div style="color: #2c3e50; font-family: {font_family}; font-size: 15px;">{html_content}</div>'
         else:
-            # === 原文样式 (英文优化) ===
-            # 颜色稍浅 (#5f6368)
-            # 字体稍微紧凑一点，模拟“注解”的感觉
-            style = "margin-bottom: 6px; line-height: 1.4;"
+            # === 原文样式 ===
+            # 英文阅读：行高 1.45，颜色浅灰
+            style = "margin-bottom: 8px; line-height: 1.45;"
             html_content = "".join([f'<p style="{style}">{p}</p>' for p in paragraphs])
-            return f'<div style="color: #5f6368; font-family: Segoe UI, sans-serif;">{html_content}</div>'
+            
+            return f'<div style="color: #606266; font-family: {font_family}; font-size: 13px;">{html_content}</div>'
 
     def initUI(self):
         # 1. 窗口基础设置
@@ -185,15 +184,15 @@ class TranslationWindow(QWidget):
                 background-color: #409EFF;
                 color: white;
                 border: none;
-                border-radius: 8px; /* 更圆润 */
-                padding: 10px 24px; /* 更大的点击区域 */
-                font-family: 'Segoe UI', 'Microsoft YaHei UI';
+                border-radius: 8px;
+                padding: 10px 24px;
+                /* 统一使用 Segoe UI 优先 */
+                font-family: 'Segoe UI', 'Microsoft YaHei UI'; 
                 font-size: 14px;
-                font-weight: 600;
+                font-weight: 600; /* Segoe UI 的半粗体 (Semibold) 很好看 */
             }
             QPushButton:hover {
                 background-color: #66B1FF;
-                transform: translateY(-1px); /* 悬停微动效果需要复杂动画，这里仅改色 */
             }
             QPushButton:pressed {
                 background-color: #3A8EE6;
