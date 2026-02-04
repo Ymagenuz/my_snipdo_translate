@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QTextEdit,
                              QPushButton, QLabel, QFrame, QGraphicsDropShadowEffect,
                              QHBoxLayout)
 from PyQt6.QtGui import (QColor, QScreen, QTextCursor, QTextCharFormat, 
-                         QPalette, QTextBlockFormat, QFont)
+                         QPalette, QTextBlockFormat, QFont, QPainter, QBrush, QPen) # 新增最后三个
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QPoint
 
 # ================= 配置区域 =================
@@ -40,28 +40,25 @@ class DictionaryThread(QThread):
 # ================= 2. 自定义悬浮气泡 =================
 class PopupLabel(QLabel):
     """
-    美化的悬浮气泡，用于显示划词释义
+    美化的悬浮气泡，手动绘制背景以完美支持圆角
     """
     def __init__(self, parent=None):
         super().__init__(parent)
-        # 设置为无边框窗口 + ToolTip 属性
+        # 1. 必须保留这个属性，否则圆角外会有黑色直角
         self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
-        # self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
-        # 气泡样式：深色背景，圆角，白色文字
+        # 2. 样式表只负责文字和内边距，背景色由 paintEvent 绘制
         self.setStyleSheet("""
             QLabel {
-                background-color: #303133;
-                color: #FFFFFF;
-                border-radius: 6px;
+                color: #2c3e50;
                 padding: 8px 12px;
                 font-family: 'Segoe UI', 'Microsoft YaHei UI';
                 font-size: 13px;
-                border: 1px solid #4B4D51;
             }
         """)
         
-        # 添加阴影效果
+        # 添加阴影
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(10)
         shadow.setColor(QColor(0, 0, 0, 80))
@@ -69,13 +66,33 @@ class PopupLabel(QLabel):
         self.setGraphicsEffect(shadow)
         self.hide()
 
+    def paintEvent(self, event):
+        """
+        核心修复：手动绘制圆角背景
+        """
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing) # 抗锯齿，保证圆角平滑
+        
+        # 设置背景色 (深灰)
+        painter.setBrush(QBrush(QColor("#effdff")))
+        # 设置边框色 (稍浅的灰)
+        painter.setPen(QPen(QColor("#4B4D51"), 1))
+        
+        # 绘制圆角矩形
+        # rect() 是控件大小，adjusted 是为了防止边框被切掉一半
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        painter.drawRoundedRect(rect, 6, 6) # 6px 圆角
+        
+        # 绘制完背景后，调用父类方法绘制文字
+        super().paintEvent(event)
+
     def show_message(self, text, global_pos):
         self.setText(text)
         self.adjustSize()
-        # 计算位置：显示在鼠标上方，避免遮挡
         self.move(global_pos.x(), global_pos.y() - self.height() - 10)
         self.show()
         self.raise_()
+
 
 # ================= 3. 增强版文本框 =================
 class InteractiveTextEdit(QTextEdit):
