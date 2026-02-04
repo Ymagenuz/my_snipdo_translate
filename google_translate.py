@@ -205,9 +205,10 @@ class InteractiveTextEdit(QTextEdit):
 
     def show_popup_result(self, original, translation, pos):
         """显示查询结果"""
-        # 再次检查当前是否还有选区，防止用户已经取消选择了结果才回来
-        if not self.textCursor().hasSelection():
-            return
+        # [修改] 注释掉下面这两行。
+        # 解释：只要发起了请求，无论鼠标是否移走或选区是否还在，都应该显示结果。
+        # if not self.textCursor().hasSelection():
+        #     return
             
         display_text = f"{original}\n⬇\n{translation}"
         self.popup.show_message(display_text, pos)
