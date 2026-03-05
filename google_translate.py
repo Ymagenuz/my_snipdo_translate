@@ -337,7 +337,7 @@ class TranslationWindow(QWidget):
         total_text = "".join(self.translated_segments)
         text_len = len(total_text)
         
-        base_width = 720 
+        base_width = 500 
         if text_len < 50: base_height = 350
         elif text_len < 200: base_height = 500
         else: base_height = 700
