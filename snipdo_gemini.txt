@@ -1,0 +1,13 @@
+# 1. 指向无界面的 pythonw.exe，避免弹出黑框
+$pythonExe = "C:\Users\EDY\AppData\Local\Programs\Python\Python311\pythonw.exe"
+
+# 2. 指向您刚刚保存的 Gemini 脚本路径 (请根据实际情况修改盘符和文件夹)
+$scriptPath = "D:\test\my_snipdo_translate\gemini_translate.py"
+
+# 获取脚本所在的目录 (为了设置工作目录，防止找不到依赖)
+$scriptDir = Split-Path -Parent $scriptPath
+
+$inputText = $args -join " "
+
+# 3. 启动进程
+Start-Process -FilePath $pythonExe -ArgumentList "`"$scriptPath`" `"$inputText`"" -WorkingDirectory $scriptDir
