@@ -15,7 +15,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QThread
 warnings.filterwarnings("ignore")
 
 # ================= 配置区域 =================
-GOOGLE_API_KEY = "AIzaSyDhCx-m-xyYmY5r_5bE3VMIUWbek_-UTHA"
+GOOGLE_API_KEY = "AIzaSyB1TLMbTWPAxust0rCcqcWPOGJjvtIYlmg"
 
 PROXY_URL = 'http://127.0.0.1:7897'
 os.environ['HTTPS_PROXY'] = PROXY_URL
