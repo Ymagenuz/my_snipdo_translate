@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QTextEdit,
                              QPushButton, QLabel, QFrame, QGraphicsDropShadowEffect,
                              QHBoxLayout)
 from PyQt6.QtGui import (QColor, QScreen, QTextCursor, QTextCharFormat, 
-                         QPalette, QTextBlockFormat, QFont)
+                         QTextBlockFormat, QFont)
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 
 warnings.filterwarnings("ignore")
@@ -26,25 +26,45 @@ genai.configure(api_key=GOOGLE_API_KEY.strip(), transport='rest')
 model = genai.GenerativeModel('gemma-3-27b-it')
 # ===========================================
 
-def translate_text(text):
-    """调用 Gemini 进行段落级全文翻译，追求最高质量"""
-    try:
-        prompt = f"""
-        你是一个专业的翻译引擎。请将下方的文本翻译成简体中文。
-        规则：
-        1. 保持原文的段落结构：原文有几段，译文就输出几段，段落之间用换行符隔开。
-        2. 追求信达雅：根据中文表达习惯自由调整句式，确保译文流畅自然。
-        3. 直接输出译文，不要任何解释，不要加前缀。
-        
-        待翻译文本：
-        {text}
-        """
-        response = model.generate_content(prompt)
-        return response.text.strip()
-    except Exception as e:
-        return f"翻译出错: {str(e)}"
+# ================= 1. 后台流式翻译线程 =================
+class TranslationThread(QThread):
+    chunk_received = pyqtSignal(str)
+    finished = pyqtSignal(bool, str) # success, error_message
 
-# ================= 1. 后台查词线程 =================
+    def __init__(self, text):
+        super().__init__()
+        self.text = text
+
+    def run(self):
+        try:
+            prompt = f"""
+            你是一个专业的翻译引擎。请将下方的文本翻译成简体中文。
+            规则：
+            1. 保持原文的段落结构：原文有几段，译文就输出几段，段落之间用换行符隔开。
+            2. 追求信达雅：根据中文表达习惯自由调整句式，确保译文流畅自然。
+            3. 直接输出译文，不要任何解释，不要加前缀。
+            
+            待翻译文本：
+            {self.text}
+            """
+            # 开启 stream=True 实现流式输出
+            response = model.generate_content(prompt, stream=True)
+            
+            for chunk in response:
+                try:
+                    # 安全获取文本：如果当前 chunk 没有文本内容（例如结束信号），会触发异常并被忽略
+                    if chunk.text:
+                        self.chunk_received.emit(chunk.text)
+                except Exception:
+                    # 忽略无效的 chunk，继续接收下一个
+                    continue
+                    
+            self.finished.emit(True, "")
+        except Exception as e:
+            self.finished.emit(False, str(e))
+
+
+# ================= 2. 后台查词线程 =================
 class DictionaryThread(QThread):
     result_ready = pyqtSignal(str, str)
 
@@ -60,7 +80,7 @@ class DictionaryThread(QThread):
         except Exception as e:
             self.result_ready.emit(self.text, "查询失败")
 
-# ================= 2. 自定义悬浮气泡 =================
+# ================= 3. 自定义悬浮气泡 =================
 class PopupLabel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -97,15 +117,10 @@ class PopupLabel(QWidget):
         self.show()
         self.raise_()
 
-# ================= 3. 增强版文本框 (按段落高亮) =================
+# ================= 4. 纯净版文本框 (保留划词，移除悬停) =================
 class InteractiveTextEdit(QTextEdit):
-    hover_index_changed = pyqtSignal(int)
-
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMouseTracking(True)
-        self.segment_ranges = []    
-        self.current_highlight_index = -1
         self.popup = PopupLabel() 
         self.dict_thread = None
         
@@ -116,30 +131,6 @@ class InteractiveTextEdit(QTextEdit):
             QScrollBar::handle:vertical:hover { background: #909399; }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
         """)
-
-    def set_segments(self, ranges):
-        self.segment_ranges = ranges
-
-    def mouseMoveEvent(self, event):
-        if event.buttons() == Qt.MouseButton.NoButton:
-            cursor = self.cursorForPosition(event.pos())
-            pos = cursor.position()
-            
-            found_index = -1
-            for i, (start, end) in enumerate(self.segment_ranges):
-                if start <= pos < end: 
-                    found_index = i
-                    break
-            
-            if found_index != self.current_highlight_index:
-                self.current_highlight_index = found_index
-                self.hover_index_changed.emit(found_index)
-        super().mouseMoveEvent(event)
-
-    def leaveEvent(self, event):
-        self.current_highlight_index = -1
-        self.hover_index_changed.emit(-1)
-        super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event):
         super().mouseReleaseEvent(event)
@@ -168,103 +159,89 @@ class InteractiveTextEdit(QTextEdit):
         self.popup.close()
         super().closeEvent(event)
 
-    def highlight_segment(self, index):
-        if index < 0 or index >= len(self.segment_ranges):
-            self.setExtraSelections([])
-            return
-        start, end = self.segment_ranges[index]
-        if start == end: 
-            self.setExtraSelections([])
-            return
-
-        selection = QTextEdit.ExtraSelection()
-        cursor = self.textCursor()
-        cursor.setPosition(start)
-        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
-        selection.cursor = cursor
-        
-        fmt = QTextCharFormat()
-        fmt.setBackground(QColor("#FFF8C5")) 
-        selection.format = fmt
-        selection.format.setProperty(QTextCharFormat.Property.FullWidthSelection, True)
-        self.setExtraSelections([selection])
-
-    def scroll_to_segment(self, index):
-        if index < 0 or index >= len(self.segment_ranges):
-            return
-        start, _ = self.segment_ranges[index]
-        cursor = self.textCursor()
-        cursor.setPosition(start)
-        self.setTextCursor(cursor)
-        self.ensureCursorVisible()
-
-# ================= 4. 主窗口逻辑 =================
+# ================= 5. 主窗口逻辑 =================
 class TranslationWindow(QWidget):
-    def __init__(self, original_paragraphs, translated_paragraphs):
+    def __init__(self, original_paragraphs):
         super().__init__()
         self.original_paragraphs = original_paragraphs
-        self.translated_paragraphs = translated_paragraphs
+        self.full_translation = ""
         self.initUI()
         
-        self.populate_text(self.txt_origin, self.original_paragraphs, is_translation=False)
-        self.populate_text(self.txt_result, self.translated_paragraphs, is_translation=True)
-        self.copy_to_clipboard()
+        # 填充原文
+        self.populate_original_text()
+        # 初始化译文框的样式
+        self.setup_result_format()
+        
+        # 启动流式翻译
+        self.start_translation()
 
-    def populate_text(self, text_edit: InteractiveTextEdit, paragraphs, is_translation=False):
-        text_edit.clear()
-        cursor = text_edit.textCursor()
-        ranges = []
+    def populate_original_text(self):
+        self.txt_origin.clear()
+        cursor = self.txt_origin.textCursor()
         
         font = QFont()
         font.setFamilies(["Segoe UI", "Microsoft YaHei UI", "sans-serif"])
-        block_fmt = QTextBlockFormat()
+        font.setPixelSize(13)
         
-        if is_translation:
-            font.setPixelSize(15) 
-            color = QColor("#2c3e50")
-            block_fmt.setLineHeight(150, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
-            block_fmt.setBottomMargin(12) 
-        else:
-            font.setPixelSize(13)
-            color = QColor("#606266")
-            block_fmt.setLineHeight(140, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
-            block_fmt.setBottomMargin(8)
+        block_fmt = QTextBlockFormat()
+        block_fmt.setLineHeight(140, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
+        block_fmt.setBottomMargin(8)
         
         char_fmt = QTextCharFormat()
         char_fmt.setFont(font)
-        char_fmt.setForeground(color)
+        char_fmt.setForeground(QColor("#606266"))
 
-        for para in paragraphs:
-            start_pos = cursor.position()
+        for para in self.original_paragraphs:
             cursor.insertText(para, char_fmt)
             cursor.setBlockFormat(block_fmt)
-            end_pos = cursor.position()
-            ranges.append((start_pos, end_pos))
             cursor.insertBlock()
         
-        text_edit.set_segments(ranges)
-        text_edit.moveCursor(QTextCursor.MoveOperation.Start)
+        self.txt_origin.moveCursor(QTextCursor.MoveOperation.Start)
 
-    def sync_highlight(self, index):
-        sender = self.sender()
-        if sender == self.txt_origin:
-            self.txt_origin.highlight_segment(index)
-            if index < len(self.translated_paragraphs):
-                self.txt_result.highlight_segment(index)
-                self.txt_result.scroll_to_segment(index)
-            else:
-                self.txt_result.highlight_segment(-1)
+    def setup_result_format(self):
+        """预先设置译文框的字体和段落格式"""
+        self.txt_result.clear()
+        font = QFont()
+        font.setFamilies(["Segoe UI", "Microsoft YaHei UI", "sans-serif"])
+        font.setPixelSize(15)
+        
+        self.result_char_fmt = QTextCharFormat()
+        self.result_char_fmt.setFont(font)
+        self.result_char_fmt.setForeground(QColor("#2c3e50"))
 
-        elif sender == self.txt_result:
-            self.txt_result.highlight_segment(index)
-            if index < len(self.original_paragraphs):
-                self.txt_origin.highlight_segment(index)
-                self.txt_origin.scroll_to_segment(index)
-            else:
-                self.txt_origin.highlight_segment(-1)
+        self.result_block_fmt = QTextBlockFormat()
+        self.result_block_fmt.setLineHeight(150, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
+        self.result_block_fmt.setBottomMargin(12)
+
+    def start_translation(self):
+        final_text_for_ai = '\n'.join(self.original_paragraphs)
+        self.trans_thread = TranslationThread(final_text_for_ai)
+        self.trans_thread.chunk_received.connect(self.append_translation_chunk)
+        self.trans_thread.finished.connect(self.on_translation_finished)
+        self.trans_thread.start()
+
+    def append_translation_chunk(self, chunk):
+        """接收到流式片段时，追加到文本框"""
+        self.full_translation += chunk
+        cursor = self.txt_result.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        
+        # 应用格式并插入文本
+        cursor.setBlockFormat(self.result_block_fmt)
+        cursor.insertText(chunk, self.result_char_fmt)
+        
+        self.txt_result.setTextCursor(cursor)
+        self.txt_result.ensureCursorVisible()
+
+    def on_translation_finished(self, success, error_msg):
+        if not success:
+            self.append_translation_chunk(f"\n\n[翻译出错: {error_msg}]")
+        self.copy_to_clipboard()
+        self.close_btn.setText("Copy & Close")
+        self.close_btn.setEnabled(True)
 
     def initUI(self):
-        total_text = "".join(self.translated_paragraphs)
+        total_text = "\n".join(self.original_paragraphs)
         text_len = len(total_text)
         
         base_width = 500 
@@ -272,7 +249,7 @@ class TranslationWindow(QWidget):
         elif text_len < 200: base_height = 500
         else: base_height = 700
             
-        self.setWindowTitle('Gemini 翻译 (支持划词)')
+        self.setWindowTitle('Gemini 翻译 (流式输出)')
         self.resize(base_width, base_height)
         self.setStyleSheet("background-color: #F5F7FA;") 
         
@@ -309,7 +286,6 @@ class TranslationWindow(QWidget):
         self.txt_origin.setReadOnly(True)
         self.txt_origin.setMaximumHeight(120) 
         self.txt_origin.setStyleSheet("background-color: #FAFAFA; border-left: 2px solid #E4E7ED; padding-left: 4px;")
-        self.txt_origin.hover_index_changed.connect(self.sync_highlight)
         card_layout.addWidget(self.txt_origin)
 
         line = QFrame()
@@ -324,7 +300,6 @@ class TranslationWindow(QWidget):
         self.txt_result = InteractiveTextEdit()
         self.txt_result.setReadOnly(True)
         self.txt_result.setStyleSheet("background-color: transparent;")
-        self.txt_result.hover_index_changed.connect(self.sync_highlight)
         card_layout.addWidget(self.txt_result)
 
         main_layout.addWidget(self.card_frame)
@@ -333,12 +308,14 @@ class TranslationWindow(QWidget):
         btn_layout.setContentsMargins(0, 8, 0, 0)
         btn_layout.addStretch(1)
 
-        self.close_btn = QPushButton("Copy & Close") 
+        self.close_btn = QPushButton("Translating...") 
+        self.close_btn.setEnabled(False) # 翻译完成前禁用或显示状态
         self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.close_btn.clicked.connect(self.close)
         self.close_btn.setStyleSheet("""
             QPushButton { background-color: #8E44AD; color: white; border: none; border-radius: 6px; padding: 6px 16px; font-family: 'Segoe UI', 'Microsoft YaHei UI'; font-weight: 600; font-size: 13px; }
             QPushButton:hover { background-color: #9B59B6; }
+            QPushButton:disabled { background-color: #C39BD3; }
         """)
         btn_layout.addWidget(self.close_btn)
 
@@ -347,8 +324,8 @@ class TranslationWindow(QWidget):
 
     def copy_to_clipboard(self):
         clipboard = QApplication.clipboard()
-        full_text = "\n\n".join(self.translated_paragraphs)
-        clipboard.setText(full_text)
+        if self.full_translation:
+            clipboard.setText(self.full_translation.strip())
 
 def main():
     if len(sys.argv) > 1:
@@ -366,31 +343,14 @@ def main():
         )
 
     # ================= 核心修改区域：完美段落处理 =================
-    # 1. 修复连字符断字 (trans-\nlate -> translate)
     text = re.sub(r'-\s*\n\s*', '', text_to_translate)
-    
-    # 2. 智能合并 PDF 复制带来的多余换行 (仅保留真正的段落换行)
-    # 如果换行符前面不是句号等结束标点，且后面不是换行符，则视为空格合并
     text = re.sub(r'(?<![.!?。！？>”"])\n(?!\n)', ' ', text)
-    
-    # 3. 按真实段落分割
     original_paragraphs = [p.strip() for p in re.split(r'\n+', text) if p.strip()]
-    
-    # 4. 组合发送给大模型 (段落之间用换行符隔开)
-    final_text_for_ai = '\n'.join(original_paragraphs)
-    # ==========================================================\
+    # ==========================================================
 
-    # 全文翻译 (调用 Gemini)
-    res_text = translate_text(final_text_for_ai)
-    
-    if "翻译出错" not in res_text:
-        translated_paragraphs = [p.strip() for p in res_text.split('\n') if p.strip()]
-    else:
-        translated_paragraphs = [res_text]
-
-    # 启动 UI
+    # 启动 UI (不再阻塞等待翻译)
     app = QApplication(sys.argv)
-    window = TranslationWindow(original_paragraphs, translated_paragraphs)
+    window = TranslationWindow(original_paragraphs)
     window.show()
     sys.exit(app.exec())
 
