@@ -3,7 +3,7 @@ import os
 import re
 import warnings
 from urllib.parse import unquote
-import google.generativeai as genai
+from google import genai # [更新] 引入新的 SDK
 
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QTextEdit, 
                              QPushButton, QLabel, QFrame, QGraphicsDropShadowEffect,
@@ -22,8 +22,9 @@ os.environ['HTTPS_PROXY'] = PROXY_URL
 os.environ['HTTP_PROXY'] = PROXY_URL
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 
-genai.configure(api_key=GOOGLE_API_KEY.strip(), transport='rest')
-model = genai.GenerativeModel('gemma-3-27b-it')
+# [更新] 使用新的 Client 初始化方式
+client = genai.Client(api_key=GOOGLE_API_KEY.strip())
+MODEL_NAME = 'gemma-3-27b-it'
 # ===========================================
 
 # ================= 1. 后台流式翻译/查词线程 =================
@@ -38,9 +39,9 @@ class TranslationThread(QThread):
     def run(self):
         try:
             text_clean = self.text.strip()
-            # 智能判断：如果单词数 <= 5 且总长度 < 10，则认为是查单词/短语
+            # 智能判断：如果单词数 <= 5 且字符总长度 < 50，则认为是查单词/短语
             words = text_clean.split()
-            is_dictionary_mode = len(words) <= 5 and len(text_clean) < 10
+            is_dictionary_mode = len(words) <= 5 and len(text_clean) < 50
 
             if is_dictionary_mode:
                 prompt = f"""
@@ -65,12 +66,14 @@ class TranslationThread(QThread):
                 {self.text}
                 """
 
-            # 开启 stream=True 实现流式输出
-            response = model.generate_content(prompt, stream=True)
+            # [更新] 使用新的 generate_content_stream 方法实现流式输出
+            response = client.models.generate_content_stream(
+                model=MODEL_NAME,
+                contents=prompt
+            )
             
             for chunk in response:
                 try:
-                    # 安全获取文本，忽略 finish_reason=1 导致的空块报错
                     if chunk.text:
                         self.chunk_received.emit(chunk.text)
                 except Exception:
@@ -90,8 +93,20 @@ class DictionaryThread(QThread):
 
     def run(self):
         try:
-            prompt = f"请简要翻译并解释以下单词或短语，直接输出中文释义，不要废话：\n{self.text}"
-            response = model.generate_content(prompt)
+            # 【优化】使用结构化 Prompt，强制 AI 按固定格式输出，避免废话
+            prompt = f"""
+            你是一个极简词典。请对以下单词或短语提供简明释义。
+            严格按照以下两行格式输出，不要任何 Markdown 符号，不要多余解释：
+            [音标]
+            [词性] 中文释义1；中文释义2
+            
+            待查内容：
+            {self.text}
+            """
+            response = client.models.generate_content(
+                model=MODEL_NAME,
+                contents=prompt
+            )
             self.result_ready.emit(self.text, response.text.strip())
         except Exception as e:
             self.result_ready.emit(self.text, "查询失败")
@@ -288,7 +303,7 @@ class TranslationWindow(QWidget):
         words = total_text.split()
         
         # 预判是否为词典模式 (与后台线程的判断逻辑保持一致)
-        is_dictionary_mode = len(words) <= 5 and text_len < 40
+        is_dictionary_mode = len(words) <= 5 and text_len < 50
         
         base_width = 500 
         
