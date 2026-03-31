@@ -26,7 +26,7 @@ genai.configure(api_key=GOOGLE_API_KEY.strip(), transport='rest')
 model = genai.GenerativeModel('gemma-3-27b-it')
 # ===========================================
 
-# ================= 1. 后台流式翻译线程 =================
+# ================= 1. 后台流式翻译/查词线程 =================
 class TranslationThread(QThread):
     chunk_received = pyqtSignal(str)
     finished = pyqtSignal(bool, str) # success, error_message
@@ -37,32 +37,48 @@ class TranslationThread(QThread):
 
     def run(self):
         try:
-            prompt = f"""
-            你是一个专业的翻译引擎。请将下方的文本翻译成简体中文。
-            规则：
-            1. 保持原文的段落结构：原文有几段，译文就输出几段，段落之间用换行符隔开。
-            2. 追求信达雅：根据中文表达习惯自由调整句式，确保译文流畅自然。
-            3. 直接输出译文，不要任何解释，不要加前缀。
-            
-            待翻译文本：
-            {self.text}
-            """
+            text_clean = self.text.strip()
+            # 智能判断：如果单词数 <= 5 且总长度 < 10，则认为是查单词/短语
+            words = text_clean.split()
+            is_dictionary_mode = len(words) <= 5 and len(text_clean) < 10
+
+            if is_dictionary_mode:
+                prompt = f"""
+                请对下面的单词或短语进行详细释义，不要使用markdown语法。
+                请按以下结构输出：
+                1. 音标：音标（如果是英文）
+                2. 释义：词性及对应的中文释义（如果有多个常用释义，请列出）
+                3. 例句：提供 1-2 个简短且实用的双语例句
+                
+                待查内容：
+                {text_clean}
+                """
+            else:
+                prompt = f"""
+                你是一个专业的翻译引擎。请将下方的文本翻译成简体中文。
+                规则：
+                1. 保持原文的段落结构：原文有几段，译文就输出几段，段落之间用换行符隔开。
+                2. 追求信达雅：根据中文表达习惯自由调整句式，确保译文流畅自然。
+                3. 直接输出译文，不要任何解释，不要加前缀。
+                
+                待翻译文本：
+                {self.text}
+                """
+
             # 开启 stream=True 实现流式输出
             response = model.generate_content(prompt, stream=True)
             
             for chunk in response:
                 try:
-                    # 安全获取文本：如果当前 chunk 没有文本内容（例如结束信号），会触发异常并被忽略
+                    # 安全获取文本，忽略 finish_reason=1 导致的空块报错
                     if chunk.text:
                         self.chunk_received.emit(chunk.text)
                 except Exception:
-                    # 忽略无效的 chunk，继续接收下一个
                     continue
                     
             self.finished.emit(True, "")
         except Exception as e:
             self.finished.emit(False, str(e))
-
 
 # ================= 2. 后台查词线程 =================
 class DictionaryThread(QThread):
@@ -214,6 +230,11 @@ class TranslationWindow(QWidget):
         self.result_block_fmt.setBottomMargin(12)
 
     def start_translation(self):
+        # 1. 启动时先插入一个初始光标，告诉用户 "我在思考"
+        cursor = self.txt_result.textCursor()
+        cursor.insertText(" ▍", self.result_char_fmt)
+
+        # 2. 启动后台线程
         final_text_for_ai = '\n'.join(self.original_paragraphs)
         self.trans_thread = TranslationThread(final_text_for_ai)
         self.trans_thread.chunk_received.connect(self.append_translation_chunk)
@@ -221,33 +242,69 @@ class TranslationWindow(QWidget):
         self.trans_thread.start()
 
     def append_translation_chunk(self, chunk):
-        """接收到流式片段时，追加到文本框"""
+        """接收到流式片段时，追加到文本框并维持光标在末尾"""
         self.full_translation += chunk
         cursor = self.txt_result.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
         
-        # 应用格式并插入文本
+        # 1. 移动到末尾，选中并删除之前的光标 " ▍" (2个字符)
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.movePosition(QTextCursor.MoveOperation.Left, QTextCursor.MoveMode.KeepAnchor, 2)
+        if cursor.selectedText() == " ▍":
+            cursor.removeSelectedText()
+        else:
+            # 容错：如果没找到光标，确保位置在最后
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+        
+        # 2. 插入新接收到的文本
         cursor.setBlockFormat(self.result_block_fmt)
         cursor.insertText(chunk, self.result_char_fmt)
+        
+        # 3. 在末尾重新加上光标
+        cursor.insertText(" ▍", self.result_char_fmt)
         
         self.txt_result.setTextCursor(cursor)
         self.txt_result.ensureCursorVisible()
 
     def on_translation_finished(self, success, error_msg):
+        # 1. 翻译结束，清理掉最后的光标
+        cursor = self.txt_result.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.movePosition(QTextCursor.MoveOperation.Left, QTextCursor.MoveMode.KeepAnchor, 2)
+        if cursor.selectedText() == " ▍":
+            cursor.removeSelectedText()
+
+        # 2. 处理错误或完成状态
         if not success:
             self.append_translation_chunk(f"\n\n[翻译出错: {error_msg}]")
+        
         self.copy_to_clipboard()
         self.close_btn.setText("Copy & Close")
         self.close_btn.setEnabled(True)
 
     def initUI(self):
-        total_text = "\n".join(self.original_paragraphs)
+        # 获取纯净的原文文本
+        total_text = "\n".join(self.original_paragraphs).strip()
         text_len = len(total_text)
+        words = total_text.split()
+        
+        # 预判是否为词典模式 (与后台线程的判断逻辑保持一致)
+        is_dictionary_mode = len(words) <= 5 and text_len < 40
         
         base_width = 500 
-        if text_len < 50: base_height = 350
-        elif text_len < 200: base_height = 500
-        else: base_height = 700
+        
+        # 动态计算高度
+        if is_dictionary_mode:
+            # 词典模式：虽然原文短，但需要展示音标、释义和例句，给予更大的基础高度
+            base_height = 700 
+        elif text_len < 50: 
+            # 普通短句翻译
+            base_height = 350
+        elif text_len < 200: 
+            # 中等段落
+            base_height = 500
+        else: 
+            # 长文翻译
+            base_height = 700
             
         self.setWindowTitle('Gemini 翻译 (流式输出)')
         self.resize(base_width, base_height)
@@ -321,6 +378,16 @@ class TranslationWindow(QWidget):
 
         main_layout.addLayout(btn_layout)
         self.setLayout(main_layout)
+
+    def closeEvent(self, event):
+        """窗口关闭时的安全清理机制"""
+        # 如果后台翻译线程还在运行，强制终止它，防止后台僵尸网络请求和崩溃
+        if hasattr(self, 'trans_thread') and self.trans_thread.isRunning():
+            self.trans_thread.terminate()
+            self.trans_thread.wait()
+            
+        # 调用父类的关闭事件，正常销毁窗口
+        super().closeEvent(event)
 
     def copy_to_clipboard(self):
         clipboard = QApplication.clipboard()
