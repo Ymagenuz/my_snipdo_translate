@@ -518,7 +518,7 @@ class TranslationWindow(QWidget):
 
         self.tray_icon.setIcon(icon)
         self.setWindowIcon(icon)
-        self.tray_icon.setToolTip("Gemini 翻译（统一版）")
+        self.tray_icon.setToolTip("Gemini 翻译")
 
         tray_menu = QMenu()
 
