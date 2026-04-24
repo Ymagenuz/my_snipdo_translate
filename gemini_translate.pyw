@@ -2,6 +2,8 @@ import sys
 import os
 import re
 import warnings
+import time
+import ctypes
 from urllib.parse import unquote
 
 from google import genai
@@ -15,7 +17,7 @@ from PyQt6.QtGui import (
     QColor, QScreen, QTextCursor, QTextCharFormat,
     QTextBlockFormat, QFont, QAction, QIcon
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QTimer
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
 warnings.filterwarnings("ignore")
@@ -46,6 +48,33 @@ def log(msg: str):
             f.write(msg + "\n")
     except Exception:
         pass
+
+
+# ================= Windows 前台显示工具 =================
+user32 = ctypes.windll.user32
+
+SW_RESTORE = 9
+SW_SHOW = 5
+
+
+def win32_force_foreground(hwnd: int) -> bool:
+    """
+    在 Windows 下尽量把指定窗口恢复并前置到前台。
+    仅依赖 Qt 的 show()/raise_()/activateWindow() 在 pythonw + 托盘 + 外部唤起场景下不够稳定，
+    因此这里额外调用 Win32 API 强制显示窗口。
+    """
+    try:
+        if not hwnd:
+            return False
+
+        user32.ShowWindow(hwnd, SW_RESTORE)
+        user32.ShowWindow(hwnd, SW_SHOW)
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+        return True
+    except Exception as e:
+        log(f"[Win32] force foreground error: {e}")
+        return False
 
 
 # ================= 工具函数 =================
@@ -96,35 +125,47 @@ def detect_translation_mode(text: str) -> str:
     return "en2zh"
 
 
-def send_to_existing_instance(text: str) -> bool:
+def send_to_existing_instance(text: str, retries: int = 5, delay_ms: int = 180) -> bool:
     """
     尝试把文本发送给已运行的实例
+    增加短重试，提升首启竞争阶段的成功率
     需要在 QApplication 创建之后调用
     """
-    try:
-        log(f"[IPC] send_to_existing_instance called, text={repr(text[:200])}")
-        socket = QLocalSocket()
-        socket.connectToServer(SERVER_NAME)
+    for attempt in range(1, retries + 1):
+        socket = None
+        try:
+            log(f"[IPC] send attempt {attempt}/{retries}, text={repr(text[:200])}")
+            socket = QLocalSocket()
+            socket.connectToServer(SERVER_NAME)
 
-        if not socket.waitForConnected(800):
-            log("[IPC] connect to existing instance failed")
-            return False
+            if not socket.waitForConnected(600):
+                log(f"[IPC] connect failed on attempt {attempt}")
+            else:
+                data = text.encode("utf-8")
+                socket.write(data)
+                socket.flush()
 
-        data = text.encode("utf-8")
-        socket.write(data)
-        socket.flush()
+                if socket.waitForBytesWritten(1000):
+                    socket.disconnectFromServer()
+                    log(f"[IPC] sent to existing instance successfully on attempt {attempt}")
+                    return True
+                else:
+                    log(f"[IPC] waitForBytesWritten failed on attempt {attempt}")
 
-        if not socket.waitForBytesWritten(1000):
-            log("[IPC] waitForBytesWritten failed")
-            socket.disconnectFromServer()
-            return False
+        except Exception as e:
+            log(f"[IPC] send_to_existing_instance error on attempt {attempt}: {e}")
+        finally:
+            try:
+                if socket is not None:
+                    socket.abort()
+            except Exception:
+                pass
 
-        socket.disconnectFromServer()
-        log("[IPC] sent to existing instance successfully")
-        return True
-    except Exception as e:
-        log(f"[IPC] send_to_existing_instance error: {e}")
-        return False
+        if attempt < retries:
+            time.sleep(delay_ms / 1000)
+
+    log("[IPC] failed to send to existing instance after retries")
+    return False
 
 
 # ================= 1. 统一后台翻译/查词线程 =================
@@ -374,11 +415,9 @@ class SingleInstanceServer(QObject):
         super().__init__()
         self.server = QLocalServer()
 
-        # 先尝试监听
         if not self.server.listen(SERVER_NAME):
             log(f"[Server] first listen failed: {self.server.errorString()}")
 
-            # 检查是否真的已有实例在运行
             probe = QLocalSocket()
             probe.connectToServer(SERVER_NAME)
             if probe.waitForConnected(300):
@@ -386,7 +425,6 @@ class SingleInstanceServer(QObject):
                 log("[Server] another instance is already running")
                 raise RuntimeError("已有实例在运行")
             else:
-                # 可能是上次异常退出残留
                 log("[Server] no running instance detected, removing stale server")
                 QLocalServer.removeServer(SERVER_NAME)
                 if not self.server.listen(SERVER_NAME):
@@ -402,9 +440,15 @@ class SingleInstanceServer(QObject):
             socket = self.server.nextPendingConnection()
             socket.readyRead.connect(lambda s=socket: self.read_socket_data(s))
             socket.disconnected.connect(socket.deleteLater)
+            QTimer.singleShot(50, lambda s=socket: self.read_socket_data(s))
 
     def read_socket_data(self, socket):
         try:
+            if socket is None:
+                return
+            if socket.bytesAvailable() <= 0:
+                return
+
             data = bytes(socket.readAll()).decode("utf-8", errors="ignore")
             log(f"[Server] received data: {repr(data[:300])}")
             if data.strip():
@@ -412,7 +456,10 @@ class SingleInstanceServer(QObject):
         except Exception as e:
             log(f"[Server] read_socket_data error: {e}")
         finally:
-            socket.disconnectFromServer()
+            try:
+                socket.disconnectFromServer()
+            except Exception:
+                pass
 
 
 # ================= 6. 主窗口逻辑 =================
@@ -431,6 +478,7 @@ class TranslationWindow(QWidget):
         self.setup_result_format()
         self.setup_tray_icon()
         self.apply_manual_mode_ui()
+        log(f"[UI] TranslationWindow initialized, hwnd={int(self.winId())}")
 
     # ---------- 托盘 ----------
     def setup_tray_icon(self):
@@ -438,7 +486,9 @@ class TranslationWindow(QWidget):
 
         current_dir = os.path.dirname(os.path.abspath(__file__))
         icon_path = os.path.join(current_dir, "snipdo_script_logo", "gemini-color.png")
-        icon = QIcon(icon_path) if os.path.exists(icon_path) else self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon)
+        icon = QIcon(icon_path) if os.path.exists(icon_path) else self.style().standardIcon(
+            self.style().StandardPixmap.SP_ComputerIcon
+        )
 
         self.tray_icon.setIcon(icon)
         self.setWindowIcon(icon)
@@ -474,16 +524,7 @@ class TranslationWindow(QWidget):
         self.source_mode = "manual"
         self.apply_manual_mode_ui(reset_content=True)
 
-        center_point = QScreen.availableGeometry(QApplication.primaryScreen()).center()
-        frame_geometry = self.frameGeometry()
-        frame_geometry.moveCenter(center_point)
-        self.move(frame_geometry.topLeft())
-
-        self.showNormal()
-        self.show()
-        self.setWindowState((self.windowState() & ~Qt.WindowState.WindowMinimized) | Qt.WindowState.WindowActive)
-        self.activateWindow()
-        self.raise_()
+        self.force_show_window()
         self.txt_origin.setFocus()
 
     def quit_app(self):
@@ -499,18 +540,65 @@ class TranslationWindow(QWidget):
             self.trans_thread.request_stop()
             self.trans_thread.wait(800)
 
+    def force_show_window(self):
+        """
+        在 Windows 下可靠显示主窗口。
+        先通过 Qt 恢复并显示窗口，再调用 Win32 API 尝试把窗口带到前台。
+        """
+        log("[UI] force_show_window called")
+
+        try:
+            screen = QApplication.primaryScreen()
+            if screen:
+                available = screen.availableGeometry()
+                x = available.x() + max(40, (available.width() - self.width()) // 2)
+                y = available.y() + max(40, (available.height() - self.height()) // 2)
+                self.move(x, y)
+
+            self.showNormal()
+            self.setWindowState(Qt.WindowState.WindowNoState)
+            self.show()
+            self.setHidden(False)
+            self.raise_()
+            self.activateWindow()
+
+            hwnd = int(self.winId())
+            win32_force_foreground(hwnd)
+
+            log(f"[UI] window shown, hwnd={hwnd}, pos=({self.x()}, {self.y()}), size=({self.width()}x{self.height()})")
+
+            QTimer.singleShot(120, self._force_activate_only)
+
+        except Exception as e:
+            log(f"[UI] force_show_window error: {e}")
+
+    def _force_activate_only(self):
+        try:
+            self.showNormal()
+            self.setWindowState(Qt.WindowState.WindowNoState)
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+            hwnd = int(self.winId())
+            win32_force_foreground(hwnd)
+
+            log(f"[UI] window re-activated, hwnd={hwnd}, visible={self.isVisible()}, minimized={self.isMinimized()}")
+        except Exception as e:
+            log(f"[UI] force_show_window activate-only stage error: {e}")
+
     # ---------- UI ----------
     def init_ui(self):
         self.setWindowTitle("Gemini 翻译")
         self.resize(560, 680)
         self.setStyleSheet("background-color: #F5F7FA;")
 
-        center_point = QScreen.availableGeometry(QApplication.primaryScreen()).center()
-        frame_geometry = self.frameGeometry()
-        frame_geometry.moveCenter(center_point)
-        self.move(frame_geometry.topLeft())
-
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+        screen = QApplication.primaryScreen()
+        if screen:
+            center_point = screen.availableGeometry().center()
+            frame_geometry = self.frameGeometry()
+            frame_geometry.moveCenter(center_point)
+            self.move(frame_geometry.topLeft())
 
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(12, 12, 12, 12)
@@ -651,6 +739,9 @@ class TranslationWindow(QWidget):
 
         main_layout.addLayout(btn_layout)
         self.setLayout(main_layout)
+        self.setMinimumSize(420, 300)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
+        self.setWindowOpacity(1.0)
 
     def setup_result_format(self):
         self.txt_result.clear()
@@ -804,13 +895,9 @@ class TranslationWindow(QWidget):
             self.populate_original_text()
             self.setup_result_format()
 
-            self.showNormal()
-            self.show()
-            self.setWindowState((self.windowState() & ~Qt.WindowState.WindowMinimized) | Qt.WindowState.WindowActive)
-            self.activateWindow()
-            self.raise_()
+            self.force_show_window()
 
-            self.start_translation(total_text, self.translation_mode)
+            QTimer.singleShot(120, lambda: self.start_translation(total_text, self.translation_mode))
         except Exception as e:
             log(f"[UI] handle_new_request error: {e}")
 
@@ -931,14 +1018,15 @@ def main():
     elif len(sys.argv) > 1:
         raw_text = " ".join(sys.argv[1:]).strip()
 
-    log(f"[Main] program started, raw_text={repr(raw_text[:300])}")
+    log(f"[Main] program started, pid={os.getpid()}, raw_text={repr(raw_text[:300])}")
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
 
-    if raw_text and send_to_existing_instance(raw_text):
-        log("[Main] text sent to existing instance, exiting current process")
-        return
+    if raw_text:
+        if send_to_existing_instance(raw_text):
+            log("[Main] text sent to existing instance, exiting current process")
+            return
 
     window = TranslationWindow()
 
@@ -950,10 +1038,17 @@ def main():
         server = None
         log(f"[Main] single instance server init failed: {e}")
 
+        if raw_text and send_to_existing_instance(raw_text, retries=6, delay_ms=220):
+            log("[Main] fallback send succeeded after server init failed, exiting")
+            return
+
     if raw_text:
-        window.handle_new_request(raw_text)
+        QTimer.singleShot(120, lambda: window.handle_new_request(raw_text))
     else:
-        window.hide()
+        # 先真实显示一次窗口，再隐藏到托盘。
+        # 在 Windows + pythonw + 托盘场景下，这有助于后续窗口被可靠恢复显示。
+        window.show()
+        QTimer.singleShot(0, window.hide)
 
     sys.exit(app.exec())
 
