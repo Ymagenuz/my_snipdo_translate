@@ -1,1 +1,2 @@
+Python:
 pip install google-genai PyQt6

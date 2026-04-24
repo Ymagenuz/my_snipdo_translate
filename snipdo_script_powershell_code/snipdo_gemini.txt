@@ -1,10 +1,25 @@
 $pythonExe = "C:\Users\EDY\AppData\Local\Programs\Python\Python311\pythonw.exe"
 $scriptPath = "D:\test\my_snipdo_translate\gemini_translate.pyw"
-$scriptDir = Split-Path -Parent $scriptPath
 
 $inputText = $args -join " "
 
-$tempFile = Join-Path $env:TEMP ("snipdo_gemini_" + [guid]::NewGuid().ToString() + ".txt")
-[System.IO.File]::WriteAllText($tempFile, $inputText, [System.Text.Encoding]::UTF8)
+if ([string]::IsNullOrWhiteSpace($inputText)) {
+    exit
+}
 
-Start-Process -FilePath $pythonExe -ArgumentList "`"$scriptPath`" --file `"$tempFile`"" -WorkingDirectory $scriptDir
+if (!(Test-Path $pythonExe)) {
+    exit
+}
+
+if (!(Test-Path $scriptPath)) {
+    exit
+}
+
+$tempFile = Join-Path $env:TEMP ("snipdo_gemini_" + [guid]::NewGuid().ToString() + ".txt")
+[System.IO.File]::WriteAllText($tempFile, $inputText, [System.Text.UTF8Encoding]::new($false))
+
+Start-Process -FilePath $pythonExe -ArgumentList @(
+    "`"$scriptPath`"",
+    "--file",
+    "`"$tempFile`""
+) -WindowStyle Hidden
