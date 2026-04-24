@@ -25,8 +25,7 @@ warnings.filterwarnings("ignore")
 # ================= 配置区域 =================
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
 if not GOOGLE_API_KEY:
-    # 兼容旧方式；正式使用时建议删除这一行 fallback
-    GOOGLE_API_KEY = "AIzaSyB1TLMbTWPAxust0rCcqcWPOGJjvtIYlmg".strip()
+    raise RuntimeError("未设置 GOOGLE_API_KEY 环境变量")
 
 PROXY_URL = 'http://127.0.0.1:7897'
 os.environ['HTTPS_PROXY'] = PROXY_URL
@@ -34,7 +33,7 @@ os.environ['HTTP_PROXY'] = PROXY_URL
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 MODEL_NAME = 'gemma-3-27b-it'
-SERVER_NAME = "gemini_translate_snipdo_single_instance_v2"
+SERVER_NAME = "gemini_translate_snipdo_single_instance_v3"
 
 client = genai.Client(api_key=GOOGLE_API_KEY)
 # ===========================================
@@ -78,7 +77,7 @@ def win32_force_foreground(hwnd: int) -> bool:
 
 
 # ================= 工具函数 =================
-def normalize_newlines(text: str) -> str:
+def normalize_newlines(text: str):
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
@@ -468,7 +467,9 @@ class TranslationWindow(QWidget):
         super().__init__()
 
         self.source_mode = "manual"         # manual / snipdo
-        self.translation_mode = "zh2en"     # auto / en2zh / zh2en / dictionary
+        self.translation_mode = "zh2en"     # manual mode: auto / en2zh / zh2en / dictionary
+        self.snipdo_translation_override = "auto"   # auto / en2zh / zh2en
+        self.pending_snipdo_text = ""
         self.original_paragraphs = []
         self.full_translation = ""
         self.force_quit = False
@@ -648,6 +649,24 @@ class TranslationWindow(QWidget):
         self.btn_toggle.clicked.connect(self.toggle_mode)
         header_layout.addWidget(self.btn_toggle)
 
+        self.btn_snipdo_mode = QPushButton("Auto")
+        self.btn_snipdo_mode.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_snipdo_mode.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #67C23A;
+                border: none;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                color: #85CE61;
+            }
+        """)
+        self.btn_snipdo_mode.clicked.connect(self.toggle_snipdo_translation_mode)
+        self.btn_snipdo_mode.hide()
+        header_layout.addWidget(self.btn_snipdo_mode)
+
         card_layout.addLayout(header_layout)
 
         self.txt_origin = InteractiveTextEdit()
@@ -759,10 +778,19 @@ class TranslationWindow(QWidget):
         self.result_block_fmt.setBottomMargin(12)
 
     # ---------- 模式切换 ----------
+    def update_snipdo_mode_button_text(self):
+        if self.snipdo_translation_override == "auto":
+            self.btn_snipdo_mode.setText("Auto")
+        elif self.snipdo_translation_override == "en2zh":
+            self.btn_snipdo_mode.setText("英译中")
+        else:
+            self.btn_snipdo_mode.setText("中译英")
+
     def apply_manual_mode_ui(self, reset_content=False):
         self.source_mode = "manual"
 
         self.btn_toggle.show()
+        self.btn_snipdo_mode.hide()
         self.btn_translate.show()
         self.txt_origin.setReadOnly(False)
         self.txt_origin.lookup_enabled = False
@@ -804,11 +832,18 @@ class TranslationWindow(QWidget):
         dict_mode = is_dictionary_mode(total_text)
 
         if dict_mode:
+            self.btn_snipdo_mode.hide()
             self.lbl_origin.setText("ORIGINAL")
             self.lbl_result.setText("DICTIONARY")
         else:
-            auto_mode = detect_translation_mode(total_text)
-            if auto_mode == "zh2en":
+            self.btn_snipdo_mode.show()
+            self.update_snipdo_mode_button_text()
+
+            effective_mode = self.snipdo_translation_override
+            if effective_mode == "auto":
+                effective_mode = detect_translation_mode(total_text)
+
+            if effective_mode == "zh2en":
                 self.lbl_origin.setText("CHINESE (ORIGINAL)")
                 self.lbl_result.setText("ENGLISH TRANSLATION")
             else:
@@ -822,6 +857,36 @@ class TranslationWindow(QWidget):
         self.translation_mode = "en2zh" if self.translation_mode == "zh2en" else "zh2en"
         self.apply_manual_mode_ui(reset_content=True)
         self.txt_origin.setFocus()
+
+    def toggle_snipdo_translation_mode(self):
+        if self.source_mode != "snipdo":
+            return
+
+        order = ["auto", "en2zh", "zh2en"]
+        try:
+            idx = order.index(self.snipdo_translation_override)
+        except ValueError:
+            idx = 0
+
+        self.snipdo_translation_override = order[(idx + 1) % len(order)]
+        self.update_snipdo_mode_button_text()
+
+        total_text = self.pending_snipdo_text.strip() or "\n".join(self.original_paragraphs).strip()
+        if not total_text:
+            return
+
+        if is_dictionary_mode(total_text):
+            self.apply_snipdo_mode_ui()
+            return
+
+        self.cancel_current_translation()
+        self.full_translation = ""
+        self.setup_result_format()
+        self.btn_copy_hide.setText("Translating...")
+        self.btn_copy_hide.setEnabled(False)
+
+        self.apply_snipdo_mode_ui()
+        self.start_translation(total_text, self.snipdo_translation_override)
 
     # ---------- 原文显示 ----------
     def populate_original_text(self):
@@ -887,8 +952,19 @@ class TranslationWindow(QWidget):
             self.btn_copy_hide.setEnabled(False)
 
             total_text = "\n".join(self.original_paragraphs).strip()
-            self.translation_mode = "dictionary" if is_dictionary_mode(total_text) else "auto"
-            log(f"[UI] translation_mode={self.translation_mode}, total_text={repr(total_text[:300])}")
+            self.pending_snipdo_text = total_text
+
+            if is_dictionary_mode(total_text):
+                effective_mode = "dictionary"
+            else:
+                effective_mode = (
+                    self.snipdo_translation_override
+                    if self.snipdo_translation_override in ("en2zh", "zh2en")
+                    else "auto"
+                )
+
+            self.translation_mode = effective_mode
+            log(f"[UI] translation_mode={self.translation_mode}, snipdo_override={self.snipdo_translation_override}, total_text={repr(total_text[:300])}")
 
             self.apply_snipdo_mode_ui()
             self.adjust_window_height()
@@ -897,7 +973,7 @@ class TranslationWindow(QWidget):
 
             self.force_show_window()
 
-            QTimer.singleShot(120, lambda: self.start_translation(total_text, self.translation_mode))
+            QTimer.singleShot(120, lambda: self.start_translation(total_text, effective_mode))
         except Exception as e:
             log(f"[UI] handle_new_request error: {e}")
 
