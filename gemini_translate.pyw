@@ -32,7 +32,7 @@ os.environ['HTTPS_PROXY'] = PROXY_URL
 os.environ['HTTP_PROXY'] = PROXY_URL
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-MODEL_NAME = 'gemma-3-27b-it'
+MODEL_NAME = 'gemma-4-31b-it'
 SERVER_NAME = "gemini_translate_snipdo_single_instance_v3"
 
 client = genai.Client(api_key=GOOGLE_API_KEY)
