@@ -6,7 +6,7 @@ import time
 import ctypes
 from urllib.parse import unquote
 
-from google import genai
+from openai import OpenAI
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTextEdit,
@@ -23,19 +23,21 @@ from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 warnings.filterwarnings("ignore")
 
 # ================= 配置区域 =================
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
-if not GOOGLE_API_KEY:
-    raise RuntimeError("未设置 GOOGLE_API_KEY 环境变量")
+GPTSAPI_API_KEY = os.getenv("GPTSAPI_API_KEY", "").strip()
+if not GPTSAPI_API_KEY:
+    raise RuntimeError("未设置 GPTSAPI_API_KEY 环境变量")
 
-PROXY_URL = 'http://127.0.0.1:7897'
-os.environ['HTTPS_PROXY'] = PROXY_URL
-os.environ['HTTP_PROXY'] = PROXY_URL
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+# PROXY_URL = 'http://127.0.0.1:7897'
+# os.environ['HTTPS_PROXY'] = PROXY_URL
+# os.environ['HTTP_PROXY'] = PROXY_URL
 
-MODEL_NAME = 'gemma-4-31b-it'
-SERVER_NAME = "gemini_translate_snipdo_single_instance_v3"
+MODEL_NAME = 'gpt-4o-mini'
+SERVER_NAME = "gptsapi_translate_snipdo_single_instance_v1"
 
-client = genai.Client(api_key=GOOGLE_API_KEY)
+client = OpenAI(
+    api_key=GPTSAPI_API_KEY,
+    base_url="https://api.gptsapi.net/v1"
+)
 # ===========================================
 
 
@@ -253,9 +255,12 @@ class TranslationThread(QThread):
             prompt = self.build_prompt()
             log(f"[TranslateThread] start, mode={self.mode}, text={repr(self.text[:200])}")
 
-            response = client.models.generate_content_stream(
+            response = client.chat.completions.create(
                 model=MODEL_NAME,
-                contents=prompt
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                stream=True
             )
 
             for chunk in response:
@@ -265,8 +270,10 @@ class TranslationThread(QThread):
                     return
 
                 try:
-                    if getattr(chunk, "text", None):
-                        self.chunk_received.emit(chunk.text)
+                    delta = chunk.choices[0].delta
+                    content = getattr(delta, "content", None)
+                    if content:
+                        self.chunk_received.emit(content)
                 except Exception:
                     continue
 
@@ -296,11 +303,14 @@ class DictionaryThread(QThread):
 待查内容：
 {self.text}
 """
-            response = client.models.generate_content(
+            response = client.chat.completions.create(
                 model=MODEL_NAME,
-                contents=prompt
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
             )
-            result_text = (response.text or "").strip() if response else "查询失败"
+
+            result_text = response.choices[0].message.content.strip() if response else "查询失败"
             self.result_ready.emit(self.text, result_text)
         except Exception as e:
             log(f"[DictionaryThread] error: {e}")

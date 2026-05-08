@@ -2,7 +2,7 @@ $pythonExe = "C:\Users\EDY\AppData\Local\Programs\Python\Python311\pythonw.exe"
 $scriptPath = "D:\test\my_snipdo_translate\gemini_translate.pyw"
 
 # ===== 在这里填写你的 API Key =====
-$apiKey = "你的_GOOGLE_API_KEY_填这里"
+$apiKey = "你的_GPTSAPI_API_KEY_填这里"
 
 $inputText = $args -join " "
 
@@ -23,9 +23,9 @@ if ([string]::IsNullOrWhiteSpace($apiKey)) {
 }
 
 # 把 Key 注入当前 PowerShell 进程环境变量，子进程 pythonw 会继承
-$env:GOOGLE_API_KEY = $apiKey
+$env:GPTSAPI_API_KEY = $apiKey
 
-$tempFile = Join-Path $env:TEMP ("snipdo_gemini_" + [guid]::NewGuid().ToString() + ".txt")
+$tempFile = Join-Path $env:TEMP ("snipdo_gptsapi_" + [guid]::NewGuid().ToString() + ".txt")
 [System.IO.File]::WriteAllText($tempFile, $inputText, [System.Text.UTF8Encoding]::new($false))
 
 Start-Process -FilePath $pythonExe -ArgumentList @(

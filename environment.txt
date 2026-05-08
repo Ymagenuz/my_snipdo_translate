@@ -1,2 +1,3 @@
 Python:
-pip install google-genai PyQt6
+pip install PyQt6
+pip install openai
