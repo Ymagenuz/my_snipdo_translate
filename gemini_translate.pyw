@@ -1020,18 +1020,30 @@ class TranslationWindow(QWidget):
         if not text_to_translate:
             return
 
+        effective_mode = "dictionary" if is_dictionary_mode(text_to_translate) else self.translation_mode
+
         self.cancel_current_translation()
 
         self.original_paragraphs = [p.strip() for p in re.split(r'\n+', normalize_newlines(text_to_translate)) if p.strip()]
         self.full_translation = ""
         self.setup_result_format()
 
+        if effective_mode == "dictionary":
+            self.lbl_origin.setText("ORIGINAL")
+            self.lbl_result.setText("DICTIONARY")
+        elif self.translation_mode == "zh2en":
+            self.lbl_origin.setText("CHINESE (ORIGINAL)")
+            self.lbl_result.setText("ENGLISH TRANSLATION")
+        else:
+            self.lbl_origin.setText("ENGLISH (ORIGINAL)")
+            self.lbl_result.setText("CHINESE TRANSLATION")
+
         self.btn_translate.setEnabled(False)
-        self.btn_translate.setText("Translating...")
+        self.btn_translate.setText("Looking up..." if effective_mode == "dictionary" else "Translating...")
         self.btn_copy_hide.setEnabled(False)
         self.btn_copy_hide.setText("Copy & Hide")
 
-        self.start_translation(text_to_translate, self.translation_mode)
+        self.start_translation(text_to_translate, effective_mode)
 
     def start_translation(self, text: str, mode: str):
         log(f"[UI] start_translation, mode={mode}, text={repr(text[:300])}")
