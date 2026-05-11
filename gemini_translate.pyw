@@ -955,17 +955,14 @@ class TranslationWindow(QWidget):
 
         base_width = 560
 
-        if self.source_mode == "manual":
-            base_height = 680
+        if dict_mode:
+            base_height = 700
+        elif text_len < 50:
+            base_height = 380
+        elif text_len < 200:
+            base_height = 520
         else:
-            if dict_mode:
-                base_height = 700
-            elif text_len < 50:
-                base_height = 380
-            elif text_len < 200:
-                base_height = 520
-            else:
-                base_height = 700
+            base_height = 700
 
         self.resize(base_width, base_height)
 
@@ -1027,6 +1024,7 @@ class TranslationWindow(QWidget):
         self.original_paragraphs = [p.strip() for p in re.split(r'\n+', normalize_newlines(text_to_translate)) if p.strip()]
         self.full_translation = ""
         self.setup_result_format()
+        self.adjust_window_height()
 
         if effective_mode == "dictionary":
             self.lbl_origin.setText("ORIGINAL")
