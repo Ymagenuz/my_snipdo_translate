@@ -284,90 +284,12 @@ class TranslationThread(QThread):
             self.finished.emit(False, str(e))
 
 
-# ================= 2. 后台悬浮查词线程 =================
-class DictionaryThread(QThread):
-    result_ready = pyqtSignal(str, str)
-
-    def __init__(self, text):
-        super().__init__()
-        self.text = text
-
-    def run(self):
-        try:
-            prompt = f"""
-你是一个极简词典。请对以下单词或短语提供简明释义。
-严格按照以下两行格式输出，不要任何 Markdown 符号，不要多余解释：
-[音标]
-[词性] 中文释义1；中文释义2
-
-待查内容：
-{self.text}
-"""
-            response = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
-
-            result_text = response.choices[0].message.content.strip() if response else "查询失败"
-            self.result_ready.emit(self.text, result_text)
-        except Exception as e:
-            log(f"[DictionaryThread] error: {e}")
-            self.result_ready.emit(self.text, "查询失败")
-
-
-# ================= 3. 自定义悬浮气泡 =================
-class PopupLabel(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 15, 15, 15)
-
-        self.inner_frame = QFrame(self)
-        self.inner_frame.setStyleSheet("""
-            QFrame { background-color: #effdff; border: 1px solid #4B4D51; border-radius: 6px; }
-        """)
-
-        inner_layout = QVBoxLayout(self.inner_frame)
-        inner_layout.setContentsMargins(12, 8, 12, 8)
-
-        self.label = QLabel(self.inner_frame)
-        self.label.setWordWrap(True)
-        self.label.setStyleSheet(
-            "color: #2c3e50; font-family: 'Segoe UI', 'Microsoft YaHei UI'; "
-            "font-size: 13px; border: none; background: transparent;"
-        )
-        inner_layout.addWidget(self.label)
-        layout.addWidget(self.inner_frame)
-
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(10)
-        shadow.setColor(QColor(0, 0, 0, 80))
-        shadow.setOffset(0, 4)
-        self.inner_frame.setGraphicsEffect(shadow)
-        self.hide()
-
-    def show_message(self, text, global_pos):
-        self.label.setText(text)
-        self.adjustSize()
-        self.move(global_pos.x() - 15, global_pos.y() - self.height() + 5)
-        self.show()
-        self.raise_()
-
-
-# ================= 4. 统一文本框：支持选词查词 + Ctrl+Enter =================
+# ================= 2. 统一文本框：支持 Ctrl+Enter =================
 class InteractiveTextEdit(QTextEdit):
     submit_signal = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.popup = PopupLabel()
-        self.dict_thread = None
-        self.lookup_enabled = True
 
         self.setStyleSheet("""
             QTextEdit {
@@ -406,42 +328,8 @@ class InteractiveTextEdit(QTextEdit):
 
         super().keyPressEvent(event)
 
-    def mouseReleaseEvent(self, event):
-        super().mouseReleaseEvent(event)
 
-        if not self.lookup_enabled:
-            return
-
-        cursor = self.textCursor()
-        selected_text = cursor.selectedText().strip()
-
-        if selected_text and len(selected_text) < 80:
-            rect = self.cursorRect(cursor)
-            global_pos = self.mapToGlobal(rect.topLeft())
-            self.start_lookup(selected_text, global_pos)
-        else:
-            self.popup.hide()
-
-    def start_lookup(self, text, pos):
-        if self.dict_thread and self.dict_thread.isRunning():
-            self.dict_thread.quit()
-            self.dict_thread.wait(200)
-
-        self.dict_thread = DictionaryThread(text)
-        self.dict_thread.result_ready.connect(
-            lambda orig, trans: self.show_popup_result(orig, trans, pos)
-        )
-        self.dict_thread.start()
-
-    def show_popup_result(self, original, translation, pos):
-        self.popup.show_message(f"{original}\n⬇\n{translation}", pos)
-
-    def closeEvent(self, event):
-        self.popup.close()
-        super().closeEvent(event)
-
-
-# ================= 5. 单实例本地通信服务 =================
+# ================= 3. 单实例本地通信服务 =================
 class SingleInstanceServer(QObject):
     message_received = pyqtSignal(str)
 
@@ -496,7 +384,7 @@ class SingleInstanceServer(QObject):
                 pass
 
 
-# ================= 6. 主窗口逻辑 =================
+# ================= 4. 主窗口逻辑 =================
 class TranslationWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -731,7 +619,6 @@ class TranslationWindow(QWidget):
 
         self.txt_result = InteractiveTextEdit()
         self.txt_result.setReadOnly(True)
-        self.txt_result.lookup_enabled = True
         self.txt_result.setStyleSheet("background-color: transparent;")
         card_layout.addWidget(self.txt_result)
 
@@ -767,11 +654,11 @@ class TranslationWindow(QWidget):
         """)
         btn_layout.addWidget(self.btn_translate)
 
-        self.btn_copy_hide = QPushButton("Copy & Hide")
-        self.btn_copy_hide.setEnabled(False)
-        self.btn_copy_hide.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_copy_hide.clicked.connect(self.copy_and_hide)
-        self.btn_copy_hide.setStyleSheet("""
+        self.btn_copy = QPushButton("Copy")
+        self.btn_copy.setEnabled(False)
+        self.btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_copy.clicked.connect(self.copy_to_clipboard)
+        self.btn_copy.setStyleSheet("""
             QPushButton {
                 background-color: #8E44AD;
                 color: white;
@@ -789,7 +676,28 @@ class TranslationWindow(QWidget):
                 background-color: #C39BD3;
             }
         """)
-        btn_layout.addWidget(self.btn_copy_hide)
+        btn_layout.addWidget(self.btn_copy)
+
+        self.btn_hide = QPushButton("Hide")
+        self.btn_hide.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_hide.clicked.connect(lambda _checked=False: self.hide())
+        self.btn_hide.setStyleSheet("""
+            QPushButton {
+                background-color: #F2F3F5;
+                color: #606266;
+                border: 1px solid #DCDFE6;
+                border-radius: 6px;
+                padding: 6px 16px;
+                font-family: 'Segoe UI', 'Microsoft YaHei UI';
+                font-weight: 600;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #E4E7ED;
+                color: #303133;
+            }
+        """)
+        btn_layout.addWidget(self.btn_hide)
 
         main_layout.addLayout(btn_layout)
         self.setLayout(main_layout)
@@ -828,7 +736,6 @@ class TranslationWindow(QWidget):
         self.btn_snipdo_mode.hide()
         self.btn_translate.show()
         self.txt_origin.setReadOnly(False)
-        self.txt_origin.lookup_enabled = False
         self.txt_origin.setMaximumHeight(220)
 
         if self.translation_mode not in ("zh2en", "en2zh"):
@@ -852,7 +759,8 @@ class TranslationWindow(QWidget):
             self.setup_result_format()
             self.btn_translate.setEnabled(True)
             self.btn_translate.setText("Translate (Ctrl+Enter)")
-            self.btn_copy_hide.setEnabled(False)
+            self.btn_copy.setText("Copy")
+            self.btn_copy.setEnabled(False)
 
     def apply_snipdo_mode_ui(self):
         self.source_mode = "snipdo"
@@ -860,7 +768,6 @@ class TranslationWindow(QWidget):
         self.btn_toggle.hide()
         self.btn_translate.hide()
         self.txt_origin.setReadOnly(True)
-        self.txt_origin.lookup_enabled = True
         self.txt_origin.setPlaceholderText("")
 
         total_text = "\n".join(self.original_paragraphs).strip()
@@ -917,8 +824,8 @@ class TranslationWindow(QWidget):
         self.cancel_current_translation()
         self.full_translation = ""
         self.setup_result_format()
-        self.btn_copy_hide.setText("Translating...")
-        self.btn_copy_hide.setEnabled(False)
+        self.btn_copy.setText("Translating...")
+        self.btn_copy.setEnabled(False)
 
         self.apply_snipdo_mode_ui()
         self.start_translation(total_text, self.snipdo_translation_override)
@@ -980,8 +887,8 @@ class TranslationWindow(QWidget):
                 return
 
             self.full_translation = ""
-            self.btn_copy_hide.setText("Translating...")
-            self.btn_copy_hide.setEnabled(False)
+            self.btn_copy.setText("Translating...")
+            self.btn_copy.setEnabled(False)
 
             total_text = "\n".join(self.original_paragraphs).strip()
             self.pending_snipdo_text = total_text
@@ -1038,8 +945,8 @@ class TranslationWindow(QWidget):
 
         self.btn_translate.setEnabled(False)
         self.btn_translate.setText("Looking up..." if effective_mode == "dictionary" else "Translating...")
-        self.btn_copy_hide.setEnabled(False)
-        self.btn_copy_hide.setText("Copy & Hide")
+        self.btn_copy.setEnabled(False)
+        self.btn_copy.setText("Copy")
 
         self.start_translation(text_to_translate, effective_mode)
 
@@ -1084,34 +991,27 @@ class TranslationWindow(QWidget):
             cursor.movePosition(QTextCursor.MoveOperation.End)
             cursor.insertText(f"\n\n[翻译出错: {error_msg}]", self.result_char_fmt)
 
-        if success and self.source_mode == "snipdo":
-            self.copy_to_clipboard()
-
         if self.source_mode == "manual":
             self.btn_translate.setEnabled(True)
             self.btn_translate.setText("Translate (Ctrl+Enter)")
 
-        self.btn_copy_hide.setText("Copy & Hide")
-        self.btn_copy_hide.setEnabled(True)
+        self.btn_copy.setText("Copy")
+        self.btn_copy.setEnabled(bool(self.full_translation.strip()))
 
     # ---------- 剪贴板 ----------
     def copy_to_clipboard(self):
         clipboard = QApplication.clipboard()
         if self.full_translation:
             clipboard.setText(self.full_translation.strip())
+            self.btn_copy.setText("Copied")
+            QTimer.singleShot(900, lambda: self.btn_copy.setText("Copy"))
             log("[Clipboard] copied translation")
-
-    def copy_and_hide(self):
-        self.copy_to_clipboard()
-        self.hide()
 
     # ---------- 关闭行为 ----------
     def closeEvent(self, event):
         if self.force_quit:
             log("[UI] closeEvent force quit")
             self.cancel_current_translation()
-            self.txt_origin.popup.close()
-            self.txt_result.popup.close()
             super().closeEvent(event)
         else:
             log("[UI] closeEvent hide to tray")
