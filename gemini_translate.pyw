@@ -166,6 +166,24 @@ def target_label_for_mode(mode: str) -> str:
     return "AUTO TRANSLATION"
 
 
+def translation_mode_for_target_language(target_lang: str) -> str:
+    if target_lang == "en":
+        return "zh2en"
+    if target_lang == "zh":
+        return "en2zh"
+    return "auto"
+
+
+def translation_label_for_target_language(mode: str, target_lang: str) -> str:
+    if target_lang == "default":
+        return target_label_for_mode(mode)
+    if target_lang == "zh":
+        return "CHINESE TRANSLATION"
+    if target_lang == "en":
+        return "ENGLISH TRANSLATION"
+    return f"{dictionary_language_label(target_lang, target=True).upper()} TRANSLATION"
+
+
 DICTIONARY_SOURCE_LANGUAGES = [
     ("auto", "Auto"),
     ("zh", "中文"),
@@ -293,8 +311,29 @@ class TranslationThread(QThread):
 {text_clean}
 """
 
+        source_lang = dictionary_language_label(self.dictionary_source_lang)
+        target_lang = dictionary_language_label(self.dictionary_target_lang, target=True)
+        uses_custom_language = self.dictionary_source_lang != "auto" or self.dictionary_target_lang != "default"
+
         actual_mode = self.mode
         if actual_mode == "auto":
+            if uses_custom_language:
+                return f"""
+你是一个专业的多语言翻译引擎。请根据用户选择的语言设置翻译下方文本。
+
+语言设置：
+1. 原文语言：{source_lang}。如果是 Auto，请先自动识别原文语言。
+2. 目标语言：{target_lang}。如果是 默认，请按默认规则处理：中文译英文，英文或其他语言译简体中文。
+
+规则：
+1. 保持原文的段落结构：原文有几段，译文就输出几段，段落之间用换行符隔开。
+2. 追求信达雅：根据目标语言的表达习惯自由调整句式，确保译文流畅、自然、专业。
+3. 直接输出译文，不要说明识别到的语言，不要添加前缀或解释。
+
+待翻译文本：
+{text_clean}
+"""
+
             return f"""
 你是一个专业的多语言翻译引擎。请先自动识别下方原文的主要语言，再按默认规则翻译：
 1. 如果原文主要是中文（含简体或繁体），翻译成地道的英文。
@@ -312,7 +351,9 @@ class TranslationThread(QThread):
 
         if actual_mode == "zh2en":
             return f"""
-你是一个专业的多语言翻译引擎。请自动识别下方原文语言，并将其翻译成地道的英文。
+你是一个专业的多语言翻译引擎。请将下方文本翻译成地道的英文。
+原文语言设置：{source_lang}。如果是 Auto，请先自动识别原文语言。
+
 规则：
 1. 保持原文的段落结构：原文有几段，译文就输出几段，段落之间用换行符隔开。
 2. 追求信达雅：根据英文母语者的表达习惯自由调整句式，确保译文流畅、自然、专业。
@@ -323,7 +364,9 @@ class TranslationThread(QThread):
 """
         else:
             return f"""
-你是一个专业的多语言翻译引擎。请自动识别下方原文语言，并将其翻译成地道的简体中文。
+你是一个专业的多语言翻译引擎。请将下方文本翻译成地道的简体中文。
+原文语言设置：{source_lang}。如果是 Auto，请先自动识别原文语言。
+
 规则：
 1. 保持原文的段落结构：原文有几段，译文就输出几段，段落之间用换行符隔开。
 2. 追求信达雅：根据中文表达习惯自由调整句式，确保译文流畅、自然、专业。
@@ -476,8 +519,6 @@ class TranslationWindow(QWidget):
         super().__init__()
 
         self.source_mode = "manual"         # manual / snipdo
-        self.translation_mode = "auto"      # manual mode: auto / en2zh / zh2en / dictionary
-        self.snipdo_translation_override = "auto"   # auto / en2zh / zh2en
         self.content_mode_override = "auto"  # auto / translate / dictionary
         self.dictionary_source_lang = "auto"
         self.dictionary_target_lang = "default"
@@ -661,8 +702,9 @@ class TranslationWindow(QWidget):
         self.btn_content_mode.clicked.connect(self.toggle_content_mode)
         header_layout.addWidget(self.btn_content_mode)
 
-        self.lbl_dictionary_lang = QLabel("词典")
+        self.lbl_dictionary_lang = QLabel("语言")
         self.lbl_dictionary_lang.setStyleSheet("color: #909399; font-size: 11px; font-weight: 600;")
+        self.lbl_dictionary_lang.setToolTip("原文语言与译文/释义语言")
         header_layout.addWidget(self.lbl_dictionary_lang)
 
         combo_style = """
@@ -683,6 +725,7 @@ class TranslationWindow(QWidget):
         self.cbo_dictionary_source = QComboBox()
         self.cbo_dictionary_source.setStyleSheet(combo_style)
         self.cbo_dictionary_source.setFixedWidth(82)
+        self.cbo_dictionary_source.setToolTip("原文语言")
         for value, label in DICTIONARY_SOURCE_LANGUAGES:
             self.cbo_dictionary_source.addItem(label, value)
         self.cbo_dictionary_source.currentIndexChanged.connect(self.on_dictionary_language_changed)
@@ -695,45 +738,11 @@ class TranslationWindow(QWidget):
         self.cbo_dictionary_target = QComboBox()
         self.cbo_dictionary_target.setStyleSheet(combo_style)
         self.cbo_dictionary_target.setFixedWidth(82)
+        self.cbo_dictionary_target.setToolTip("译文/释义语言")
         for value, label in DICTIONARY_TARGET_LANGUAGES:
             self.cbo_dictionary_target.addItem(label, value)
         self.cbo_dictionary_target.currentIndexChanged.connect(self.on_dictionary_language_changed)
         header_layout.addWidget(self.cbo_dictionary_target)
-
-        self.btn_toggle = QPushButton("Auto · 切换为译中文")
-        self.btn_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_toggle.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                color: #409EFF;
-                border: none;
-                font-size: 12px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                color: #66B1FF;
-            }
-        """)
-        self.btn_toggle.clicked.connect(self.toggle_mode)
-        header_layout.addWidget(self.btn_toggle)
-
-        self.btn_snipdo_mode = QPushButton("Auto")
-        self.btn_snipdo_mode.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_snipdo_mode.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                color: #67C23A;
-                border: none;
-                font-size: 12px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                color: #85CE61;
-            }
-        """)
-        self.btn_snipdo_mode.clicked.connect(self.toggle_snipdo_translation_mode)
-        self.btn_snipdo_mode.hide()
-        header_layout.addWidget(self.btn_snipdo_mode)
 
         card_layout.addLayout(header_layout)
 
@@ -926,6 +935,18 @@ class TranslationWindow(QWidget):
         self.lbl_dictionary_arrow.setVisible(visible)
         self.cbo_dictionary_target.setVisible(visible)
 
+    def selected_translation_mode(self) -> str:
+        _source_lang, target_lang = self.current_dictionary_languages()
+        return translation_mode_for_target_language(target_lang)
+
+    def selected_translation_label(self, mode: str) -> str:
+        _source_lang, target_lang = self.current_dictionary_languages()
+        return translation_label_for_target_language(mode, target_lang)
+
+    def selected_origin_label(self) -> str:
+        source_lang, _target_lang = self.current_dictionary_languages()
+        return "ORIGINAL (AUTO DETECT)" if source_lang == "auto" else "ORIGINAL"
+
     def update_content_mode_button_text(self):
         if self.content_mode_override == "dictionary":
             self.btn_content_mode.setText("模式: 词典")
@@ -934,12 +955,8 @@ class TranslationWindow(QWidget):
         else:
             self.btn_content_mode.setText("模式: Auto")
 
-    def resolve_effective_mode(self, text: str, translation_mode: str = None) -> str:
-        direction_mode = translation_mode or (
-            self.snipdo_translation_override if self.source_mode == "snipdo" else self.translation_mode
-        )
-        if direction_mode not in ("auto", "en2zh", "zh2en"):
-            direction_mode = "auto"
+    def resolve_effective_mode(self, text: str) -> str:
+        direction_mode = self.selected_translation_mode()
 
         if self.content_mode_override == "dictionary":
             return "dictionary"
@@ -958,7 +975,7 @@ class TranslationWindow(QWidget):
             self.apply_snipdo_mode_ui()
             return
 
-        effective_mode = self.resolve_effective_mode(total_text, self.snipdo_translation_override)
+        effective_mode = self.resolve_effective_mode(total_text)
         self.cancel_current_translation()
         self.full_translation = ""
         self.setup_result_format()
@@ -985,67 +1002,33 @@ class TranslationWindow(QWidget):
     def on_dictionary_language_changed(self, *_args):
         self.current_dictionary_languages()
 
-        if self.source_mode != "snipdo":
-            return
-
-        total_text = self.pending_snipdo_text.strip() or "\n".join(self.original_paragraphs).strip()
-        if not total_text or self.resolve_effective_mode(total_text, self.snipdo_translation_override) != "dictionary":
-            return
-
-        self.cancel_current_translation()
-        self.full_translation = ""
-        self.setup_result_format()
-        self.btn_copy.setText("Looking up...")
-        self.btn_copy.setEnabled(False)
-        self.start_translation(total_text, "dictionary")
+        if self.source_mode == "snipdo":
+            self.rerun_snipdo_translation()
+        else:
+            self.apply_manual_mode_ui(reset_content=False)
 
     # ---------- 模式切换 ----------
-    def update_snipdo_mode_button_text(self):
-        if self.snipdo_translation_override == "auto":
-            self.btn_snipdo_mode.setText("Auto")
-        elif self.snipdo_translation_override == "en2zh":
-            self.btn_snipdo_mode.setText("译中文")
-        else:
-            self.btn_snipdo_mode.setText("译英文")
 
     def apply_manual_mode_ui(self, reset_content=False):
         self.source_mode = "manual"
 
         self.btn_content_mode.show()
-        self.btn_snipdo_mode.hide()
         self.btn_clear_origin.show()
         self.btn_translate.show()
         self.update_content_mode_button_text()
-        self.set_dictionary_language_controls_visible(self.content_mode_override != "translate")
+        self.set_dictionary_language_controls_visible(True)
         self.txt_origin.setReadOnly(False)
         self.txt_origin.setMaximumHeight(220)
 
         if self.content_mode_override == "dictionary":
-            self.btn_toggle.hide()
             self.lbl_origin.setText("ORIGINAL")
             self.lbl_result.setText("DICTIONARY")
             self.txt_origin.setPlaceholderText("在此输入或粘贴需要查词的单词、短语或术语...\n按 Ctrl + Enter 开始查词")
         else:
-            self.btn_toggle.show()
-
-            if self.translation_mode not in ("auto", "zh2en", "en2zh"):
-                self.translation_mode = "auto"
-
-            if self.translation_mode == "auto":
-                self.lbl_origin.setText("ORIGINAL (AUTO DETECT)")
-                self.lbl_result.setText("AUTO TRANSLATION")
-                self.btn_toggle.setText("Auto · 切换为译中文")
-                self.txt_origin.setPlaceholderText("在此输入或粘贴需要翻译的文本...\n按 Ctrl + Enter 开始翻译")
-            elif self.translation_mode == "en2zh":
-                self.lbl_origin.setText("ORIGINAL (AUTO DETECT)")
-                self.lbl_result.setText("CHINESE TRANSLATION")
-                self.btn_toggle.setText("译中文 · 切换为译英文")
-                self.txt_origin.setPlaceholderText("在此输入或粘贴需要翻译的文本...\n按 Ctrl + Enter 开始翻译")
-            else:
-                self.lbl_origin.setText("ORIGINAL (AUTO DETECT)")
-                self.lbl_result.setText("ENGLISH TRANSLATION")
-                self.btn_toggle.setText("译英文 · 切换为 Auto")
-                self.txt_origin.setPlaceholderText("在此输入或粘贴需要翻译的文本...\n按 Ctrl + Enter 开始翻译")
+            direction_mode = self.selected_translation_mode()
+            self.lbl_origin.setText(self.selected_origin_label())
+            self.lbl_result.setText(self.selected_translation_label(direction_mode))
+            self.txt_origin.setPlaceholderText("在此输入或粘贴需要翻译的文本...\n按 Ctrl + Enter 开始翻译")
 
         if reset_content:
             self.original_paragraphs = []
@@ -1060,76 +1043,24 @@ class TranslationWindow(QWidget):
     def apply_snipdo_mode_ui(self):
         self.source_mode = "snipdo"
 
-        self.btn_toggle.hide()
         self.btn_content_mode.show()
         self.update_content_mode_button_text()
         self.btn_translate.hide()
         self.btn_clear_origin.hide()
-        self.set_dictionary_language_controls_visible(False)
+        self.set_dictionary_language_controls_visible(True)
         self.txt_origin.setReadOnly(True)
         self.txt_origin.setPlaceholderText("")
 
         total_text = "\n".join(self.original_paragraphs).strip()
-        effective_mode = self.resolve_effective_mode(total_text, self.snipdo_translation_override)
+        effective_mode = self.resolve_effective_mode(total_text)
         dict_mode = effective_mode == "dictionary"
 
         if dict_mode:
-            self.btn_snipdo_mode.hide()
-            self.set_dictionary_language_controls_visible(True)
             self.lbl_origin.setText("ORIGINAL")
             self.lbl_result.setText("DICTIONARY")
         else:
-            self.set_dictionary_language_controls_visible(False)
-            self.btn_snipdo_mode.show()
-            self.update_snipdo_mode_button_text()
-
-            self.lbl_origin.setText("ORIGINAL (AUTO DETECT)")
-            self.lbl_result.setText(target_label_for_mode(effective_mode))
-
-    def toggle_mode(self):
-        if self.source_mode != "manual":
-            return
-
-        order = ["auto", "en2zh", "zh2en"]
-        try:
-            idx = order.index(self.translation_mode)
-        except ValueError:
-            idx = 0
-
-        self.translation_mode = order[(idx + 1) % len(order)]
-        self.apply_manual_mode_ui(reset_content=True)
-        self.txt_origin.setFocus()
-
-    def toggle_snipdo_translation_mode(self):
-        if self.source_mode != "snipdo":
-            return
-
-        order = ["auto", "en2zh", "zh2en"]
-        try:
-            idx = order.index(self.snipdo_translation_override)
-        except ValueError:
-            idx = 0
-
-        self.snipdo_translation_override = order[(idx + 1) % len(order)]
-        self.update_snipdo_mode_button_text()
-
-        total_text = self.pending_snipdo_text.strip() or "\n".join(self.original_paragraphs).strip()
-        if not total_text:
-            return
-
-        effective_mode = self.resolve_effective_mode(total_text, self.snipdo_translation_override)
-        if effective_mode == "dictionary":
-            self.apply_snipdo_mode_ui()
-            return
-
-        self.cancel_current_translation()
-        self.full_translation = ""
-        self.setup_result_format()
-        self.btn_copy.setText("Translating...")
-        self.btn_copy.setEnabled(False)
-
-        self.apply_snipdo_mode_ui()
-        self.start_translation(total_text, effective_mode)
+            self.lbl_origin.setText(self.selected_origin_label())
+            self.lbl_result.setText(self.selected_translation_label(effective_mode))
 
     # ---------- 原文显示 ----------
     def populate_original_text(self):
@@ -1190,14 +1121,13 @@ class TranslationWindow(QWidget):
             total_text = "\n".join(self.original_paragraphs).strip()
             self.pending_snipdo_text = total_text
 
-            effective_mode = self.resolve_effective_mode(total_text, self.snipdo_translation_override)
+            effective_mode = self.resolve_effective_mode(total_text)
 
             self.full_translation = ""
             self.btn_copy.setText("Looking up..." if effective_mode == "dictionary" else "Translating...")
             self.btn_copy.setEnabled(False)
 
-            self.translation_mode = effective_mode
-            log(f"[UI] translation_mode={self.translation_mode}, snipdo_override={self.snipdo_translation_override}, total_text={repr(total_text[:300])}")
+            log(f"[UI] effective_mode={effective_mode}, total_text={repr(total_text[:300])}")
 
             self.apply_snipdo_mode_ui()
             self.adjust_window_height()
@@ -1218,7 +1148,7 @@ class TranslationWindow(QWidget):
         if not text_to_translate:
             return
 
-        effective_mode = self.resolve_effective_mode(text_to_translate, self.translation_mode)
+        effective_mode = self.resolve_effective_mode(text_to_translate)
         dictionary_source_lang, dictionary_target_lang = self.current_dictionary_languages()
 
         self.cancel_current_translation()
@@ -1229,11 +1159,13 @@ class TranslationWindow(QWidget):
         self.adjust_window_height()
 
         if effective_mode == "dictionary":
+            self.set_dictionary_language_controls_visible(True)
             self.lbl_origin.setText("ORIGINAL")
             self.lbl_result.setText("DICTIONARY")
         else:
-            self.lbl_origin.setText("ORIGINAL (AUTO DETECT)")
-            self.lbl_result.setText(target_label_for_mode(effective_mode))
+            self.set_dictionary_language_controls_visible(True)
+            self.lbl_origin.setText(self.selected_origin_label())
+            self.lbl_result.setText(self.selected_translation_label(effective_mode))
 
         self.btn_translate.setEnabled(False)
         self.btn_translate.setText("Looking up..." if effective_mode == "dictionary" else "Translating...")
@@ -1272,12 +1204,8 @@ class TranslationWindow(QWidget):
         cursor = self.txt_result.textCursor()
         cursor.insertText(" ▍", self.result_char_fmt)
 
-        if mode == "dictionary":
-            if dictionary_source_lang is None or dictionary_target_lang is None:
-                dictionary_source_lang, dictionary_target_lang = self.current_dictionary_languages()
-        else:
-            dictionary_source_lang = "auto"
-            dictionary_target_lang = "default"
+        if dictionary_source_lang is None or dictionary_target_lang is None:
+            dictionary_source_lang, dictionary_target_lang = self.current_dictionary_languages()
 
         self.trans_thread = TranslationThread(
             text,
