@@ -11,7 +11,7 @@ from openai import OpenAI
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTextEdit,
     QPushButton, QLabel, QFrame, QGraphicsDropShadowEffect,
-    QHBoxLayout, QSystemTrayIcon, QMenu
+    QHBoxLayout, QSystemTrayIcon, QMenu, QInputDialog, QLineEdit
 )
 from PyQt6.QtGui import (
     QColor, QScreen, QTextCursor, QTextCharFormat,
@@ -24,8 +24,7 @@ warnings.filterwarnings("ignore")
 
 # ================= 配置区域 =================
 GPTSAPI_API_KEY = os.getenv("GPTSAPI_API_KEY", "").strip()
-if not GPTSAPI_API_KEY:
-    raise RuntimeError("未设置 GPTSAPI_API_KEY 环境变量")
+client = None
 
 # PROXY_URL = 'http://127.0.0.1:7897'
 # os.environ['HTTPS_PROXY'] = PROXY_URL
@@ -34,10 +33,35 @@ if not GPTSAPI_API_KEY:
 MODEL_NAME = 'gpt-4o-mini'
 SERVER_NAME = "gptsapi_translate_snipdo_single_instance_v1"
 
-client = OpenAI(
-    api_key=GPTSAPI_API_KEY,
-    base_url="https://api.gptsapi.net/v1"
-)
+
+def is_placeholder_api_key(api_key: str) -> bool:
+    api_key = (api_key or "").strip().lower()
+    return (
+        not api_key
+        or "填这里" in api_key
+        or "your_" in api_key
+        or "your-" in api_key
+        or "api_key" in api_key
+    )
+
+
+def configure_api_client(api_key: str) -> bool:
+    global GPTSAPI_API_KEY, client
+
+    api_key = (api_key or "").strip()
+    if is_placeholder_api_key(api_key):
+        return False
+
+    GPTSAPI_API_KEY = api_key
+    os.environ["GPTSAPI_API_KEY"] = api_key
+    client = OpenAI(
+        api_key=GPTSAPI_API_KEY,
+        base_url="https://api.gptsapi.net/v1"
+    )
+    return True
+
+
+configure_api_client(GPTSAPI_API_KEY)
 # ===========================================
 
 
@@ -263,6 +287,9 @@ class TranslationThread(QThread):
 
     def run(self):
         try:
+            if client is None:
+                raise RuntimeError("未设置 GPTSAPI_API_KEY")
+
             prompt = self.build_prompt()
             log(f"[TranslateThread] start, mode={self.mode}, text={repr(self.text[:200])}")
 
@@ -640,6 +667,27 @@ class TranslationWindow(QWidget):
         btn_layout.setSpacing(10)
         btn_layout.addStretch(1)
 
+        self.btn_clear_origin = QPushButton("Clear")
+        self.btn_clear_origin.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_clear_origin.clicked.connect(self.clear_manual_origin)
+        self.btn_clear_origin.setStyleSheet("""
+            QPushButton {
+                background-color: #F2F3F5;
+                color: #606266;
+                border: 1px solid #DCDFE6;
+                border-radius: 6px;
+                padding: 6px 16px;
+                font-family: 'Segoe UI', 'Microsoft YaHei UI';
+                font-weight: 600;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #E4E7ED;
+                color: #303133;
+            }
+        """)
+        btn_layout.addWidget(self.btn_clear_origin)
+
         self.btn_translate = QPushButton("Translate (Ctrl+Enter)")
         self.btn_translate.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_translate.clicked.connect(self.start_manual_translation)
@@ -731,6 +779,33 @@ class TranslationWindow(QWidget):
         self.result_block_fmt.setLineHeight(150, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
         self.result_block_fmt.setBottomMargin(12)
 
+    def ensure_api_key(self) -> bool:
+        if client is not None:
+            return True
+
+        self.force_show_window()
+        api_key, ok = QInputDialog.getText(
+            self,
+            "输入 API Key",
+            "未检测到 GPTSAPI_API_KEY，请手动输入：",
+            QLineEdit.EchoMode.Password
+        )
+
+        if ok and configure_api_client(api_key):
+            log("[UI] API key configured from manual input")
+            return True
+
+        log("[UI] API key input cancelled or empty")
+        return False
+
+    def clear_manual_origin(self):
+        if self.source_mode != "manual":
+            return
+
+        self.txt_origin.clear()
+        self.original_paragraphs = []
+        self.txt_origin.setFocus()
+
     # ---------- 模式切换 ----------
     def update_snipdo_mode_button_text(self):
         if self.snipdo_translation_override == "auto":
@@ -745,6 +820,7 @@ class TranslationWindow(QWidget):
 
         self.btn_toggle.show()
         self.btn_snipdo_mode.hide()
+        self.btn_clear_origin.show()
         self.btn_translate.show()
         self.txt_origin.setReadOnly(False)
         self.txt_origin.setMaximumHeight(220)
@@ -783,6 +859,7 @@ class TranslationWindow(QWidget):
 
         self.btn_toggle.hide()
         self.btn_translate.hide()
+        self.btn_clear_origin.hide()
         self.txt_origin.setReadOnly(True)
         self.txt_origin.setPlaceholderText("")
 
@@ -964,6 +1041,20 @@ class TranslationWindow(QWidget):
 
     def start_translation(self, text: str, mode: str):
         log(f"[UI] start_translation, mode={mode}, text={repr(text[:300])}")
+
+        if not self.ensure_api_key():
+            cursor = self.txt_result.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            cursor.insertText("[未设置 API Key，已取消翻译]", self.result_char_fmt)
+
+            if self.source_mode == "manual":
+                self.btn_translate.setEnabled(True)
+                self.btn_translate.setText("Translate (Ctrl+Enter)")
+
+            self.btn_copy.setText("Copy")
+            self.btn_copy.setEnabled(False)
+            return
+
         cursor = self.txt_result.textCursor()
         cursor.insertText(" ▍", self.result_char_fmt)
 
