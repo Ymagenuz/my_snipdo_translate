@@ -918,8 +918,15 @@ class TranslationWindow(QWidget):
         if self.source_mode != "manual":
             return
 
+        self.cancel_current_translation()
         self.txt_origin.clear()
         self.original_paragraphs = []
+        self.full_translation = ""
+        self.setup_result_format()
+        self.btn_translate.setEnabled(True)
+        self.btn_translate.setText("Translate (Ctrl+Enter)")
+        self.btn_copy.setText("Copy")
+        self.btn_copy.setEnabled(False)
         self.txt_origin.setFocus()
 
     def current_dictionary_languages(self):
