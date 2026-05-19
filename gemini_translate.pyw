@@ -33,7 +33,7 @@ client = None
 # os.environ['HTTPS_PROXY'] = PROXY_URL
 # os.environ['HTTP_PROXY'] = PROXY_URL
 
-MODEL_NAME = 'gpt-4o-mini'
+MODEL_NAME = 'gpt-5.4-nano'
 SERVER_NAME = "gptsapi_translate_snipdo_single_instance_v1"
 OCR_IMAGE_REQUEST_PREFIX = "__GPTSAPI_OCR_IMAGE__:"
 
@@ -835,10 +835,24 @@ class TranslationWindow(QWidget):
         self.btn_content_mode.clicked.connect(self.toggle_content_mode)
         header_layout.addWidget(self.btn_content_mode)
 
+        self.lbl_model_name = QLabel(f"Model: {MODEL_NAME}")
+        self.lbl_model_name.setStyleSheet("""
+            QLabel {
+                background-color: #F5F7FA;
+                color: #909399;
+                border: 1px solid #E4E7ED;
+                border-radius: 4px;
+                padding: 2px 6px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+        """)
+        self.lbl_model_name.setToolTip("当前使用的模型")
+        header_layout.addWidget(self.lbl_model_name)
+
         self.lbl_dictionary_lang = QLabel("语言")
         self.lbl_dictionary_lang.setStyleSheet("color: #909399; font-size: 11px; font-weight: 600;")
         self.lbl_dictionary_lang.setToolTip("原文语言与译文/释义语言")
-        header_layout.addWidget(self.lbl_dictionary_lang)
 
         combo_style = """
             QComboBox {
@@ -862,11 +876,9 @@ class TranslationWindow(QWidget):
         for value, label in DICTIONARY_SOURCE_LANGUAGES:
             self.cbo_dictionary_source.addItem(label, value)
         self.cbo_dictionary_source.currentIndexChanged.connect(self.on_dictionary_language_changed)
-        header_layout.addWidget(self.cbo_dictionary_source)
 
         self.lbl_dictionary_arrow = QLabel("→")
         self.lbl_dictionary_arrow.setStyleSheet("color: #C0C4CC; font-size: 12px;")
-        header_layout.addWidget(self.lbl_dictionary_arrow)
 
         self.cbo_dictionary_target = QComboBox()
         self.cbo_dictionary_target.setStyleSheet(combo_style)
@@ -875,7 +887,6 @@ class TranslationWindow(QWidget):
         for value, label in DICTIONARY_TARGET_LANGUAGES:
             self.cbo_dictionary_target.addItem(label, value)
         self.cbo_dictionary_target.currentIndexChanged.connect(self.on_dictionary_language_changed)
-        header_layout.addWidget(self.cbo_dictionary_target)
 
         card_layout.addLayout(header_layout)
 
@@ -895,14 +906,26 @@ class TranslationWindow(QWidget):
         """)
         card_layout.addWidget(self.txt_origin)
 
+        result_header_layout = QHBoxLayout()
+        result_header_layout.setContentsMargins(0, 2, 0, 0)
+        result_header_layout.setSpacing(8)
+
+        self.lbl_result = QLabel("AUTO TRANSLATION")
+        self.lbl_result.setStyleSheet("color: #8E44AD; font-size: 10px; font-weight: 700; letter-spacing: 1px; margin-top: 2px;")
+        result_header_layout.addWidget(self.lbl_result)
+
+        result_header_layout.addStretch()
+        result_header_layout.addWidget(self.lbl_dictionary_lang)
+        result_header_layout.addWidget(self.cbo_dictionary_source)
+        result_header_layout.addWidget(self.lbl_dictionary_arrow)
+        result_header_layout.addWidget(self.cbo_dictionary_target)
+
+        card_layout.addLayout(result_header_layout)
+
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         line.setStyleSheet("background-color: transparent; border-top: 1px dashed #E0E0E0; max-height: 1px; margin: 4px 0;")
         card_layout.addWidget(line)
-
-        self.lbl_result = QLabel("AUTO TRANSLATION")
-        self.lbl_result.setStyleSheet("color: #8E44AD; font-size: 10px; font-weight: 700; letter-spacing: 1px; margin-top: 2px;")
-        card_layout.addWidget(self.lbl_result)
 
         self.txt_result = InteractiveTextEdit()
         self.txt_result.setReadOnly(True)
