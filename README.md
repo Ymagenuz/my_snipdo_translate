@@ -22,10 +22,9 @@
 │   ├── snipdo_gemini.txt                 # SnipDo 调用主程序的 PowerShell 示例
 │   └── snipdo_google.txt                 # 旧版 Google 翻译脚本调用示例
 ├── snipdo_script_logo/                   # 托盘和 SnipDo 图标资源
-├── legacy/                               # 旧版脚本
-└── env/
-    ├── environment.txt                   # 依赖记录
-    └── test_gptsapi.py                   # GPTSAPI 连通性测试
+├── diagnostics/                          # 手动诊断脚本
+│   └── test_gptsapi.py                   # GPTSAPI 连通性测试
+└── legacy/                               # 旧版脚本
 ```
 
 ## 环境要求
@@ -37,7 +36,8 @@
 安装依赖：
 
 ```powershell
-pip install PyQt6 openai
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 ## API Key 配置
@@ -52,7 +52,7 @@ pip install PyQt6 openai
 
 ```powershell
 $env:GPTSAPI_API_KEY = "你的 API Key"
-pythonw.exe .\gemini_translate.pyw
+.\.venv\Scripts\pythonw.exe .\gemini_translate.pyw
 ```
 
 ## 直接运行
@@ -60,31 +60,31 @@ pythonw.exe .\gemini_translate.pyw
 启动主窗口：
 
 ```powershell
-pythonw.exe .\gemini_translate.pyw
+.\.venv\Scripts\pythonw.exe .\gemini_translate.pyw
 ```
 
 传入待翻译文本：
 
 ```powershell
-pythonw.exe .\gemini_translate.pyw "Hello, world."
+.\.venv\Scripts\pythonw.exe .\gemini_translate.pyw "Hello, world."
 ```
 
 从 UTF-8 文本文件读取输入：
 
 ```powershell
-pythonw.exe .\gemini_translate.pyw --file "C:\path\to\input.txt"
+.\.venv\Scripts\pythonw.exe .\gemini_translate.pyw --file "C:\path\to\input.txt"
 ```
 
 对图片文件做 OCR 后翻译：
 
 ```powershell
-pythonw.exe .\gemini_translate.pyw --image "C:\path\to\image.png"
+.\.venv\Scripts\pythonw.exe .\gemini_translate.pyw --image "C:\path\to\image.png"
 ```
 
 如果图片是临时文件，希望 OCR 读取后删除：
 
 ```powershell
-pythonw.exe .\gemini_translate.pyw --image "C:\path\to\image.png" --delete-after
+.\.venv\Scripts\pythonw.exe .\gemini_translate.pyw --image "C:\path\to\image.png" --delete-after
 ```
 
 ## SnipDo 集成
@@ -93,7 +93,7 @@ pythonw.exe .\gemini_translate.pyw --image "C:\path\to\image.png" --delete-after
 2. 按本机环境修改以下变量：
 
 ```powershell
-$pythonExe = "C:\Users\你的用户名\AppData\Local\Programs\Python\Python311\pythonw.exe"
+$pythonExe = "D:\test\my_snipdo_translate\.venv\Scripts\pythonw.exe"
 $scriptPath = "D:\test\my_snipdo_translate\gemini_translate.pyw"
 $apiKey = ""
 ```

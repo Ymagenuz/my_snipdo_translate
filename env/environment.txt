@@ -1,3 +1,0 @@
-Python:
-pip install PyQt6
-pip install openai

@@ -1,4 +1,4 @@
-$pythonExe = "C:\Users\EDY\AppData\Local\Programs\Python\Python311\pythonw.exe"
+$pythonExe = "D:\test\my_snipdo_translate\.venv\Scripts\pythonw.exe"
 $scriptPath = "D:\test\my_snipdo_translate\gemini_translate.pyw"
 
 # ===== 在这里填写你的 API Key =====
