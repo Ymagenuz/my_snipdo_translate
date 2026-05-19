@@ -4,6 +4,8 @@ import re
 import warnings
 import time
 import ctypes
+import base64
+import mimetypes
 from urllib.parse import unquote
 
 from openai import OpenAI
@@ -18,7 +20,7 @@ from PyQt6.QtGui import (
     QColor, QScreen, QTextCursor, QTextCharFormat,
     QTextBlockFormat, QFont, QAction, QIcon
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QTimer, QByteArray, QBuffer, QIODevice
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
 warnings.filterwarnings("ignore")
@@ -33,6 +35,7 @@ client = None
 
 MODEL_NAME = 'gpt-4o-mini'
 SERVER_NAME = "gptsapi_translate_snipdo_single_instance_v1"
+OCR_IMAGE_REQUEST_PREFIX = "__GPTSAPI_OCR_IMAGE__:"
 
 
 def is_placeholder_api_key(api_key: str) -> bool:
@@ -106,6 +109,61 @@ def win32_force_foreground(hwnd: int) -> bool:
 # ================= 工具函数 =================
 def normalize_newlines(text: str):
     return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def bytes_to_data_url(image_bytes: bytes, mime_type: str = "image/png") -> str:
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def image_file_to_data_url(file_path: str) -> str:
+    mime_type, _encoding = mimetypes.guess_type(file_path)
+    if not mime_type or not mime_type.startswith("image/"):
+        mime_type = "image/png"
+
+    with open(file_path, "rb") as f:
+        return bytes_to_data_url(f.read(), mime_type)
+
+
+def clipboard_image_to_data_url() -> str:
+    clipboard = QApplication.clipboard()
+    image = clipboard.image()
+    if image.isNull():
+        raise RuntimeError("剪贴板中没有图片")
+
+    byte_array = QByteArray()
+    buffer = QBuffer(byte_array)
+    if not buffer.open(QIODevice.OpenModeFlag.WriteOnly):
+        raise RuntimeError("无法读取剪贴板图片")
+
+    try:
+        if not image.save(buffer, "PNG"):
+            raise RuntimeError("无法把剪贴板图片转换为 PNG")
+    finally:
+        buffer.close()
+
+    return bytes_to_data_url(bytes(byte_array), "image/png")
+
+
+def build_ocr_image_request(file_path: str, delete_after: bool = False) -> str:
+    delete_flag = "1" if delete_after else "0"
+    return f"{OCR_IMAGE_REQUEST_PREFIX}{delete_flag}:{file_path}"
+
+
+def parse_ocr_image_request(raw_text: str):
+    if not raw_text.startswith(OCR_IMAGE_REQUEST_PREFIX):
+        return None
+
+    payload = raw_text[len(OCR_IMAGE_REQUEST_PREFIX):]
+    delete_after = False
+
+    if len(payload) >= 2 and payload[0] in ("0", "1") and payload[1] == ":":
+        delete_after = payload[0] == "1"
+        file_path = payload[2:]
+    else:
+        file_path = payload
+
+    return file_path.strip(), delete_after
 
 
 def normalize_input_text(raw_text: str):
@@ -413,7 +471,68 @@ class TranslationThread(QThread):
             self.finished.emit(False, str(e))
 
 
-# ================= 2. 统一文本框：支持 Ctrl+Enter =================
+# ================= 2. OCR 线程 =================
+class OcrThread(QThread):
+    finished = pyqtSignal(bool, str, str)  # success, extracted_text, error_message
+
+    def __init__(self, image_data_url: str):
+        super().__init__()
+        self.image_data_url = image_data_url
+        self._stop_requested = False
+
+    def request_stop(self):
+        self._stop_requested = True
+
+    def run(self):
+        try:
+            if client is None:
+                raise RuntimeError("未设置 GPTSAPI_API_KEY")
+
+            log("[OcrThread] start")
+            response = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    "请对这张图片进行 OCR，只提取图片中可见的文字。\n"
+                                    "要求：\n"
+                                    "1. 保留原有段落、换行和阅读顺序。\n"
+                                    "2. 不要翻译、不要解释、不要添加标题或 Markdown。\n"
+                                    "3. 如果图片中没有可识别文字，只输出 NO_TEXT_FOUND。"
+                                ),
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": self.image_data_url},
+                            },
+                        ],
+                    }
+                ],
+                stream=False,
+            )
+
+            if self._stop_requested:
+                log("[OcrThread] cancelled")
+                self.finished.emit(False, "", "已取消")
+                return
+
+            content = response.choices[0].message.content or ""
+            text = normalize_newlines(content).strip()
+            if text.strip().upper() == "NO_TEXT_FOUND":
+                raise RuntimeError("未识别到文字")
+
+            log(f"[OcrThread] finished success, text={repr(text[:200])}")
+            self.finished.emit(True, text, "")
+        except Exception as e:
+            log(f"[OcrThread] error: {e}")
+            self.finished.emit(False, "", str(e))
+
+
+# ================= 3. 统一文本框：支持 Ctrl+Enter =================
 class InteractiveTextEdit(QTextEdit):
     submit_signal = pyqtSignal()
 
@@ -527,6 +646,8 @@ class TranslationWindow(QWidget):
         self.full_translation = ""
         self.force_quit = False
         self.trans_thread = None
+        self.ocr_thread = None
+        self.ocr_result_source_mode = "manual"
 
         self.init_ui()
         self.setup_result_format()
@@ -554,6 +675,10 @@ class TranslationWindow(QWidget):
         show_action.triggered.connect(self.show_manual_window)
         tray_menu.addAction(show_action)
 
+        ocr_action = QAction("OCR 剪贴板图片", self)
+        ocr_action.triggered.connect(self.start_clipboard_ocr)
+        tray_menu.addAction(ocr_action)
+
         tray_menu.addSeparator()
 
         quit_action = QAction("彻底退出", self)
@@ -574,6 +699,7 @@ class TranslationWindow(QWidget):
 
     def show_manual_window(self):
         log("[UI] show_manual_window called")
+        self.cancel_current_ocr()
         self.cancel_current_translation()
         self.source_mode = "manual"
         self.apply_manual_mode_ui(reset_content=True)
@@ -584,6 +710,7 @@ class TranslationWindow(QWidget):
     def quit_app(self):
         log("[App] quit_app called")
         self.force_quit = True
+        self.cancel_current_ocr()
         self.cancel_current_translation()
         self.tray_icon.hide()
         QApplication.quit()
@@ -593,6 +720,12 @@ class TranslationWindow(QWidget):
             log("[UI] cancel_current_translation")
             self.trans_thread.request_stop()
             self.trans_thread.wait(800)
+
+    def cancel_current_ocr(self):
+        if self.ocr_thread and self.ocr_thread.isRunning():
+            log("[UI] cancel_current_ocr")
+            self.ocr_thread.request_stop()
+            self.ocr_thread.wait(800)
 
     def force_show_window(self):
         """
@@ -804,6 +937,32 @@ class TranslationWindow(QWidget):
         """)
         btn_layout.addWidget(self.btn_clear_origin)
 
+        self.btn_ocr_clipboard = QPushButton("OCR")
+        self.btn_ocr_clipboard.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_ocr_clipboard.setToolTip("识别剪贴板图片文字，并自动翻译")
+        self.btn_ocr_clipboard.clicked.connect(self.start_clipboard_ocr)
+        self.btn_ocr_clipboard.setStyleSheet("""
+            QPushButton {
+                background-color: #F2F3F5;
+                color: #606266;
+                border: 1px solid #DCDFE6;
+                border-radius: 6px;
+                padding: 6px 14px;
+                font-family: 'Segoe UI', 'Microsoft YaHei UI';
+                font-weight: 600;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #E4E7ED;
+                color: #303133;
+            }
+            QPushButton:disabled {
+                background-color: #F2F3F5;
+                color: #C0C4CC;
+            }
+        """)
+        btn_layout.addWidget(self.btn_ocr_clipboard)
+
         self.btn_translate = QPushButton("Translate (Ctrl+Enter)")
         self.btn_translate.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_translate.clicked.connect(self.start_manual_translation)
@@ -914,6 +1073,115 @@ class TranslationWindow(QWidget):
         log("[UI] API key input cancelled or empty")
         return False
 
+    def set_result_message(self, message: str):
+        self.setup_result_format()
+        cursor = self.txt_result.textCursor()
+        cursor.insertText(message, self.result_char_fmt)
+
+    def start_clipboard_ocr(self):
+        try:
+            log("[UI] start_clipboard_ocr")
+            self.cancel_current_translation()
+            self.source_mode = "manual"
+            self.apply_manual_mode_ui(reset_content=True)
+            self.force_show_window()
+
+            image_data_url = clipboard_image_to_data_url()
+            self.start_ocr(image_data_url, result_source_mode="manual")
+        except Exception as e:
+            log(f"[UI] start_clipboard_ocr error: {e}")
+            self.set_result_message(f"[OCR 出错: {e}]")
+
+    def start_image_file_ocr(self, file_path: str, delete_after: bool = False):
+        log(f"[UI] start_image_file_ocr file={file_path}, delete_after={delete_after}")
+
+        try:
+            image_data_url = image_file_to_data_url(file_path)
+        except Exception as e:
+            log(f"[UI] read OCR image error: {e}")
+            self.force_show_window()
+            self.set_result_message(f"[OCR 出错: 无法读取图片 {e}]")
+            return
+        finally:
+            if delete_after:
+                try:
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                except Exception as e:
+                    log(f"[UI] remove OCR image error: {e}")
+
+        self.start_ocr(image_data_url, result_source_mode="snipdo")
+
+    def start_ocr(self, image_data_url: str, result_source_mode: str):
+        if self.ocr_thread and self.ocr_thread.isRunning():
+            log("[UI] OCR already running")
+            return
+
+        if not self.ensure_api_key():
+            self.set_result_message("[未设置 API Key，已取消 OCR]")
+            return
+
+        self.cancel_current_translation()
+        self.ocr_result_source_mode = result_source_mode
+        self.full_translation = ""
+        self.original_paragraphs = []
+        self.pending_snipdo_text = ""
+
+        self.setup_result_format()
+        self.txt_origin.clear()
+        self.txt_origin.setReadOnly(True)
+        self.lbl_origin.setText("OCR IMAGE")
+        self.lbl_result.setText("OCR")
+        self.btn_copy.setText("OCR...")
+        self.btn_copy.setEnabled(False)
+
+        if self.source_mode == "manual":
+            self.btn_clear_origin.setEnabled(False)
+            self.btn_translate.setEnabled(False)
+            self.btn_translate.setText("OCR...")
+            self.btn_ocr_clipboard.setEnabled(False)
+
+        cursor = self.txt_result.textCursor()
+        cursor.insertText("正在识别图片文字...", self.result_char_fmt)
+        self.resize(560, 520)
+        self.force_show_window()
+
+        self.ocr_thread = OcrThread(image_data_url)
+        self.ocr_thread.finished.connect(self.on_ocr_finished)
+        self.ocr_thread.start()
+
+    def on_ocr_finished(self, success: bool, extracted_text: str, error_msg: str):
+        log(f"[UI] on_ocr_finished success={success}, error={error_msg}")
+
+        if self.source_mode == "manual":
+            self.btn_clear_origin.setEnabled(True)
+            self.btn_translate.setEnabled(True)
+            self.btn_translate.setText("Translate (Ctrl+Enter)")
+            self.btn_ocr_clipboard.setEnabled(True)
+
+        self.btn_copy.setText("Copy")
+        self.btn_copy.setEnabled(False)
+
+        if not success:
+            if error_msg != "已取消":
+                self.set_result_message(f"[OCR 出错: {error_msg}]")
+            return
+
+        ocr_text = normalize_newlines(extracted_text).strip()
+        if not ocr_text:
+            self.set_result_message("[OCR 出错: 未识别到文字]")
+            return
+
+        if self.ocr_result_source_mode == "snipdo":
+            QTimer.singleShot(60, lambda text=ocr_text: self.handle_new_request(text))
+            return
+
+        self.source_mode = "manual"
+        self.apply_manual_mode_ui(reset_content=True)
+        self.txt_origin.setPlainText(ocr_text)
+        self.force_show_window()
+        QTimer.singleShot(60, self.start_manual_translation)
+
     def clear_manual_origin(self):
         if self.source_mode != "manual":
             return
@@ -1021,6 +1289,8 @@ class TranslationWindow(QWidget):
 
         self.btn_content_mode.show()
         self.btn_clear_origin.show()
+        self.btn_ocr_clipboard.show()
+        self.btn_ocr_clipboard.setEnabled(True)
         self.btn_translate.show()
         self.update_content_mode_button_text()
         self.set_dictionary_language_controls_visible(True)
@@ -1054,6 +1324,7 @@ class TranslationWindow(QWidget):
         self.update_content_mode_button_text()
         self.btn_translate.hide()
         self.btn_clear_origin.hide()
+        self.btn_ocr_clipboard.hide()
         self.set_dictionary_language_controls_visible(True)
         self.txt_origin.setReadOnly(True)
         self.txt_origin.setPlaceholderText("")
@@ -1116,6 +1387,13 @@ class TranslationWindow(QWidget):
     def handle_new_request(self, raw_text):
         try:
             log(f"[UI] handle_new_request received: {repr(raw_text[:300])}")
+            ocr_request = parse_ocr_image_request(raw_text)
+            if ocr_request:
+                file_path, delete_after = ocr_request
+                self.start_image_file_ocr(file_path, delete_after)
+                return
+
+            self.cancel_current_ocr()
             self.cancel_current_translation()
 
             self.original_paragraphs = normalize_input_text(raw_text)
@@ -1286,7 +1564,11 @@ class TranslationWindow(QWidget):
 def main():
     raw_text = ""
 
-    if len(sys.argv) > 2 and sys.argv[1] == "--file":
+    if len(sys.argv) > 2 and sys.argv[1] == "--image":
+        image_path = sys.argv[2]
+        delete_after = "--delete-after" in sys.argv[3:]
+        raw_text = build_ocr_image_request(image_path, delete_after)
+    elif len(sys.argv) > 2 and sys.argv[1] == "--file":
         file_path = sys.argv[2]
         try:
             with open(file_path, "r", encoding="utf-8") as f:
