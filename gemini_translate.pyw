@@ -33,7 +33,8 @@ client = None
 # os.environ['HTTPS_PROXY'] = PROXY_URL
 # os.environ['HTTP_PROXY'] = PROXY_URL
 
-MODEL_NAME = 'gpt-5.4-nano'
+MODEL_NAME = 'gpt-4o-mini'
+REQUEST_TIMEOUT_SECONDS = 15.0
 SERVER_NAME = "gptsapi_translate_snipdo_single_instance_v1"
 OCR_IMAGE_REQUEST_PREFIX = "__GPTSAPI_OCR_IMAGE__:"
 
@@ -60,7 +61,9 @@ def configure_api_client(api_key: str) -> bool:
     os.environ["GPTSAPI_API_KEY"] = api_key
     client = OpenAI(
         api_key=GPTSAPI_API_KEY,
-        base_url="https://api.gptsapi.net/v1"
+        base_url="https://api.gptsapi.net/v1",
+        timeout=REQUEST_TIMEOUT_SECONDS,
+        max_retries=1,
     )
     return True
 
