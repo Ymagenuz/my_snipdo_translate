@@ -1485,12 +1485,12 @@ class TranslationWindow(QWidget):
         self.btn_align_selection.adjustSize()
 
         rect = source_widget.cursorRect(cursor)
-        global_pos = source_widget.viewport().mapToGlobal(rect.bottomRight())
+        global_pos = source_widget.viewport().mapToGlobal(rect.topRight())
         pos = self.card_frame.mapFromGlobal(global_pos)
 
         margin = 6
         x = min(max(margin, pos.x() + 8), max(margin, self.card_frame.width() - self.btn_align_selection.width() - margin))
-        y = min(max(margin, pos.y() + 8), max(margin, self.card_frame.height() - self.btn_align_selection.height() - margin))
+        y = min(max(margin, pos.y() - self.btn_align_selection.height() - 8), max(margin, self.card_frame.height() - self.btn_align_selection.height() - margin))
 
         self.btn_align_selection.move(x, y)
         self.btn_align_selection.show()
