@@ -1,6 +1,7 @@
 import sys
 import os
 import re
+import json
 import warnings
 import time
 import ctypes
@@ -33,7 +34,7 @@ client = None
 # os.environ['HTTPS_PROXY'] = PROXY_URL
 # os.environ['HTTP_PROXY'] = PROXY_URL
 
-MODEL_NAME = 'gpt-4o-mini'
+MODEL_NAME = 'gpt-5.4-nano'
 REQUEST_TIMEOUT_SECONDS = 15.0
 SERVER_NAME = "gptsapi_translate_snipdo_single_instance_v1"
 OCR_IMAGE_REQUEST_PREFIX = "__GPTSAPI_OCR_IMAGE__:"
@@ -387,9 +388,8 @@ class TranslationThread(QThread):
 2. 目标语言：{target_lang}。如果是 默认，请按默认规则处理：中文译英文，英文或其他语言译简体中文。
 
 规则：
-1. 保持原文的段落结构：原文有几段，译文就输出几段，段落之间用换行符隔开。
-2. 追求信达雅：根据目标语言的表达习惯自由调整句式，确保译文流畅、自然、专业。
-3. 直接输出译文，不要说明识别到的语言，不要添加前缀或解释。
+1. 追求信达雅：根据目标语言的表达习惯自由调整句式、段落和语序，确保译文流畅、自然、专业。
+2. 直接输出译文，不要说明识别到的语言，不要添加前缀或解释。
 
 待翻译文本：
 {text_clean}
@@ -402,9 +402,8 @@ class TranslationThread(QThread):
 3. 如果原文是其他语言，默认翻译成地道的简体中文；专有名词、代码、型号和品牌名按语境保留或自然处理。
 
 规则：
-1. 保持原文的段落结构：原文有几段，译文就输出几段，段落之间用换行符隔开。
-2. 追求信达雅：根据目标语言的表达习惯自由调整句式，确保译文流畅、自然、专业。
-3. 直接输出译文，不要说明识别到的语言，不要添加前缀或解释。
+1. 追求信达雅：根据目标语言的表达习惯自由调整句式、段落和语序，确保译文流畅、自然、专业。
+2. 直接输出译文，不要说明识别到的语言，不要添加前缀或解释。
 
 待翻译文本：
 {text_clean}
@@ -416,9 +415,8 @@ class TranslationThread(QThread):
 原文语言设置：{source_lang}。如果是 Auto，请先自动识别原文语言。
 
 规则：
-1. 保持原文的段落结构：原文有几段，译文就输出几段，段落之间用换行符隔开。
-2. 追求信达雅：根据英文母语者的表达习惯自由调整句式，确保译文流畅、自然、专业。
-3. 直接输出译文，不要任何解释，不要加前缀。
+1. 追求信达雅：根据英文母语者的表达习惯自由调整句式、段落和语序，确保译文流畅、自然、专业。
+2. 直接输出译文，不要任何解释，不要加前缀。
 
 待翻译文本：
 {text_clean}
@@ -429,9 +427,8 @@ class TranslationThread(QThread):
 原文语言设置：{source_lang}。如果是 Auto，请先自动识别原文语言。
 
 规则：
-1. 保持原文的段落结构：原文有几段，译文就输出几段，段落之间用换行符隔开。
-2. 追求信达雅：根据中文表达习惯自由调整句式，确保译文流畅、自然、专业。
-3. 直接输出译文，不要任何解释，不要加前缀。
+1. 追求信达雅：根据中文表达习惯自由调整句式、段落和语序，确保译文流畅、自然、专业。
+2. 直接输出译文，不要任何解释，不要加前缀。
 
 待翻译文本：
 {text_clean}
@@ -472,6 +469,91 @@ class TranslationThread(QThread):
         except Exception as e:
             log(f"[TranslateThread] error: {e}")
             self.finished.emit(False, str(e))
+
+
+class AlignmentThread(QThread):
+    finished = pyqtSignal(bool, str, str)  # success, matched_text, error_message
+
+    def __init__(self, source_text: str, target_text: str, selected_text: str):
+        super().__init__()
+        self.source_text = source_text
+        self.target_text = target_text
+        self.selected_text = selected_text
+        self._stop_requested = False
+
+    def request_stop(self):
+        self._stop_requested = True
+
+    def build_prompt(self) -> str:
+        payload = {
+            "source_text": self.source_text,
+            "target_text": self.target_text,
+            "selected_text": self.selected_text,
+        }
+        return f"""
+你是一个双语文本对齐助手。用户会在 source_text 中选中一段文本，请在 target_text 中找出语义上最贴切对应的片段。
+
+要求：
+1. 如果 selected_text 是词或短语，请优先返回 target_text 中对应的词或短语，不要扩大成整句。
+2. 如果 selected_text 是完整句子或从语义上接近完整句子，请返回 target_text 中对应的完整句子。
+3. 如果 selected_text 是更长段落，请返回 target_text 中对应的最小完整片段。
+4. 返回的 text 必须逐字复制自 target_text，不能改写、翻译、补字或解释。
+5. 如果 target_text 中没有合适片段，返回空字符串。
+6. 只输出 JSON，不要输出 markdown。
+
+JSON 格式：
+{{"text":"target_text 中的精确片段"}}
+
+输入：
+{json.dumps(payload, ensure_ascii=False)}
+"""
+
+    def parse_response(self, content: str) -> str:
+        content = (content or "").strip()
+        if not content:
+            return ""
+
+        try:
+            data = json.loads(content)
+        except Exception:
+            match = re.search(r'\{.*\}', content, re.DOTALL)
+            if not match:
+                return content.strip().strip('"')
+            try:
+                data = json.loads(match.group(0))
+            except Exception:
+                return content.strip().strip('"')
+
+        if isinstance(data, dict):
+            return str(data.get("text", "") or "").strip()
+        return ""
+
+    def run(self):
+        try:
+            if client is None:
+                raise RuntimeError("未设置 GPTSAPI_API_KEY")
+
+            log(f"[AlignmentThread] start, selected={repr(self.selected_text[:120])}")
+            response = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "user", "content": self.build_prompt()}
+                ],
+                stream=False,
+            )
+
+            if self._stop_requested:
+                log("[AlignmentThread] cancelled")
+                self.finished.emit(False, "", "已取消")
+                return
+
+            content = response.choices[0].message.content or ""
+            matched_text = self.parse_response(content)
+            log(f"[AlignmentThread] matched={repr(matched_text[:120])}")
+            self.finished.emit(True, matched_text, "")
+        except Exception as e:
+            log(f"[AlignmentThread] error: {e}")
+            self.finished.emit(False, "", str(e))
 
 
 # ================= 2. OCR 线程 =================
@@ -649,8 +731,13 @@ class TranslationWindow(QWidget):
         self.full_translation = ""
         self.force_quit = False
         self.trans_thread = None
+        self.align_thread = None
         self.ocr_thread = None
         self.ocr_result_source_mode = "manual"
+        self.alignment_selection_source = None
+        self.alignment_selection_range = None
+        self.alignment_highlight_source = None
+        self.alignment_target_widget = None
 
         self.init_ui()
         self.setup_result_format()
@@ -723,6 +810,12 @@ class TranslationWindow(QWidget):
             log("[UI] cancel_current_translation")
             self.trans_thread.request_stop()
             self.trans_thread.wait(800)
+
+    def cancel_current_alignment(self):
+        if self.align_thread and self.align_thread.isRunning():
+            log("[UI] cancel_current_alignment")
+            self.align_thread.request_stop()
+            self.align_thread.wait(300)
 
     def cancel_current_ocr(self):
         if self.ocr_thread and self.ocr_thread.isRunning():
@@ -895,6 +988,7 @@ class TranslationWindow(QWidget):
 
         self.txt_origin = InteractiveTextEdit()
         self.txt_origin.submit_signal.connect(self.start_manual_translation)
+        self.txt_origin.selectionChanged.connect(lambda: self.on_text_selection_changed("origin"))
         self.txt_origin.setMaximumHeight(180)
 
         origin_font = QFont()
@@ -932,8 +1026,30 @@ class TranslationWindow(QWidget):
 
         self.txt_result = InteractiveTextEdit()
         self.txt_result.setReadOnly(True)
+        self.txt_result.selectionChanged.connect(lambda: self.on_text_selection_changed("result"))
         self.txt_result.setStyleSheet("background-color: transparent;")
         card_layout.addWidget(self.txt_result)
+
+        self.btn_align_selection = QPushButton(self.card_frame)
+        self.btn_align_selection.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_align_selection.setFixedHeight(26)
+        self.btn_align_selection.setStyleSheet("""
+            QPushButton {
+                background-color: #2C3E50;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 3px 10px;
+                font-family: 'Segoe UI', 'Microsoft YaHei UI';
+                font-weight: 600;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #34495E;
+            }
+        """)
+        self.btn_align_selection.clicked.connect(self.highlight_selected_counterpart)
+        self.btn_align_selection.hide()
 
         main_layout.addWidget(self.card_frame)
 
@@ -1066,6 +1182,9 @@ class TranslationWindow(QWidget):
         self.setWindowOpacity(1.0)
 
     def setup_result_format(self):
+        if hasattr(self, "btn_align_selection"):
+            self.reset_alignment_ui()
+
         self.txt_result.clear()
 
         font = QFont()
@@ -1308,10 +1427,196 @@ class TranslationWindow(QWidget):
         else:
             self.apply_manual_mode_ui(reset_content=False)
 
-    # ---------- 模式切换 ----------
+    # ---------- Selection alignment ----------
+    def reset_alignment_ui(self, clear_highlights=True):
+        if hasattr(self, "align_thread"):
+            self.cancel_current_alignment()
+        self.alignment_selection_source = None
+        self.alignment_selection_range = None
+        self.alignment_target_widget = None
+        if hasattr(self, "btn_align_selection"):
+            self.btn_align_selection.setEnabled(True)
+            self.btn_align_selection.hide()
+        if clear_highlights:
+            self.clear_alignment_highlights()
 
+    def clear_alignment_highlights(self):
+        if hasattr(self, "txt_origin"):
+            self.txt_origin.setExtraSelections([])
+        if hasattr(self, "txt_result"):
+            self.txt_result.setExtraSelections([])
+        self.alignment_highlight_source = None
+
+    def alignment_feature_enabled(self):
+        if self.source_mode != "snipdo":
+            return False
+
+        total_text = self.pending_snipdo_text.strip() or "\n".join(self.original_paragraphs).strip()
+        if not total_text or not self.full_translation.strip():
+            return False
+
+        return self.resolve_effective_mode(total_text) != "dictionary"
+
+    def on_text_selection_changed(self, source_name):
+        if not hasattr(self, "btn_align_selection"):
+            return
+
+        if not self.alignment_feature_enabled():
+            self.reset_alignment_ui()
+            return
+
+        source_widget = self.txt_origin if source_name == "origin" else self.txt_result
+        cursor = source_widget.textCursor()
+        if not cursor.hasSelection():
+            self.btn_align_selection.hide()
+            return
+
+        start = min(cursor.selectionStart(), cursor.selectionEnd())
+        end = max(cursor.selectionStart(), cursor.selectionEnd())
+        if start == end:
+            self.btn_align_selection.hide()
+            return
+
+        self.clear_alignment_highlights()
+        self.alignment_selection_source = source_name
+        self.alignment_selection_range = (start, end)
+
+        self.btn_align_selection.setText("定位译文" if source_name == "origin" else "定位原文")
+        self.btn_align_selection.adjustSize()
+
+        rect = source_widget.cursorRect(cursor)
+        global_pos = source_widget.viewport().mapToGlobal(rect.bottomRight())
+        pos = self.card_frame.mapFromGlobal(global_pos)
+
+        margin = 6
+        x = min(max(margin, pos.x() + 8), max(margin, self.card_frame.width() - self.btn_align_selection.width() - margin))
+        y = min(max(margin, pos.y() + 8), max(margin, self.card_frame.height() - self.btn_align_selection.height() - margin))
+
+        self.btn_align_selection.move(x, y)
+        self.btn_align_selection.show()
+        self.btn_align_selection.raise_()
+
+    def find_text_range(self, text, snippet):
+        snippet = (snippet or "").strip()
+        if not snippet:
+            return None
+
+        start = text.find(snippet)
+        if start >= 0:
+            return start, start + len(snippet)
+
+        normalized_text, text_index_map = self.normalized_with_index_map(text)
+        normalized_snippet, _snippet_index_map = self.normalized_with_index_map(snippet)
+        if not normalized_snippet:
+            return None
+
+        normalized_start = normalized_text.find(normalized_snippet)
+        if normalized_start < 0:
+            return None
+
+        normalized_end = normalized_start + len(normalized_snippet) - 1
+        return text_index_map[normalized_start], text_index_map[normalized_end] + 1
+
+    def normalized_with_index_map(self, text):
+        chars = []
+        index_map = []
+        for idx, char in enumerate(text):
+            if char.isspace():
+                continue
+            chars.append(char.lower())
+            index_map.append(idx)
+        return "".join(chars), index_map
+
+    def highlight_text_range(self, widget, start, end):
+        cursor = widget.textCursor()
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+
+        selection = QTextEdit.ExtraSelection()
+        selection.cursor = cursor
+        selection.format = QTextCharFormat()
+        selection.format.setBackground(QColor("#FFF1A8"))
+        selection.format.setForeground(QColor("#1F2D3D"))
+        widget.setExtraSelections([selection])
+
+        view_cursor = widget.textCursor()
+        view_cursor.setPosition(start)
+        widget.setTextCursor(view_cursor)
+        widget.ensureCursorVisible()
+
+    def highlight_selected_counterpart(self):
+        if not self.alignment_feature_enabled():
+            self.reset_alignment_ui()
+            return
+
+        if not self.alignment_selection_source or not self.alignment_selection_range:
+            self.btn_align_selection.hide()
+            return
+
+        selection_start, selection_end = self.alignment_selection_range
+        origin_text = self.txt_origin.toPlainText()
+        result_text = self.txt_result.toPlainText()
+
+        if self.alignment_selection_source == "origin":
+            source_text = origin_text
+            target_text = result_text
+            self.alignment_target_widget = self.txt_result
+            self.txt_origin.setExtraSelections([])
+        else:
+            source_text = result_text
+            target_text = origin_text
+            self.alignment_target_widget = self.txt_origin
+            self.txt_result.setExtraSelections([])
+
+        selected_text = source_text[selection_start:selection_end].strip()
+        if not selected_text or not target_text.strip():
+            self.btn_align_selection.hide()
+            return
+
+        if not self.ensure_api_key():
+            self.btn_align_selection.hide()
+            return
+
+        self.cancel_current_alignment()
+        self.btn_align_selection.setEnabled(False)
+        self.btn_align_selection.setText("定位中...")
+        self.btn_align_selection.adjustSize()
+
+        self.align_thread = AlignmentThread(source_text, target_text, selected_text)
+        self.align_thread.finished.connect(self.on_alignment_finished)
+        self.align_thread.start()
+
+    def on_alignment_finished(self, success, matched_text, error_msg):
+        sender = self.sender()
+        if sender is not None and sender is not self.align_thread:
+            return
+
+        self.btn_align_selection.setEnabled(True)
+
+        if not success:
+            log(f"[UI] alignment failed: {error_msg}")
+            self.btn_align_selection.hide()
+            return
+
+        target_widget = getattr(self, "alignment_target_widget", None)
+        if target_widget is None:
+            self.btn_align_selection.hide()
+            return
+
+        target_range = self.find_text_range(target_widget.toPlainText(), matched_text)
+        if not target_range:
+            log(f"[UI] alignment match not found in target text: {repr(matched_text[:120])}")
+            self.btn_align_selection.hide()
+            return
+
+        self.highlight_text_range(target_widget, target_range[0], target_range[1])
+        self.alignment_highlight_source = "result" if target_widget is self.txt_result else "origin"
+        self.btn_align_selection.hide()
+
+    # ---------- 模式切换 ----------
     def apply_manual_mode_ui(self, reset_content=False):
         self.source_mode = "manual"
+        self.reset_alignment_ui()
 
         self.btn_content_mode.show()
         self.btn_clear_origin.show()
@@ -1345,6 +1650,7 @@ class TranslationWindow(QWidget):
 
     def apply_snipdo_mode_ui(self):
         self.source_mode = "snipdo"
+        self.reset_alignment_ui()
 
         self.btn_content_mode.show()
         self.update_content_mode_button_text()
