@@ -472,13 +472,28 @@ class TranslationThread(QThread):
 
 
 class AlignmentThread(QThread):
-    finished = pyqtSignal(bool, str, str)  # success, matched_text, error_message
+    finished = pyqtSignal(bool, object, str)  # success, match_data, error_message
 
-    def __init__(self, source_text: str, target_text: str, selected_text: str):
+    def __init__(
+        self,
+        source_text: str,
+        target_text: str,
+        selected_text: str,
+        selected_sentence: str = "",
+        selected_start_in_sentence: int = 0,
+        selected_end_in_sentence: int = 0,
+        left_context: str = "",
+        right_context: str = "",
+    ):
         super().__init__()
         self.source_text = source_text
         self.target_text = target_text
         self.selected_text = selected_text
+        self.selected_sentence = selected_sentence
+        self.selected_start_in_sentence = selected_start_in_sentence
+        self.selected_end_in_sentence = selected_end_in_sentence
+        self.left_context = left_context
+        self.right_context = right_context
         self._stop_requested = False
 
     def request_stop(self):
@@ -489,44 +504,64 @@ class AlignmentThread(QThread):
             "source_text": self.source_text,
             "target_text": self.target_text,
             "selected_text": self.selected_text,
+            "selected_sentence": self.selected_sentence,
+            "selected_start_in_sentence": self.selected_start_in_sentence,
+            "selected_end_in_sentence": self.selected_end_in_sentence,
+            "selected_left_context": self.left_context,
+            "selected_right_context": self.right_context,
         }
         return f"""
 你是一个双语文本对齐助手。用户会在 source_text 中选中一段文本，请在 target_text 中找出语义上最贴切对应的片段。
 
 要求：
-1. 如果 selected_text 是词或短语，请优先返回 target_text 中对应的词或短语，不要扩大成整句。
-2. 如果 selected_text 是完整句子或从语义上接近完整句子，请返回 target_text 中对应的完整句子。
-3. 如果 selected_text 是更长段落，请返回 target_text 中对应的最小完整片段。
-4. 返回的 text 必须逐字复制自 target_text，不能改写、翻译、补字或解释。
-5. 如果 target_text 中没有合适片段，返回空字符串。
-6. 只输出 JSON，不要输出 markdown。
+1. 先根据 selected_sentence 在 target_text 中找出对应的 target_sentence。selected_text 不足整句时，必须先完成这一步，再在 target_sentence 内找对应片段。
+2. target_sentence 必须逐字复制自 target_text，表示 selected_sentence 的最贴切译文/原文句子。
+3. selected_start_in_sentence 和 selected_end_in_sentence 是 selected_text 在 selected_sentence 中的字符下标，左闭右开；用它们判断 selected_text 在句内的具体位置。
+4. text 必须是 target_sentence 内的最小对应片段。selected_text 是词或短语时，text 也应是词或短语，不要扩大成整句。
+5. 如果 selected_text 是完整句子或从语义上接近完整句子，text 可以等于 target_sentence。
+6. 如果 selected_text 原样或仅引号样式不同的形式出现在 target_sentence 中，必须返回 target_sentence 中的这个原样片段。
+7. 如果 selected_text 是代码、函数名、变量名、字符串字面量、专有名词或被引号括起来的内容，优先返回 target_sentence 中同一个字面量，不要返回它的解释词。
+8. 如果 target_sentence 中有多个相同的 text，请根据 selected_start_in_sentence、selected_left_context 和 selected_right_context 选择最贴近的那一次，并填写 occurrence_index。
+9. target_left_context 和 target_right_context 必须从 target_sentence 中复制，分别是 text 目标片段左右两侧紧邻的少量字符，用于区分同词多次出现的位置。
+10. 返回的 target_sentence 和 text 都必须逐字复制自 target_text，不能改写、翻译、补字或解释。
+11. 不要返回 selected_text 的属性或解释。例如 selected_text 是 "Hello, World!" 时，如果 target_sentence 中也有 "Hello, World!"，返回它本身，不要返回“双引号”“字符串字面量”等解释。
+12. 反向定位时也要保持粒度：selected_text 是“双引号”这种词语时，返回 source_text 中对应的最小词语或符号片段，不要扩大成整句。
+13. 如果 selected_text 只是拉丁词的一部分，或者只是单个无语义标点，返回空字符串。
+14. 如果 target_text 中没有合适片段，返回空字符串。
+15. 只输出 JSON，不要输出 markdown。
 
 JSON 格式：
-{{"text":"target_text 中的精确片段"}}
+{{"target_sentence":"target_text 中对应 selected_sentence 的精确句子","text":"target_sentence 中的精确片段","target_left_context":"紧邻左侧上下文","target_right_context":"紧邻右侧上下文","occurrence_index":1}}
 
 输入：
 {json.dumps(payload, ensure_ascii=False)}
 """
 
-    def parse_response(self, content: str) -> str:
+    def parse_response(self, content: str):
         content = (content or "").strip()
         if not content:
-            return ""
+            return {"text": ""}
 
         try:
             data = json.loads(content)
         except Exception:
             match = re.search(r'\{.*\}', content, re.DOTALL)
             if not match:
-                return content.strip().strip('"')
+                return {"text": content.strip().strip('"')}
             try:
                 data = json.loads(match.group(0))
             except Exception:
-                return content.strip().strip('"')
+                return {"text": content.strip().strip('"')}
 
         if isinstance(data, dict):
-            return str(data.get("text", "") or "").strip()
-        return ""
+            return {
+                "text": str(data.get("text", "") or "").strip(),
+                "target_sentence": str(data.get("target_sentence", "") or "").strip(),
+                "target_left_context": str(data.get("target_left_context", "") or ""),
+                "target_right_context": str(data.get("target_right_context", "") or ""),
+                "occurrence_index": data.get("occurrence_index") or 0,
+            }
+        return {"text": ""}
 
     def run(self):
         try:
@@ -544,16 +579,16 @@ JSON 格式：
 
             if self._stop_requested:
                 log("[AlignmentThread] cancelled")
-                self.finished.emit(False, "", "已取消")
+                self.finished.emit(False, {"text": ""}, "已取消")
                 return
 
             content = response.choices[0].message.content or ""
-            matched_text = self.parse_response(content)
-            log(f"[AlignmentThread] matched={repr(matched_text[:120])}")
-            self.finished.emit(True, matched_text, "")
+            match_data = self.parse_response(content)
+            log(f"[AlignmentThread] matched={repr(match_data.get('text', '')[:120])}")
+            self.finished.emit(True, match_data, "")
         except Exception as e:
             log(f"[AlignmentThread] error: {e}")
-            self.finished.emit(False, "", str(e))
+            self.finished.emit(False, {"text": ""}, str(e))
 
 
 # ================= 2. OCR 线程 =================
@@ -738,6 +773,9 @@ class TranslationWindow(QWidget):
         self.alignment_selection_range = None
         self.alignment_highlight_source = None
         self.alignment_target_widget = None
+        self.alignment_selected_text = ""
+        self.alignment_selected_sentence = ""
+        self.alignment_selection_is_sentence = False
 
         self.init_ui()
         self.setup_result_format()
@@ -1434,6 +1472,9 @@ class TranslationWindow(QWidget):
         self.alignment_selection_source = None
         self.alignment_selection_range = None
         self.alignment_target_widget = None
+        self.alignment_selected_text = ""
+        self.alignment_selected_sentence = ""
+        self.alignment_selection_is_sentence = False
         if hasattr(self, "btn_align_selection"):
             self.btn_align_selection.setEnabled(True)
             self.btn_align_selection.hide()
@@ -1496,26 +1537,135 @@ class TranslationWindow(QWidget):
         self.btn_align_selection.show()
         self.btn_align_selection.raise_()
 
-    def find_text_range(self, text, snippet):
-        snippet = (snippet or "").strip()
-        if not snippet:
+    def find_text_range(self, text, snippet, left_context="", right_context="", occurrence_index=0):
+        ranges = self.find_text_ranges(text, snippet)
+        if not ranges:
             return None
 
-        start = text.find(snippet)
-        if start >= 0:
-            return start, start + len(snippet)
+        if len(ranges) == 1:
+            return ranges[0]
+
+        context_range = self.best_context_range(text, ranges, left_context, right_context)
+        if context_range:
+            return context_range
+
+        try:
+            occurrence_index = int(occurrence_index)
+        except Exception:
+            occurrence_index = 0
+
+        if 1 <= occurrence_index <= len(ranges):
+            return ranges[occurrence_index - 1]
+
+        return None
+
+    def find_text_ranges(self, text, snippet):
+        snippet = (snippet or "").strip()
+        if not snippet:
+            return []
+
+        for candidate in self.literal_match_candidates(snippet):
+            ranges = self.exact_text_ranges(text, candidate)
+            if ranges:
+                return ranges
+
+        ranges = self.exact_text_ranges(text, snippet)
+        if ranges:
+            return ranges
 
         normalized_text, text_index_map = self.normalized_with_index_map(text)
         normalized_snippet, _snippet_index_map = self.normalized_with_index_map(snippet)
         if not normalized_snippet:
+            return []
+
+        ranges = []
+        search_from = 0
+        while True:
+            normalized_start = normalized_text.find(normalized_snippet, search_from)
+            if normalized_start < 0:
+                break
+            normalized_end = normalized_start + len(normalized_snippet) - 1
+            ranges.append((text_index_map[normalized_start], text_index_map[normalized_end] + 1))
+            search_from = normalized_start + max(1, len(normalized_snippet))
+        return ranges
+
+    def exact_text_ranges(self, text, snippet):
+        if not snippet:
+            return []
+
+        ranges = []
+        search_from = 0
+        while True:
+            start = text.find(snippet, search_from)
+            if start < 0:
+                break
+            end = start + len(snippet)
+            ranges.append((start, end))
+            search_from = end
+        return ranges
+
+    def best_context_range(self, text, ranges, left_context="", right_context=""):
+        left_norm = self.normalized_with_index_map(left_context or "")[0]
+        right_norm = self.normalized_with_index_map(right_context or "")[0]
+        if not left_norm and not right_norm:
             return None
 
-        normalized_start = normalized_text.find(normalized_snippet)
-        if normalized_start < 0:
-            return None
+        best_range = None
+        best_score = 0
+        for start, end in ranges:
+            before_norm = self.normalized_with_index_map(text[:start])[0]
+            after_norm = self.normalized_with_index_map(text[end:])[0]
+            score = 0
 
-        normalized_end = normalized_start + len(normalized_snippet) - 1
-        return text_index_map[normalized_start], text_index_map[normalized_end] + 1
+            if left_norm:
+                if before_norm.endswith(left_norm):
+                    score += len(left_norm) * 3
+                elif left_norm in before_norm:
+                    score += len(left_norm)
+
+            if right_norm:
+                if after_norm.startswith(right_norm):
+                    score += len(right_norm) * 3
+                elif right_norm in after_norm:
+                    score += len(right_norm)
+
+            if score > best_score:
+                best_score = score
+                best_range = (start, end)
+
+        return best_range
+
+    def literal_match_candidates(self, snippet):
+        candidates = []
+        stripped = snippet.strip()
+        if stripped:
+            candidates.append(stripped)
+
+        unquoted = stripped.strip("\"'`“”‘’")
+        quote_pairs = [
+            ('"', '"'),
+            ("'", "'"),
+            ("`", "`"),
+            ("“", "”"),
+            ("‘", "’"),
+            ("「", "」"),
+            ("『", "』"),
+        ]
+        quote_base_values = [unquoted] if unquoted and unquoted != stripped else list(candidates)
+        for value in quote_base_values:
+            for left, right in quote_pairs:
+                candidates.append(f"{left}{value}{right}")
+
+        if unquoted and unquoted != stripped:
+            candidates.append(unquoted)
+
+        seen = set()
+        unique = []
+        for candidate in candidates:
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                unique.append(candidate)
+        return unique
 
     def normalized_with_index_map(self, text):
         chars = []
@@ -1523,9 +1673,149 @@ class TranslationWindow(QWidget):
         for idx, char in enumerate(text):
             if char.isspace():
                 continue
-            chars.append(char.lower())
+            chars.append(self.normalize_alignment_char(char))
             index_map.append(idx)
         return "".join(chars), index_map
+
+    def normalize_alignment_char(self, char):
+        replacements = {
+            "“": '"',
+            "”": '"',
+            "„": '"',
+            "‟": '"',
+            "＂": '"',
+            "‘": "'",
+            "’": "'",
+            "‚": "'",
+            "‛": "'",
+            "＇": "'",
+            "，": ",",
+            "。": ".",
+            "！": "!",
+            "？": "?",
+            "：": ":",
+            "；": ";",
+            "（": "(",
+            "）": ")",
+            "【": "[",
+            "】": "]",
+            "「": '"',
+            "」": '"',
+            "『": '"',
+            "』": '"',
+        }
+        return replacements.get(char, char).lower()
+
+    def containing_sentence_range(self, text, start, end):
+        if not text:
+            return 0, 0
+
+        start = max(0, min(start, len(text)))
+        end = max(start, min(end, len(text)))
+        hard_breaks = "\n\r"
+
+        left = start
+        while left > 0:
+            prev = text[left - 1]
+            if prev in hard_breaks or self.is_sentence_boundary_at(text, left - 1):
+                break
+            left -= 1
+
+        right = end
+        while right < len(text):
+            char = text[right]
+            right += 1
+            if char in hard_breaks or self.is_sentence_boundary_at(text, right - 1):
+                break
+
+        while left < right and text[left].isspace():
+            left += 1
+        while right > left and text[right - 1].isspace():
+            right -= 1
+
+        return left, right
+
+    def is_sentence_boundary_at(self, text, index):
+        if index < 0 or index >= len(text):
+            return False
+
+        char = text[index]
+        if char in "。！？":
+            return True
+
+        if char not in ".!?":
+            return False
+
+        probe = index + 1
+        while probe < len(text) and text[probe] in "\"'”’)]}":
+            probe += 1
+
+        if probe >= len(text):
+            return True
+
+        if not text[probe].isspace():
+            return False
+
+        while probe < len(text) and text[probe].isspace():
+            probe += 1
+
+        if probe >= len(text):
+            return True
+
+        next_char = text[probe]
+        return next_char.isupper() or next_char.isdigit() or '\u4e00' <= next_char <= '\u9fff'
+
+    def selection_is_whole_sentence(self, text, selection_start, selection_end, sentence_start, sentence_end):
+        selected = text[selection_start:selection_end].strip()
+        sentence = text[sentence_start:sentence_end].strip()
+        return bool(selected) and selected == sentence
+
+    def meaningful_selection(self, text, start, end):
+        selected = text[start:end].strip()
+        if not selected:
+            return False
+
+        if re.fullmatch(r'[\W_]+', selected, flags=re.UNICODE):
+            return len(selected) >= 2 and any(char in "\"'`“”‘’()[]{}<>+-=*/\\|&%$#@" for char in selected)
+
+        if re.search(r'[\u4e00-\u9fff]', selected):
+            return True
+
+        if re.search(r'[A-Za-z0-9_]', selected):
+            left = start
+            right = end
+            while left < right and text[left].isspace():
+                left += 1
+            while right > left and text[right - 1].isspace():
+                right -= 1
+
+            before = text[left - 1] if left > 0 else ""
+            after = text[right] if right < len(text) else ""
+            if re.match(r'[A-Za-z0-9_]', before) or re.match(r'[A-Za-z0-9_]', after):
+                return False
+            return True
+
+        return len(selected) >= 2
+
+    def selection_context(self, text, start, end, radius=80):
+        left = text[max(0, start - radius):start]
+        right = text[end:min(len(text), end + radius)]
+        return left, right
+
+    def match_too_broad(self, selected_text, matched_text):
+        selected_clean = re.sub(r'\s+', '', selected_text or "")
+        matched_clean = re.sub(r'\s+', '', matched_text or "")
+        if not selected_clean or not matched_clean:
+            return False
+
+        is_short_selection = len(selected_clean) <= 12
+        if not is_short_selection:
+            return False
+
+        sentence_marks = "。！？.!?"
+        looks_like_sentence = any(mark in matched_clean for mark in sentence_marks)
+        too_long = len(matched_clean) > max(28, len(selected_clean) * 6)
+        return looks_like_sentence and too_long
 
     def highlight_text_range(self, widget, start, end):
         cursor = widget.textCursor()
@@ -1573,6 +1863,34 @@ class TranslationWindow(QWidget):
             self.btn_align_selection.hide()
             return
 
+        if not self.meaningful_selection(source_text, selection_start, selection_end):
+            self.btn_align_selection.hide()
+            return
+
+        sentence_start, sentence_end = self.containing_sentence_range(source_text, selection_start, selection_end)
+        selected_sentence = source_text[sentence_start:sentence_end].strip()
+        selected_start_in_sentence = max(0, selection_start - sentence_start)
+        selected_end_in_sentence = max(selected_start_in_sentence, selection_end - sentence_start)
+        selection_is_sentence = self.selection_is_whole_sentence(
+            source_text,
+            selection_start,
+            selection_end,
+            sentence_start,
+            sentence_end,
+        )
+
+        self.alignment_selected_text = selected_text
+        self.alignment_selected_sentence = selected_sentence
+        self.alignment_selection_is_sentence = selection_is_sentence
+
+        direct_ranges = self.find_text_ranges(target_text, selected_text) if selection_is_sentence else []
+        if selection_is_sentence and len(direct_ranges) == 1:
+            direct_range = direct_ranges[0]
+            self.highlight_text_range(self.alignment_target_widget, direct_range[0], direct_range[1])
+            self.alignment_highlight_source = "result" if self.alignment_target_widget is self.txt_result else "origin"
+            self.btn_align_selection.hide()
+            return
+
         if not self.ensure_api_key():
             self.btn_align_selection.hide()
             return
@@ -1582,11 +1900,21 @@ class TranslationWindow(QWidget):
         self.btn_align_selection.setText("定位中...")
         self.btn_align_selection.adjustSize()
 
-        self.align_thread = AlignmentThread(source_text, target_text, selected_text)
+        left_context, right_context = self.selection_context(source_text, selection_start, selection_end)
+        self.align_thread = AlignmentThread(
+            source_text,
+            target_text,
+            selected_text,
+            selected_sentence,
+            selected_start_in_sentence,
+            selected_end_in_sentence,
+            left_context,
+            right_context,
+        )
         self.align_thread.finished.connect(self.on_alignment_finished)
         self.align_thread.start()
 
-    def on_alignment_finished(self, success, matched_text, error_msg):
+    def on_alignment_finished(self, success, match_data, error_msg):
         sender = self.sender()
         if sender is not None and sender is not self.align_thread:
             return
@@ -1603,9 +1931,50 @@ class TranslationWindow(QWidget):
             self.btn_align_selection.hide()
             return
 
-        target_range = self.find_text_range(target_widget.toPlainText(), matched_text)
+        if isinstance(match_data, dict):
+            matched_text = match_data.get("text", "")
+            target_sentence = match_data.get("target_sentence", "")
+            left_context = match_data.get("target_left_context", "")
+            right_context = match_data.get("target_right_context", "")
+            occurrence_index = match_data.get("occurrence_index", 0)
+        else:
+            matched_text = str(match_data or "")
+            target_sentence = ""
+            left_context = ""
+            right_context = ""
+            occurrence_index = 0
+
+        target_text = target_widget.toPlainText()
+        search_text = target_text
+        search_offset = 0
+
+        sentence_range = self.find_text_range(target_text, target_sentence) if target_sentence else None
+        if sentence_range:
+            search_offset = sentence_range[0]
+            search_text = target_text[sentence_range[0]:sentence_range[1]]
+        elif target_sentence:
+            log(f"[UI] alignment target sentence not found: {repr(target_sentence[:120])}")
+
+        if not matched_text and self.alignment_selection_is_sentence and target_sentence:
+            matched_text = target_sentence
+
+        target_range = self.find_text_range(
+            search_text,
+            matched_text,
+            left_context,
+            right_context,
+            occurrence_index,
+        )
+        if target_range:
+            target_range = (target_range[0] + search_offset, target_range[1] + search_offset)
+
         if not target_range:
             log(f"[UI] alignment match not found in target text: {repr(matched_text[:120])}")
+            self.btn_align_selection.hide()
+            return
+
+        if self.match_too_broad(self.alignment_selected_text, matched_text):
+            log(f"[UI] alignment match rejected as too broad: {repr(matched_text[:120])}")
             self.btn_align_selection.hide()
             return
 
