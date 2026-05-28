@@ -7,6 +7,7 @@ import time
 import ctypes
 import base64
 import mimetypes
+import uuid
 from urllib.parse import unquote
 
 from openai import OpenAI
@@ -21,7 +22,7 @@ from PyQt6.QtGui import (
     QColor, QScreen, QTextCursor, QTextCharFormat,
     QTextBlockFormat, QFont, QAction, QIcon
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QTimer, QByteArray, QBuffer, QIODevice
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QTimer, QByteArray, QBuffer, QIODevice, QMimeData
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
 warnings.filterwarnings("ignore")
@@ -85,9 +86,66 @@ def log(msg: str):
 
 # ================= Windows 前台显示工具 =================
 user32 = ctypes.windll.user32
+kernel32 = ctypes.windll.kernel32
 
 SW_RESTORE = 9
 SW_SHOW = 5
+
+WH_MOUSE_LL = 14
+HC_ACTION = 0
+WM_XBUTTONDOWN = 0x020B
+WM_XBUTTONUP = 0x020C
+XBUTTON1 = 0x0001
+VK_CONTROL = 0x11
+VK_C = 0x43
+KEYEVENTF_KEYUP = 0x0002
+
+ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+LRESULT = ctypes.c_ssize_t
+
+
+class POINT(ctypes.Structure):
+    _fields_ = [
+        ("x", ctypes.c_long),
+        ("y", ctypes.c_long),
+    ]
+
+
+class MSLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [
+        ("pt", POINT),
+        ("mouseData", ctypes.c_ulong),
+        ("flags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
+
+
+LowLevelMouseProc = ctypes.WINFUNCTYPE(
+    LRESULT,
+    ctypes.c_int,
+    ctypes.c_size_t,
+    ctypes.c_ssize_t,
+)
+
+user32.SetWindowsHookExW.argtypes = [
+    ctypes.c_int,
+    LowLevelMouseProc,
+    ctypes.c_void_p,
+    ctypes.c_ulong,
+]
+user32.SetWindowsHookExW.restype = ctypes.c_void_p
+user32.CallNextHookEx.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_int,
+    ctypes.c_size_t,
+    ctypes.c_ssize_t,
+]
+user32.CallNextHookEx.restype = LRESULT
+user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
+user32.UnhookWindowsHookEx.restype = ctypes.c_bool
+kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+kernel32.GetModuleHandleW.restype = ctypes.c_void_p
 
 
 def win32_force_foreground(hwnd: int) -> bool:
@@ -147,6 +205,38 @@ def clipboard_image_to_data_url() -> str:
         buffer.close()
 
     return bytes_to_data_url(bytes(byte_array), "image/png")
+
+
+def clone_clipboard_mime_data():
+    clipboard = QApplication.clipboard()
+    source = clipboard.mimeData()
+    if source is None:
+        return None
+
+    clone = QMimeData()
+
+    for mime_format in source.formats():
+        clone.setData(mime_format, source.data(mime_format))
+
+    if source.hasText():
+        clone.setText(source.text())
+    if source.hasHtml():
+        clone.setHtml(source.html())
+    if source.hasImage():
+        clone.setImageData(source.imageData())
+    if source.hasUrls():
+        clone.setUrls(source.urls())
+    if source.hasColor():
+        clone.setColorData(source.colorData())
+
+    return clone
+
+
+def send_ctrl_c():
+    user32.keybd_event(VK_CONTROL, 0, 0, 0)
+    user32.keybd_event(VK_C, 0, 0, 0)
+    user32.keybd_event(VK_C, 0, KEYEVENTF_KEYUP, 0)
+    user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
 
 
 def build_ocr_image_request(file_path: str, delete_after: bool = False) -> str:
@@ -753,6 +843,73 @@ class SingleInstanceServer(QObject):
 
 
 # ================= 4. 主窗口逻辑 =================
+class XButton1MouseHook(QObject):
+    triggered = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._hook = None
+        self._callback = None
+        self._last_trigger_time = 0.0
+
+    def install(self) -> bool:
+        if self._hook:
+            return True
+
+        self._callback = LowLevelMouseProc(self._handle_mouse_event)
+        module_handle = kernel32.GetModuleHandleW(None)
+        self._hook = user32.SetWindowsHookExW(
+            WH_MOUSE_LL,
+            self._callback,
+            module_handle,
+            0,
+        )
+
+        if not self._hook:
+            error_code = kernel32.GetLastError()
+            log(f"[XButton1] install hook failed, error={error_code}")
+            self._callback = None
+            return False
+
+        log("[XButton1] hook installed")
+        return True
+
+    def uninstall(self):
+        if not self._hook:
+            return
+
+        try:
+            user32.UnhookWindowsHookEx(self._hook)
+            log("[XButton1] hook uninstalled")
+        except Exception as e:
+            log(f"[XButton1] uninstall hook error: {e}")
+        finally:
+            self._hook = None
+            self._callback = None
+
+    def _handle_mouse_event(self, n_code, w_param, l_param):
+        try:
+            if n_code == HC_ACTION and w_param in (WM_XBUTTONDOWN, WM_XBUTTONUP):
+                mouse_info = ctypes.cast(
+                    l_param,
+                    ctypes.POINTER(MSLLHOOKSTRUCT),
+                ).contents
+                xbutton = (mouse_info.mouseData >> 16) & 0xFFFF
+
+                if xbutton == XBUTTON1:
+                    if w_param == WM_XBUTTONUP:
+                        now = time.monotonic()
+                        if now - self._last_trigger_time >= 0.25:
+                            self._last_trigger_time = now
+                            self.triggered.emit()
+
+                    return 1
+        except Exception as e:
+            log(f"[XButton1] hook callback error: {e}")
+
+        return user32.CallNextHookEx(self._hook, n_code, w_param, l_param)
+
+
 class TranslationWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -776,10 +933,13 @@ class TranslationWindow(QWidget):
         self.alignment_selected_text = ""
         self.alignment_selected_sentence = ""
         self.alignment_selection_is_sentence = False
+        self.selection_capture_busy = False
+        self.xbutton1_hook = None
 
         self.init_ui()
         self.setup_result_format()
         self.setup_tray_icon()
+        self.setup_xbutton1_hook()
         self.apply_manual_mode_ui()
         log(f"[UI] TranslationWindow initialized, hwnd={int(self.winId())}")
 
@@ -817,6 +977,85 @@ class TranslationWindow(QWidget):
         self.tray_icon.activated.connect(self.on_tray_activated)
         self.tray_icon.show()
 
+    def setup_xbutton1_hook(self):
+        self.xbutton1_hook = XButton1MouseHook(self)
+        self.xbutton1_hook.triggered.connect(self.on_xbutton1_triggered)
+
+        if self.xbutton1_hook.install():
+            self.tray_icon.setToolTip("Gemini Translate - XButton1")
+        else:
+            self.tray_icon.showMessage(
+                "Gemini Translate",
+                "XButton1 hook failed",
+                QSystemTrayIcon.MessageIcon.Warning,
+                1800,
+            )
+
+    def on_xbutton1_triggered(self):
+        if self.selection_capture_busy:
+            log("[XButton1] capture skipped: busy")
+            return
+
+        self.selection_capture_busy = True
+        QTimer.singleShot(30, self.translate_current_selection)
+
+    def capture_current_selection_text(self) -> str:
+        clipboard = QApplication.clipboard()
+        original_mime = clone_clipboard_mime_data()
+        sentinel = f"__gptsapi_selection_probe_{uuid.uuid4()}__"
+
+        try:
+            clipboard.setText(sentinel)
+            QApplication.processEvents()
+
+            send_ctrl_c()
+
+            deadline = time.monotonic() + 0.65
+            captured_text = ""
+
+            while time.monotonic() < deadline:
+                QApplication.processEvents()
+                current_text = clipboard.text()
+
+                if current_text and current_text != sentinel:
+                    captured_text = current_text
+                    break
+
+                time.sleep(0.03)
+
+            return captured_text.strip()
+        finally:
+            try:
+                if original_mime is not None:
+                    clipboard.setMimeData(original_mime)
+                else:
+                    clipboard.clear()
+                QApplication.processEvents()
+            except Exception as e:
+                log(f"[XButton1] restore clipboard error: {e}")
+
+    def translate_current_selection(self):
+        try:
+            log("[XButton1] triggered")
+            selected_text = self.capture_current_selection_text()
+
+            if not selected_text:
+                log("[XButton1] no selected text captured")
+                if self.tray_icon.isVisible():
+                    self.tray_icon.showMessage(
+                        "Gemini Translate",
+                        "No selected text",
+                        QSystemTrayIcon.MessageIcon.Information,
+                        1000,
+                    )
+                return
+
+            self.handle_new_request(selected_text)
+        except Exception as e:
+            log(f"[XButton1] translate_current_selection error: {e}")
+        finally:
+            self.selection_capture_busy = False
+
     def on_tray_activated(self, reason):
         log(f"[Tray] activated: {reason}")
         if reason in (
@@ -840,6 +1079,8 @@ class TranslationWindow(QWidget):
         self.force_quit = True
         self.cancel_current_ocr()
         self.cancel_current_translation()
+        if self.xbutton1_hook:
+            self.xbutton1_hook.uninstall()
         self.tray_icon.hide()
         QApplication.quit()
 
@@ -2255,6 +2496,8 @@ class TranslationWindow(QWidget):
         if self.force_quit:
             log("[UI] closeEvent force quit")
             self.cancel_current_translation()
+            if self.xbutton1_hook:
+                self.xbutton1_hook.uninstall()
             super().closeEvent(event)
         else:
             log("[UI] closeEvent hide to tray")
