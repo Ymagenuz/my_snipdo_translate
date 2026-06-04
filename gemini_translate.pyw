@@ -8,6 +8,8 @@ import ctypes
 import base64
 import mimetypes
 import uuid
+from html import unescape
+from html.parser import HTMLParser
 from urllib.parse import unquote
 
 from openai import OpenAI
@@ -28,7 +30,38 @@ from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 warnings.filterwarnings("ignore")
 
 # ================= 配置区域 =================
-GPTSAPI_API_KEY = os.getenv("GPTSAPI_API_KEY", "").strip()
+LOCAL_API_KEY_FILE = ".gptsapi_api_key"
+LOCAL_API_KEY_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    LOCAL_API_KEY_FILE,
+)
+
+
+def read_local_api_key() -> str:
+    try:
+        if not os.path.exists(LOCAL_API_KEY_PATH):
+            return ""
+
+        with open(LOCAL_API_KEY_PATH, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def save_local_api_key(api_key: str) -> bool:
+    api_key = (api_key or "").strip()
+    if not api_key:
+        return False
+
+    try:
+        with open(LOCAL_API_KEY_PATH, "w", encoding="utf-8") as f:
+            f.write(api_key + "\n")
+        return True
+    except Exception:
+        return False
+
+
+GPTSAPI_API_KEY = os.getenv("GPTSAPI_API_KEY", "").strip() or read_local_api_key()
 client = None
 
 # PROXY_URL = 'http://127.0.0.1:7897'
@@ -239,6 +272,275 @@ def send_ctrl_c():
     user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
 
 
+class HtmlToMarkdownParser(HTMLParser):
+    BLOCK_TAGS = {
+        "address", "article", "aside", "blockquote", "div", "dl", "fieldset",
+        "figcaption", "figure", "footer", "form", "header", "hr", "main",
+        "nav", "p", "pre", "section",
+    }
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self.ignore_depth = 0
+        self.list_stack = []
+        self.link_stack = []
+        self.heading_level = 0
+        self.in_pre = False
+        self.in_inline_code = False
+        self.table = None
+        self.current_row = None
+        self.current_row_header_flags = None
+        self.current_cell = None
+        self.current_cell_is_header = False
+
+    def result(self) -> str:
+        text = "".join(self.parts)
+        text = unescape(text)
+        text = re.sub(r'[ \t]+\n', '\n', text)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
+
+    def append(self, text: str):
+        if not text:
+            return
+        if self.current_cell is not None:
+            self.current_cell.append(text)
+            return
+        self.parts.append(text)
+
+    def append_text(self, text: str):
+        if not text or self.ignore_depth:
+            return
+
+        if not self.in_pre:
+            text = re.sub(r'\s+', ' ', text)
+            if self.current_cell is not None:
+                if self.current_cell and not self.current_cell[-1].endswith((" ", "\n")):
+                    text = text.lstrip()
+                self.append(text)
+                return
+
+            previous = "".join(self.parts[-1:]) if self.parts else ""
+            if previous.endswith((" ", "\n")):
+                text = text.lstrip()
+
+        self.append(text)
+
+    def ensure_newline(self, count: int = 1):
+        if self.current_cell is not None:
+            return
+
+        current = "".join(self.parts)
+        trailing = len(current) - len(current.rstrip("\n"))
+        if trailing < count:
+            self.parts.append("\n" * (count - trailing))
+
+    def ensure_block(self):
+        self.ensure_newline(2)
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        attr_map = dict(attrs or [])
+
+        if tag in ("script", "style", "head", "meta", "noscript"):
+            self.ignore_depth += 1
+            return
+
+        if self.ignore_depth:
+            return
+
+        if tag == "br":
+            self.ensure_newline(1)
+        elif tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            self.heading_level = int(tag[1])
+            self.ensure_block()
+            self.append("#" * self.heading_level + " ")
+        elif tag in self.BLOCK_TAGS:
+            if tag == "blockquote":
+                self.ensure_block()
+                self.append("> ")
+            elif tag == "pre":
+                self.ensure_block()
+                self.append("```\n")
+                self.in_pre = True
+            else:
+                self.ensure_block()
+        elif tag in ("ul", "ol"):
+            self.ensure_newline(1)
+            self.list_stack.append({"type": tag, "index": 1})
+        elif tag == "li":
+            self.ensure_newline(1)
+            indent = "  " * max(0, len(self.list_stack) - 1)
+            if self.list_stack and self.list_stack[-1]["type"] == "ol":
+                marker = f"{self.list_stack[-1]['index']}. "
+                self.list_stack[-1]["index"] += 1
+            else:
+                marker = "- "
+            self.append(indent + marker)
+        elif tag in ("strong", "b"):
+            self.append("**")
+        elif tag in ("em", "i"):
+            self.append("*")
+        elif tag == "code" and not self.in_pre:
+            self.in_inline_code = True
+            self.append("`")
+        elif tag == "a":
+            href = (attr_map.get("href") or "").strip()
+            self.link_stack.append(href)
+            self.append("[")
+        elif tag == "img":
+            src = (attr_map.get("src") or "").strip()
+            alt = (attr_map.get("alt") or "").strip()
+            if src:
+                self.append(f"![{alt}]({src})")
+            elif alt:
+                self.append(alt)
+        elif tag == "table":
+            self.ensure_block()
+            self.table = []
+        elif tag == "tr" and self.table is not None:
+            self.current_row = []
+            self.current_row_header_flags = []
+        elif tag in ("td", "th") and self.current_row is not None:
+            self.current_cell = []
+            self.current_cell_is_header = tag == "th"
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+
+        if tag in ("script", "style", "head", "meta", "noscript"):
+            self.ignore_depth = max(0, self.ignore_depth - 1)
+            return
+
+        if self.ignore_depth:
+            return
+
+        if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            self.heading_level = 0
+            self.ensure_block()
+        elif tag == "pre":
+            if self.in_pre:
+                self.ensure_newline(1)
+                self.append("```")
+                self.in_pre = False
+            self.ensure_block()
+        elif tag in self.BLOCK_TAGS:
+            self.ensure_block()
+        elif tag in ("ul", "ol"):
+            if self.list_stack:
+                self.list_stack.pop()
+            self.ensure_newline(1)
+        elif tag == "li":
+            self.ensure_newline(1)
+        elif tag in ("strong", "b"):
+            self.append("**")
+        elif tag in ("em", "i"):
+            self.append("*")
+        elif tag == "code" and self.in_inline_code:
+            self.append("`")
+            self.in_inline_code = False
+        elif tag == "a":
+            href = self.link_stack.pop() if self.link_stack else ""
+            self.append(f"]({href})" if href else "]")
+        elif tag in ("td", "th") and self.current_row is not None and self.current_cell is not None:
+            cell_text = re.sub(r'\s+', ' ', "".join(self.current_cell)).strip()
+            self.current_row.append(cell_text)
+            self.current_row_header_flags.append(self.current_cell_is_header)
+            self.current_cell = None
+            self.current_cell_is_header = False
+        elif tag == "tr" and self.table is not None and self.current_row is not None:
+            if any(cell.strip() for cell in self.current_row):
+                self.table.append((self.current_row, self.current_row_header_flags or []))
+            self.current_row = None
+            self.current_row_header_flags = None
+        elif tag == "table" and self.table is not None:
+            self.append(self.render_table(self.table))
+            self.table = None
+            self.ensure_block()
+
+    def handle_data(self, data):
+        self.append_text(data)
+
+    @staticmethod
+    def render_table(rows) -> str:
+        if not rows:
+            return ""
+
+        max_cols = max(len(row) for row, _flags in rows)
+        normalized_rows = []
+        for row, _flags in rows:
+            padded = list(row) + [""] * (max_cols - len(row))
+            normalized_rows.append([cell.replace("|", "\\|") for cell in padded])
+
+        header = normalized_rows[0]
+        separator = ["---"] * max_cols
+        body = normalized_rows[1:]
+
+        lines = [
+            "| " + " | ".join(header) + " |",
+            "| " + " | ".join(separator) + " |",
+        ]
+        lines.extend("| " + " | ".join(row) + " |" for row in body)
+        return "\n".join(lines)
+
+
+def html_to_markdown(html_text: str) -> str:
+    if not html_text:
+        return ""
+
+    parser = HtmlToMarkdownParser()
+    try:
+        parser.feed(html_text)
+        parser.close()
+        return parser.result()
+    except Exception as e:
+        log(f"[Format] html_to_markdown error: {e}")
+        return ""
+
+
+def is_structured_text(text: str) -> bool:
+    if not text:
+        return False
+
+    return bool(re.search(
+        r'(?m)^\s*(#{1,6}\s+|[-*+]\s+|\d+\.\s+|>\s+|```|\|.*\|)',
+        text,
+    ))
+
+
+def markdown_format_instruction(text: str) -> str:
+    if not is_structured_text(text):
+        return ""
+
+    return """
+格式要求：
+- 输入文本包含 Markdown/结构化格式；请保留标题层级、段落、列表、表格、链接和代码块结构。
+- 只翻译自然语言内容，不要翻译 Markdown 标记、URL、代码块、行内代码、变量名、函数名、文件路径和 HTML/XML 标签名。
+- 如果输入是表格，请保持相同的列数和行数；只翻译单元格里的自然语言。
+- 直接输出保留格式后的译文，不要解释你做了什么。
+""".strip()
+
+
+def clipboard_mime_to_formatted_text(mime_data, sentinel: str = "") -> str:
+    if mime_data is None:
+        return ""
+
+    plain_text = mime_data.text().strip() if mime_data.hasText() else ""
+    html_text = mime_data.html() if mime_data.hasHtml() else ""
+
+    if html_text:
+        markdown_text = html_to_markdown(html_text)
+        if markdown_text and markdown_text != sentinel:
+            if is_structured_text(markdown_text) or len(markdown_text) >= max(1, len(plain_text) // 2):
+                return markdown_text.strip()
+
+    if plain_text and plain_text != sentinel:
+        return plain_text.strip()
+
+    return ""
+
+
 def build_ocr_image_request(file_path: str, delete_after: bool = False) -> str:
     delete_flag = "1" if delete_after else "0"
     return f"{OCR_IMAGE_REQUEST_PREFIX}{delete_flag}:{file_path}"
@@ -270,6 +572,9 @@ def normalize_input_text(raw_text: str):
     clean_text = raw_text.replace("-URLENCODED_ALT_TEXT", "").strip()
     text_to_translate = unquote(clean_text)
     text_to_translate = normalize_newlines(text_to_translate)
+
+    if is_structured_text(text_to_translate):
+        return [text_to_translate.strip()]
 
     # 修复跨行断词：exam-
     #              ple -> example
@@ -530,6 +835,9 @@ class TranslationThread(QThread):
                 raise RuntimeError("未设置 GPTSAPI_API_KEY")
 
             prompt = self.build_prompt()
+            format_instruction = markdown_format_instruction(self.text)
+            if format_instruction and self.mode != "dictionary":
+                prompt = f"{format_instruction}\n\n{prompt}"
             log(f"[TranslateThread] start, mode={self.mode}, text={repr(self.text[:200])}")
 
             response = client.chat.completions.create(
@@ -935,6 +1243,7 @@ class TranslationWindow(QWidget):
         self.alignment_selection_is_sentence = False
         self.selection_capture_busy = False
         self.xbutton1_hook = None
+        self.current_request_is_structured = False
 
         self.init_ui()
         self.setup_result_format()
@@ -1015,7 +1324,10 @@ class TranslationWindow(QWidget):
 
             while time.monotonic() < deadline:
                 QApplication.processEvents()
-                current_text = clipboard.text()
+                current_text = clipboard_mime_to_formatted_text(
+                    clipboard.mimeData(),
+                    sentinel,
+                )
 
                 if current_text and current_text != sentinel:
                     captured_text = current_text
@@ -1478,6 +1790,105 @@ class TranslationWindow(QWidget):
         self.result_block_fmt.setLineHeight(150, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
         self.result_block_fmt.setBottomMargin(12)
 
+    def apply_markdown_document_style(self, widget, source_name: str):
+        text_color = "#606266" if source_name == "origin" else "#2c3e50"
+        if source_name == "origin":
+            font_pixel_size = 13 if self.source_mode == "snipdo" else 14
+        else:
+            font_pixel_size = 15
+        font_size = f"{font_pixel_size}px"
+        font = QFont()
+        font.setFamilies(["Segoe UI", "Microsoft YaHei UI", "sans-serif"])
+        font.setPixelSize(font_pixel_size)
+        widget.setFont(font)
+        widget.document().setDefaultFont(font)
+        widget.document().setIndentWidth(14)
+        widget.document().setDefaultStyleSheet(f"""
+            body {{
+                color: {text_color};
+                font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+                font-size: {font_size};
+                line-height: 1.62;
+            }}
+            h1, h2, h3, h4, h5, h6 {{
+                color: #303133;
+                font-weight: 600;
+                margin-top: 10px;
+                margin-bottom: 6px;
+            }}
+            h1 {{
+                font-size: 20px;
+            }}
+            h2 {{
+                font-size: 18px;
+            }}
+            h3 {{
+                font-size: 16px;
+            }}
+            h4, h5, h6 {{
+                font-size: 15px;
+            }}
+            p {{
+                margin-top: 0;
+                margin-bottom: 8px;
+            }}
+            ul, ol {{
+                margin-top: 4px;
+                margin-bottom: 8px;
+                margin-left: 10px;
+                padding-left: 10px;
+            }}
+            blockquote {{
+                color: #606266;
+                border-left: 3px solid #DCDFE6;
+                margin-left: 0;
+                padding-left: 8px;
+            }}
+            code, pre {{
+                background-color: #F5F7FA;
+                color: #303133;
+                font-family: Consolas, "Cascadia Mono", monospace;
+            }}
+            table {{
+                border-collapse: collapse;
+            }}
+            th, td {{
+                border: 1px solid #DCDFE6;
+                padding: 4px 6px;
+            }}
+        """)
+
+    def compact_markdown_list_indents(self, widget):
+        document = widget.document()
+        block = document.firstBlock()
+
+        while block.isValid():
+            text_list = block.textList()
+            if text_list is not None:
+                list_format = text_list.format()
+                indent = max(1, min(list_format.indent(), 2))
+                if list_format.indent() != indent:
+                    list_format.setIndent(indent)
+                    text_list.setFormat(list_format)
+            block = block.next()
+
+    def render_markdown_text(self, widget, markdown_text: str, source_name: str) -> bool:
+        markdown_text = (markdown_text or "").strip()
+        if not markdown_text:
+            widget.clear()
+            return True
+
+        try:
+            self.apply_markdown_document_style(widget, source_name)
+            widget.setMarkdown(markdown_text)
+            self.compact_markdown_list_indents(widget)
+            widget.moveCursor(QTextCursor.MoveOperation.Start)
+            return True
+        except Exception as e:
+            log(f"[Markdown] render failed for {source_name}: {e}")
+            widget.setPlainText(markdown_text)
+            return False
+
     def ensure_api_key(self) -> bool:
         if client is not None:
             return True
@@ -1491,6 +1902,10 @@ class TranslationWindow(QWidget):
         )
 
         if ok and configure_api_client(api_key):
+            if save_local_api_key(api_key):
+                log(f"[UI] API key saved to {LOCAL_API_KEY_FILE}")
+            else:
+                log(f"[UI] API key configured but failed to save {LOCAL_API_KEY_FILE}")
             log("[UI] API key configured from manual input")
             return True
 
@@ -2285,6 +2700,12 @@ class TranslationWindow(QWidget):
     # ---------- 原文显示 ----------
     def populate_original_text(self):
         self.txt_origin.clear()
+
+        total_text = "\n".join(self.original_paragraphs).strip()
+        if self.current_request_is_structured and total_text:
+            self.render_markdown_text(self.txt_origin, total_text, "origin")
+            return
+
         cursor = self.txt_origin.textCursor()
 
         font = QFont()
@@ -2347,6 +2768,7 @@ class TranslationWindow(QWidget):
 
             total_text = "\n".join(self.original_paragraphs).strip()
             self.pending_snipdo_text = total_text
+            self.current_request_is_structured = is_structured_text(total_text)
 
             effective_mode = self.resolve_effective_mode(total_text)
 
@@ -2377,6 +2799,7 @@ class TranslationWindow(QWidget):
 
         effective_mode = self.resolve_effective_mode(text_to_translate)
         dictionary_source_lang, dictionary_target_lang = self.current_dictionary_languages()
+        self.current_request_is_structured = is_structured_text(text_to_translate)
 
         self.cancel_current_translation()
 
@@ -2474,6 +2897,11 @@ class TranslationWindow(QWidget):
         if not success and error_msg != "已取消":
             cursor.movePosition(QTextCursor.MoveOperation.End)
             cursor.insertText(f"\n\n[翻译出错: {error_msg}]", self.result_char_fmt)
+
+        if success and self.full_translation.strip() and (
+            self.current_request_is_structured or is_structured_text(self.full_translation)
+        ):
+            self.render_markdown_text(self.txt_result, self.full_translation, "result")
 
         if self.source_mode == "manual":
             self.btn_translate.setEnabled(True)
