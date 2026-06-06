@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import (
     QColor, QScreen, QTextCursor, QTextCharFormat,
-    QTextBlockFormat, QFont, QAction, QIcon
+    QTextBlockFormat, QTextFormat, QFont, QAction, QIcon
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QTimer, QByteArray, QBuffer, QIODevice, QMimeData
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
@@ -1051,6 +1051,11 @@ class OcrThread(QThread):
 
 
 # ================= 3. 统一文本框：支持 Ctrl+Enter =================
+class NoWheelComboBox(QComboBox):
+    def wheelEvent(self, event):
+        event.ignore()
+
+
 class InteractiveTextEdit(QTextEdit):
     submit_signal = pyqtSignal()
 
@@ -1556,7 +1561,7 @@ class TranslationWindow(QWidget):
             }
         """
 
-        self.cbo_dictionary_source = QComboBox()
+        self.cbo_dictionary_source = NoWheelComboBox()
         self.cbo_dictionary_source.setStyleSheet(combo_style)
         self.cbo_dictionary_source.setFixedWidth(82)
         self.cbo_dictionary_source.setToolTip("原文语言")
@@ -1567,7 +1572,7 @@ class TranslationWindow(QWidget):
         self.lbl_dictionary_arrow = QLabel("→")
         self.lbl_dictionary_arrow.setStyleSheet("color: #C0C4CC; font-size: 12px;")
 
-        self.cbo_dictionary_target = QComboBox()
+        self.cbo_dictionary_target = NoWheelComboBox()
         self.cbo_dictionary_target.setStyleSheet(combo_style)
         self.cbo_dictionary_target.setFixedWidth(82)
         self.cbo_dictionary_target.setToolTip("译文/释义语言")
@@ -1808,7 +1813,7 @@ class TranslationWindow(QWidget):
                 color: {text_color};
                 font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
                 font-size: {font_size};
-                line-height: 1.62;
+                line-height: 1.18;
             }}
             h1, h2, h3, h4, h5, h6 {{
                 color: #303133;
@@ -1872,6 +1877,71 @@ class TranslationWindow(QWidget):
                     text_list.setFormat(list_format)
             block = block.next()
 
+    def apply_markdown_block_formats(self, widget, source_name: str):
+        document = widget.document()
+        text_color = QColor("#606266" if source_name == "origin" else "#2C3E50")
+        heading_sizes = {
+            1: 20,
+            2: 18,
+            3: 16,
+            4: 15,
+            5: 15,
+            6: 15,
+        }
+        block = document.firstBlock()
+
+        while block.isValid():
+            block_format = block.blockFormat()
+            block_format.setLineHeight(
+                140,
+                QTextBlockFormat.LineHeightTypes.ProportionalHeight.value,
+            )
+
+            heading_level = block_format.headingLevel()
+            if heading_level:
+                block_format.setTopMargin(10)
+                block_format.setBottomMargin(6)
+
+            block_cursor = QTextCursor(block)
+            block_cursor.setBlockFormat(block_format)
+
+            if heading_level:
+                heading_fragments = []
+                fragment_iterator = block.begin()
+                while not fragment_iterator.atEnd():
+                    fragment = fragment_iterator.fragment()
+                    if fragment.isValid():
+                        heading_fragments.append((
+                            fragment.position(),
+                            fragment.length(),
+                            QTextCharFormat(fragment.charFormat()),
+                        ))
+                    fragment_iterator += 1
+
+                for position, length, heading_format in heading_fragments:
+                    heading_format.clearProperty(QTextFormat.Property.FontSizeAdjustment)
+                    heading_format.setProperty(
+                        QTextFormat.Property.FontPixelSize,
+                        heading_sizes.get(heading_level, 15),
+                    )
+                    heading_format.setFontWeight(QFont.Weight.DemiBold)
+                    heading_format.setForeground(text_color)
+
+                    fragment_cursor = QTextCursor(document)
+                    fragment_cursor.setPosition(position)
+                    fragment_cursor.setPosition(
+                        position + length,
+                        QTextCursor.MoveMode.KeepAnchor,
+                    )
+                    fragment_cursor.setCharFormat(heading_format)
+            else:
+                block_cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
+                text_format = QTextCharFormat()
+                text_format.setForeground(text_color)
+                block_cursor.mergeCharFormat(text_format)
+
+            block = block.next()
+
     def render_markdown_text(self, widget, markdown_text: str, source_name: str) -> bool:
         markdown_text = (markdown_text or "").strip()
         if not markdown_text:
@@ -1882,6 +1952,7 @@ class TranslationWindow(QWidget):
             self.apply_markdown_document_style(widget, source_name)
             widget.setMarkdown(markdown_text)
             self.compact_markdown_list_indents(widget)
+            self.apply_markdown_block_formats(widget, source_name)
             widget.moveCursor(QTextCursor.MoveOperation.Start)
             return True
         except Exception as e:
@@ -2898,9 +2969,7 @@ class TranslationWindow(QWidget):
             cursor.movePosition(QTextCursor.MoveOperation.End)
             cursor.insertText(f"\n\n[翻译出错: {error_msg}]", self.result_char_fmt)
 
-        if success and self.full_translation.strip() and (
-            self.current_request_is_structured or is_structured_text(self.full_translation)
-        ):
+        if success and self.full_translation.strip():
             self.render_markdown_text(self.txt_result, self.full_translation, "result")
 
         if self.source_mode == "manual":
