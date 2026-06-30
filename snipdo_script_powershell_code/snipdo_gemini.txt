@@ -6,10 +6,6 @@ $apiKey = ""
 
 $inputText = $args -join " "
 
-if ([string]::IsNullOrWhiteSpace($inputText)) {
-    exit
-}
-
 if (!(Test-Path $pythonExe)) {
     exit
 }
@@ -22,6 +18,14 @@ if (!(Test-Path $scriptPath)) {
 # 如果留空，则交给 Python 界面在翻译前手动输入。
 if (![string]::IsNullOrWhiteSpace($apiKey)) {
     $env:GPTSAPI_API_KEY = $apiKey
+}
+
+if ([string]::IsNullOrWhiteSpace($inputText)) {
+    Start-Process -FilePath $pythonExe -ArgumentList @(
+        "`"$scriptPath`"",
+        "--show"
+    ) -WindowStyle Hidden
+    exit
 }
 
 $tempFile = Join-Path $env:TEMP ("snipdo_gptsapi_" + [guid]::NewGuid().ToString() + ".txt")

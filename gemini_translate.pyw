@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTextEdit,
     QPushButton, QLabel, QFrame, QGraphicsDropShadowEffect,
     QHBoxLayout, QSystemTrayIcon, QMenu, QInputDialog, QLineEdit,
-    QComboBox
+    QComboBox, QProgressBar
 )
 from PyQt6.QtGui import (
     QColor, QScreen, QTextCursor, QTextCharFormat,
@@ -35,6 +35,12 @@ LOCAL_API_KEY_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     LOCAL_API_KEY_FILE,
 )
+TRANSLATION_HISTORY_FILE = "translation_history.json"
+TRANSLATION_HISTORY_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    TRANSLATION_HISTORY_FILE,
+)
+MAX_HISTORY_ITEMS = 50
 
 
 def read_local_api_key() -> str:
@@ -72,6 +78,7 @@ MODEL_NAME = 'gpt-5.4-nano'
 REQUEST_TIMEOUT_SECONDS = 15.0
 SERVER_NAME = "gptsapi_translate_snipdo_single_instance_v1"
 OCR_IMAGE_REQUEST_PREFIX = "__GPTSAPI_OCR_IMAGE__:"
+SHOW_WINDOW_REQUEST = "__GPTSAPI_SHOW_WINDOW__"
 
 
 def is_placeholder_api_key(api_key: str) -> bool:
@@ -179,6 +186,14 @@ user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
 user32.UnhookWindowsHookEx.restype = ctypes.c_bool
 kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
 kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+user32.GetClipboardSequenceNumber.restype = ctypes.c_ulong
+
+
+def get_clipboard_sequence_number() -> int:
+    try:
+        return int(user32.GetClipboardSequenceNumber())
+    except Exception:
+        return 0
 
 
 def win32_force_foreground(hwnd: int) -> bool:
@@ -1156,6 +1171,70 @@ class SingleInstanceServer(QObject):
 
 
 # ================= 4. 主窗口逻辑 =================
+class TranslationProgressWindow(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(
+            parent,
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setWindowTitle("Translating")
+        self.setFixedSize(260, 74)
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #FFFFFF;
+                border: 1px solid #DADDE3;
+                border-radius: 8px;
+            }
+            QLabel {
+                color: #303133;
+                border: none;
+                font-family: 'Segoe UI', 'Microsoft YaHei UI';
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QProgressBar {
+                border: 1px solid #DADDE3;
+                border-radius: 4px;
+                background-color: #F5F7FA;
+                height: 8px;
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                border-radius: 4px;
+                background-color: #8E44AD;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
+
+        self.label = QLabel("Translating...")
+        layout.addWidget(self.label)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setTextVisible(False)
+        layout.addWidget(self.progress_bar)
+
+    def show_progress(self, mode: str):
+        self.label.setText("Looking up..." if mode == "dictionary" else "Translating...")
+
+        screen = QApplication.primaryScreen()
+        if screen:
+            available = screen.availableGeometry()
+            x = available.right() - self.width() - 24
+            y = available.bottom() - self.height() - 36
+            self.move(max(available.left(), x), max(available.top(), y))
+
+        self.show()
+        self.raise_()
+
+
 class XButton1MouseHook(QObject):
     triggered = pyqtSignal()
 
@@ -1186,6 +1265,9 @@ class XButton1MouseHook(QObject):
 
         log("[XButton1] hook installed")
         return True
+
+    def is_installed(self) -> bool:
+        return bool(self._hook)
 
     def uninstall(self):
         if not self._hook:
@@ -1249,6 +1331,11 @@ class TranslationWindow(QWidget):
         self.selection_capture_busy = False
         self.xbutton1_hook = None
         self.current_request_is_structured = False
+        self.defer_result_window_until_finished = False
+        self.active_translation_text = ""
+        self.active_translation_mode = ""
+        self.translation_history = self.load_translation_history()
+        self.progress_window = TranslationProgressWindow()
 
         self.init_ui()
         self.setup_result_format()
@@ -1305,13 +1392,24 @@ class TranslationWindow(QWidget):
                 1800,
             )
 
+    def suspend_xbutton1_hook(self):
+        if self.xbutton1_hook and self.xbutton1_hook.is_installed():
+            self.xbutton1_hook.uninstall()
+
+    def restore_xbutton1_hook(self):
+        if self.force_quit:
+            return
+        if self.xbutton1_hook and not self.xbutton1_hook.is_installed():
+            self.xbutton1_hook.install()
+
     def on_xbutton1_triggered(self):
         if self.selection_capture_busy:
             log("[XButton1] capture skipped: busy")
             return
 
         self.selection_capture_busy = True
-        QTimer.singleShot(30, self.translate_current_selection)
+        self.suspend_xbutton1_hook()
+        QTimer.singleShot(10, self.translate_current_selection)
 
     def capture_current_selection_text(self) -> str:
         clipboard = QApplication.clipboard()
@@ -1321,14 +1419,21 @@ class TranslationWindow(QWidget):
         try:
             clipboard.setText(sentinel)
             QApplication.processEvents()
+            sentinel_sequence = get_clipboard_sequence_number()
 
             send_ctrl_c()
 
-            deadline = time.monotonic() + 0.65
+            start_time = time.monotonic()
+            quick_deadline = start_time + 0.28
+            full_deadline = start_time + 0.65
             captured_text = ""
+            clipboard_changed = False
 
-            while time.monotonic() < deadline:
+            while time.monotonic() < (full_deadline if clipboard_changed else quick_deadline):
                 QApplication.processEvents()
+                if get_clipboard_sequence_number() != sentinel_sequence:
+                    clipboard_changed = True
+
                 current_text = clipboard_mime_to_formatted_text(
                     clipboard.mimeData(),
                     sentinel,
@@ -1338,7 +1443,7 @@ class TranslationWindow(QWidget):
                     captured_text = current_text
                     break
 
-                time.sleep(0.03)
+                time.sleep(0.015)
 
             return captured_text.strip()
         finally:
@@ -1358,13 +1463,7 @@ class TranslationWindow(QWidget):
 
             if not selected_text:
                 log("[XButton1] no selected text captured")
-                if self.tray_icon.isVisible():
-                    self.tray_icon.showMessage(
-                        "Gemini Translate",
-                        "No selected text",
-                        QSystemTrayIcon.MessageIcon.Information,
-                        1000,
-                    )
+                self.show_manual_window()
                 return
 
             self.handle_new_request(selected_text)
@@ -1372,6 +1471,7 @@ class TranslationWindow(QWidget):
             log(f"[XButton1] translate_current_selection error: {e}")
         finally:
             self.selection_capture_busy = False
+            QTimer.singleShot(150, self.restore_xbutton1_hook)
 
     def on_tray_activated(self, reason):
         log(f"[Tray] activated: {reason}")
@@ -1396,12 +1496,15 @@ class TranslationWindow(QWidget):
         self.force_quit = True
         self.cancel_current_ocr()
         self.cancel_current_translation()
+        self.hide_translation_progress()
         if self.xbutton1_hook:
             self.xbutton1_hook.uninstall()
         self.tray_icon.hide()
         QApplication.quit()
 
     def cancel_current_translation(self):
+        self.defer_result_window_until_finished = False
+        self.hide_translation_progress()
         if self.trans_thread and self.trans_thread.isRunning():
             log("[UI] cancel_current_translation")
             self.trans_thread.request_stop()
@@ -1701,6 +1804,27 @@ class TranslationWindow(QWidget):
         """)
         btn_layout.addWidget(self.btn_ocr_clipboard)
 
+        self.btn_history = QPushButton("History")
+        self.btn_history.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_history.clicked.connect(self.show_history_menu)
+        self.btn_history.setStyleSheet("""
+            QPushButton {
+                background-color: #F2F3F5;
+                color: #606266;
+                border: 1px solid #DCDFE6;
+                border-radius: 6px;
+                padding: 6px 14px;
+                font-family: 'Segoe UI', 'Microsoft YaHei UI';
+                font-weight: 600;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #E4E7ED;
+                color: #303133;
+            }
+        """)
+        btn_layout.addWidget(self.btn_history)
+
         self.btn_translate = QPushButton("Translate (Ctrl+Enter)")
         self.btn_translate.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_translate.clicked.connect(self.start_manual_translation)
@@ -1960,6 +2084,133 @@ class TranslationWindow(QWidget):
             widget.setPlainText(markdown_text)
             return False
 
+    def load_translation_history(self):
+        try:
+            if not os.path.exists(TRANSLATION_HISTORY_PATH):
+                return []
+            with open(TRANSLATION_HISTORY_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, list):
+                return []
+            return [item for item in data if isinstance(item, dict)][:MAX_HISTORY_ITEMS]
+        except Exception as e:
+            log(f"[History] load error: {e}")
+            return []
+
+    def save_translation_history(self):
+        try:
+            with open(TRANSLATION_HISTORY_PATH, "w", encoding="utf-8") as f:
+                json.dump(self.translation_history[:MAX_HISTORY_ITEMS], f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            log(f"[History] save error: {e}")
+
+    def history_preview(self, text: str, limit: int = 54) -> str:
+        preview = re.sub(r"\s+", " ", (text or "").strip())
+        if len(preview) > limit:
+            preview = preview[:limit - 3].rstrip() + "..."
+        return preview or "(empty)"
+
+    def add_history_entry(self, source_text: str, result_text: str, mode: str):
+        source_text = (source_text or "").strip()
+        result_text = (result_text or "").strip()
+        if not source_text or not result_text:
+            return
+
+        entry = {
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "mode": mode or "auto",
+            "source": source_text,
+            "result": result_text,
+        }
+
+        self.translation_history = [
+            item for item in self.translation_history
+            if item.get("source") != source_text or item.get("result") != result_text
+        ]
+        self.translation_history.insert(0, entry)
+        self.translation_history = self.translation_history[:MAX_HISTORY_ITEMS]
+        self.save_translation_history()
+
+    def show_history_menu(self):
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #FFFFFF;
+                color: #303133;
+                border: 1px solid #DCDFE6;
+                border-radius: 6px;
+                padding: 4px;
+                font-family: 'Segoe UI', 'Microsoft YaHei UI';
+                font-size: 12px;
+            }
+            QMenu::item {
+                color: #303133;
+                background-color: transparent;
+                padding: 6px 22px 6px 10px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                color: #303133;
+                background-color: #EDE7F6;
+            }
+            QMenu::item:disabled {
+                color: #A8ABB2;
+            }
+            QMenu::separator {
+                height: 1px;
+                background-color: #E4E7ED;
+                margin: 4px 6px;
+            }
+        """)
+
+        if not self.translation_history:
+            empty_action = QAction("No history", self)
+            empty_action.setEnabled(False)
+            menu.addAction(empty_action)
+        else:
+            for entry in self.translation_history[:12]:
+                title = f"{entry.get('time', '')}  {self.history_preview(entry.get('source', ''))}"
+                action = QAction(title, self)
+                action.triggered.connect(lambda _checked=False, item=entry: self.load_history_entry(item))
+                menu.addAction(action)
+
+            menu.addSeparator()
+            clear_action = QAction("Clear history", self)
+            clear_action.triggered.connect(self.clear_translation_history)
+            menu.addAction(clear_action)
+
+        menu.exec(self.btn_history.mapToGlobal(self.btn_history.rect().bottomLeft()))
+
+    def clear_translation_history(self):
+        self.translation_history = []
+        self.save_translation_history()
+
+    def load_history_entry(self, entry):
+        source_text = (entry.get("source") or "").strip()
+        result_text = (entry.get("result") or "").strip()
+        if not source_text and not result_text:
+            return
+
+        self.hide_translation_progress()
+        self.cancel_current_translation()
+        self.source_mode = "manual"
+        self.apply_manual_mode_ui(reset_content=True)
+        self.txt_origin.setPlainText(source_text)
+        self.original_paragraphs = [p.strip() for p in re.split(r'\n+', normalize_newlines(source_text)) if p.strip()]
+        self.full_translation = result_text
+        self.setup_result_format()
+        if result_text:
+            self.render_markdown_text(self.txt_result, result_text, "result")
+            self.btn_copy.setEnabled(True)
+        self.force_show_window()
+
+    def show_translation_progress(self, mode: str):
+        self.progress_window.show_progress(mode)
+
+    def hide_translation_progress(self):
+        if self.progress_window:
+            self.progress_window.hide()
+
     def ensure_api_key(self) -> bool:
         if client is not None:
             return True
@@ -2162,6 +2413,7 @@ class TranslationWindow(QWidget):
 
         effective_mode = self.resolve_effective_mode(total_text)
         self.cancel_current_translation()
+        self.defer_result_window_until_finished = False
         self.full_translation = ""
         self.setup_result_format()
         self.btn_copy.setText("Looking up..." if effective_mode == "dictionary" else "Translating...")
@@ -2821,6 +3073,10 @@ class TranslationWindow(QWidget):
     def handle_new_request(self, raw_text):
         try:
             log(f"[UI] handle_new_request received: {repr(raw_text[:300])}")
+            if raw_text == SHOW_WINDOW_REQUEST:
+                self.show_manual_window()
+                return
+
             ocr_request = parse_ocr_image_request(raw_text)
             if ocr_request:
                 file_path, delete_after = ocr_request
@@ -2854,15 +3110,20 @@ class TranslationWindow(QWidget):
             self.populate_original_text()
             self.setup_result_format()
 
-            self.force_show_window()
+            self.defer_result_window_until_finished = True
+            self.hide()
+            self.show_translation_progress(effective_mode)
 
-            QTimer.singleShot(120, lambda: self.start_translation(total_text, effective_mode))
+            QTimer.singleShot(30, lambda: self.start_translation(total_text, effective_mode))
         except Exception as e:
             log(f"[UI] handle_new_request error: {e}")
 
     def start_manual_translation(self):
         if self.source_mode != "manual":
             return
+
+        self.defer_result_window_until_finished = False
+        self.hide_translation_progress()
 
         text_to_translate = self.txt_origin.toPlainText().strip()
         if not text_to_translate:
@@ -2908,6 +3169,8 @@ class TranslationWindow(QWidget):
         dictionary_target_lang: str = None,
     ):
         log(f"[UI] start_translation, mode={mode}, text={repr(text[:300])}")
+        self.active_translation_text = text
+        self.active_translation_mode = mode
 
         if not self.ensure_api_key():
             cursor = self.txt_result.textCursor()
@@ -2920,6 +3183,10 @@ class TranslationWindow(QWidget):
 
             self.btn_copy.setText("Copy")
             self.btn_copy.setEnabled(False)
+            if self.defer_result_window_until_finished:
+                self.defer_result_window_until_finished = False
+                self.hide_translation_progress()
+                self.force_show_window()
             return
 
         cursor = self.txt_result.textCursor()
@@ -2971,6 +3238,11 @@ class TranslationWindow(QWidget):
 
         if success and self.full_translation.strip():
             self.render_markdown_text(self.txt_result, self.full_translation, "result")
+            self.add_history_entry(
+                self.active_translation_text,
+                self.full_translation,
+                self.active_translation_mode,
+            )
 
         if self.source_mode == "manual":
             self.btn_translate.setEnabled(True)
@@ -2978,6 +3250,12 @@ class TranslationWindow(QWidget):
 
         self.btn_copy.setText("Copy")
         self.btn_copy.setEnabled(bool(self.full_translation.strip()))
+
+        if self.defer_result_window_until_finished:
+            self.defer_result_window_until_finished = False
+            self.hide_translation_progress()
+            self.adjust_window_height()
+            self.force_show_window()
 
     # ---------- 剪贴板 ----------
     def copy_to_clipboard(self):
@@ -3004,8 +3282,11 @@ class TranslationWindow(QWidget):
 
 def main():
     raw_text = ""
+    show_requested = False
 
-    if len(sys.argv) > 2 and sys.argv[1] == "--image":
+    if len(sys.argv) > 1 and sys.argv[1] == "--show":
+        show_requested = True
+    elif len(sys.argv) > 2 and sys.argv[1] == "--image":
         image_path = sys.argv[2]
         delete_after = "--delete-after" in sys.argv[3:]
         raw_text = build_ocr_image_request(image_path, delete_after)
@@ -3031,7 +3312,11 @@ def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
 
-    if raw_text:
+    if show_requested:
+        if send_to_existing_instance(SHOW_WINDOW_REQUEST):
+            log("[Main] show request sent to existing instance, exiting current process")
+            return
+    elif raw_text:
         if send_to_existing_instance(raw_text):
             log("[Main] text sent to existing instance, exiting current process")
             return
@@ -3046,12 +3331,18 @@ def main():
         server = None
         log(f"[Main] single instance server init failed: {e}")
 
+        if show_requested and send_to_existing_instance(SHOW_WINDOW_REQUEST, retries=6, delay_ms=220):
+            log("[Main] fallback show request succeeded after server init failed, exiting")
+            return
+
         if raw_text and send_to_existing_instance(raw_text, retries=6, delay_ms=220):
             log("[Main] fallback send succeeded after server init failed, exiting")
             return
 
     if raw_text:
         QTimer.singleShot(120, lambda: window.handle_new_request(raw_text))
+    elif show_requested:
+        QTimer.singleShot(120, window.show_manual_window)
     else:
         # 先真实显示一次窗口，再隐藏到托盘。
         # 在 Windows + pythonw + 托盘场景下，这有助于后续窗口被可靠恢复显示。
