@@ -8,3 +8,4 @@ __pycache__/
 !.env.example
 .gptsapi_api_key
 translation_history.json
+.worktrees/
