@@ -183,7 +183,7 @@ def test_request_json_round_trip():
 
 - [ ] **Step 2: Run the tests and verify the intended red state**
 
-Run: `\.venv\Scripts\python.exe -m pytest tests/test_app_cli.py -q`
+Run: `D:\test\my_snipdo_translate\.venv\Scripts\python.exe -m pytest tests/test_app_cli.py -q`
 
 Expected: FAIL during collection with `ModuleNotFoundError: No module named 'app_cli'`.
 
@@ -322,7 +322,7 @@ def delete_acknowledged_source(prepared: PreparedRequest, accepted: bool) -> boo
 
 - [ ] **Step 4: Run the focused tests green**
 
-Run: `\.venv\Scripts\python.exe -m pytest tests/test_app_cli.py -q`
+Run: `D:\test\my_snipdo_translate\.venv\Scripts\python.exe -m pytest tests/test_app_cli.py -q`
 
 Expected: `11 passed` (the parametrized invalid cases count individually).
 
@@ -431,7 +431,7 @@ def test_migration_copies_once_without_deleting_or_overwriting(tmp_path: Path):
 
 - [ ] **Step 2: Verify the path tests fail before implementation**
 
-Run: `\.venv\Scripts\python.exe -m pytest tests/test_app_paths.py -q`
+Run: `D:\test\my_snipdo_translate\.venv\Scripts\python.exe -m pytest tests/test_app_paths.py -q`
 
 Expected: FAIL during collection with `ModuleNotFoundError: No module named 'app_paths'`.
 
@@ -562,7 +562,7 @@ def migrate_legacy_history(paths: AppPaths) -> bool:
 
 - [ ] **Step 4: Run focused path/history tests green**
 
-Run: `\.venv\Scripts\python.exe -m pytest tests/test_app_paths.py -q`
+Run: `D:\test\my_snipdo_translate\.venv\Scripts\python.exe -m pytest tests/test_app_paths.py -q`
 
 Expected: `5 passed`.
 
@@ -650,7 +650,7 @@ def test_placeholder_values_are_rejected():
 
 - [ ] **Step 2: Verify credential tests fail before implementation**
 
-Run: `\.venv\Scripts\python.exe -m pytest tests/test_credential_store.py -q`
+Run: `D:\test\my_snipdo_translate\.venv\Scripts\python.exe -m pytest tests/test_credential_store.py -q`
 
 Expected: FAIL during collection with `ModuleNotFoundError: No module named 'credential_store'`.
 
@@ -814,7 +814,7 @@ def test_windows_credential_contract_uses_synthetic_target():
 
 - [ ] **Step 4: Run credential tests green**
 
-Run: `\.venv\Scripts\python.exe -m pytest tests/test_credential_store.py -q`
+Run: `D:\test\my_snipdo_translate\.venv\Scripts\python.exe -m pytest tests/test_credential_store.py -q`
 
 Expected: all tests pass; the Windows synthetic contract test also passes and leaves no test credential.
 
@@ -868,7 +868,7 @@ def test_logger_rotates_at_configured_size(tmp_path: Path):
 
 - [ ] **Step 2: Verify logging tests fail before implementation**
 
-Run: `\.venv\Scripts\python.exe -m pytest tests/test_app_logging.py -q`
+Run: `D:\test\my_snipdo_translate\.venv\Scripts\python.exe -m pytest tests/test_app_logging.py -q`
 
 Expected: FAIL during collection with `ModuleNotFoundError: No module named 'app_logging'`.
 
@@ -919,7 +919,7 @@ def log_event(event: str, **fields: object) -> None:
 
 - [ ] **Step 4: Run logging tests green**
 
-Run: `\.venv\Scripts\python.exe -m pytest tests/test_app_logging.py -q`
+Run: `D:\test\my_snipdo_translate\.venv\Scripts\python.exe -m pytest tests/test_app_logging.py -q`
 
 Expected: `2 passed`.
 
@@ -1014,7 +1014,7 @@ def test_unique_mutex_has_exactly_one_primary():
 
 - [ ] **Step 2: Run focused protocol tests red**
 
-Run: `\.venv\Scripts\python.exe -m pytest tests/test_single_instance.py -q`
+Run: `D:\test\my_snipdo_translate\.venv\Scripts\python.exe -m pytest tests/test_single_instance.py -q`
 
 Expected: FAIL during collection with `ModuleNotFoundError: No module named 'single_instance'`.
 
@@ -1212,7 +1212,7 @@ Do not call `QLocalServer.removeServer` after a second process has detected an e
 
 - [ ] **Step 5: Run IPC tests green**
 
-Run: `\.venv\Scripts\python.exe -m pytest tests/test_single_instance.py -q`
+Run: `D:\test\my_snipdo_translate\.venv\Scripts\python.exe -m pytest tests/test_single_instance.py -q`
 
 Expected: all frame, ACK, mutex, and unique Qt local-server tests pass.
 
@@ -1272,7 +1272,7 @@ def test_legacy_unstructured_logger_is_fully_removed(project_root):
 
 - [ ] **Step 2: Run the integration tests red**
 
-Run: `\.venv\Scripts\python.exe -m pytest tests/test_main_integration.py tests/test_self_test.py -q`
+Run: `D:\test\my_snipdo_translate\.venv\Scripts\python.exe -m pytest tests/test_main_integration.py tests/test_self_test.py -q`
 
 Expected: FAIL because `self_test.py`, dependency injection, and `handle_app_request` do not exist.
 
@@ -1471,7 +1471,7 @@ Import `ensure_app_directories` and `QMessageBox`. Keep strong references to `se
 
 - [ ] **Step 7: Run focused and regression tests green**
 
-Run: `\.venv\Scripts\python.exe -m pytest tests/test_main_integration.py tests/test_self_test.py tests/test_app_cli.py tests/test_app_paths.py tests/test_credential_store.py tests/test_app_logging.py tests/test_single_instance.py -q`
+Run: `D:\test\my_snipdo_translate\.venv\Scripts\python.exe -m pytest tests/test_main_integration.py tests/test_self_test.py tests/test_app_cli.py tests/test_app_paths.py tests/test_credential_store.py tests/test_app_logging.py tests/test_single_instance.py -q`
 
 Expected: all tests pass with no network calls, no real credential reads, and no raw payload in test logs.
 
@@ -1520,7 +1520,7 @@ def test_tracked_legacy_source_has_no_hardcoded_google_key(project_root):
 
 - [ ] **Step 2: Run the two new tests red**
 
-Run: `\.venv\Scripts\python.exe -m pytest tests/test_main_integration.py -q`
+Run: `D:\test\my_snipdo_translate\.venv\Scripts\python.exe -m pytest tests/test_main_integration.py -q`
 
 Expected: the script/legacy safety tests fail against the current files.
 
@@ -1602,7 +1602,7 @@ Then add `!snipdo_script_logo/SnipDoTranslate.ico` so the reproducible app icon 
 
 - [ ] **Step 5: Run script safety and full offline tests green**
 
-Run: `\.venv\Scripts\python.exe -m pytest -q`
+Run: `D:\test\my_snipdo_translate\.venv\Scripts\python.exe -m pytest -q`
 
 Expected: all tests pass.
 
@@ -1658,7 +1658,7 @@ def test_icon_builder_declares_windows_sizes(project_root: Path):
 
 - [ ] **Step 2: Run build configuration tests red**
 
-Run: `\.venv\Scripts\python.exe -m pytest tests/test_build_files.py -q`
+Run: `D:\test\my_snipdo_translate\.venv\Scripts\python.exe -m pytest tests/test_build_files.py -q`
 
 Expected: FAIL because the build files do not exist.
 
@@ -1909,7 +1909,7 @@ try {
 Run:
 
 ```powershell
-\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
+D:\test\my_snipdo_translate\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
 ```
 
 Expected: PyInstaller 6.x, Pillow 11.x or 12.x, and pytest 8.x install successfully. If sandbox networking fails, rerun only this exact pip-install command with the required network approval.
@@ -1917,7 +1917,7 @@ Expected: PyInstaller 6.x, Pillow 11.x or 12.x, and pytest 8.x install successfu
 Run:
 
 ```powershell
-\.venv\Scripts\python.exe -m pip show PyInstaller Pillow pytest
+D:\test\my_snipdo_translate\.venv\Scripts\python.exe -m pip show PyInstaller Pillow pytest
 ```
 
 Patch `requirements-build.txt` to exact `==` versions from this output, then run `pip install -r requirements-build.txt` again and require `Requirement already satisfied` for all three direct dependencies.
@@ -1927,8 +1927,8 @@ Patch `requirements-build.txt` to exact `==` versions from this output, then run
 Run:
 
 ```powershell
-\.venv\Scripts\python.exe tools\create_icon.py
-\.venv\Scripts\python.exe -m pytest tests/test_build_files.py -q
+D:\test\my_snipdo_translate\.venv\Scripts\python.exe tools\create_icon.py
+D:\test\my_snipdo_translate\.venv\Scripts\python.exe -m pytest tests/test_build_files.py -q
 ```
 
 Expected: ICO exists and all build configuration tests pass.
@@ -1962,8 +1962,8 @@ Run:
 
 ```powershell
 git status --short
-\.venv\Scripts\python.exe -m pytest -q
-\.venv\Scripts\python.exe -m compileall -q app_cli.py app_paths.py credential_store.py app_logging.py single_instance.py self_test.py gemini_translate.pyw
+D:\test\my_snipdo_translate\.venv\Scripts\python.exe -m pytest -q
+D:\test\my_snipdo_translate\.venv\Scripts\python.exe -m compileall -q app_cli.py app_paths.py credential_store.py app_logging.py single_instance.py self_test.py gemini_translate.pyw
 git diff --check
 ```
 
