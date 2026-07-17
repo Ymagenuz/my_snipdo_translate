@@ -8,11 +8,46 @@ import ctypes
 import base64
 import mimetypes
 import uuid
+import threading
 from html import unescape
 from html.parser import HTMLParser
 from urllib.parse import unquote
 
 from openai import OpenAI
+
+from app_cli import (
+    AppRequest,
+    CliError,
+    PreparedRequest,
+    delete_acknowledged_source,
+    parse_cli,
+    prepare_request,
+)
+from app_logging import AppEvent, PrivacyEventLogger, configure_app_logging
+from app_paths import (
+    AppPaths,
+    HistoryDataError,
+    ensure_app_directories,
+    load_history,
+    migrate_legacy_history,
+    resolve_app_paths,
+    save_history_atomic,
+)
+from credential_store import (
+    WindowsCredentialStore,
+    is_placeholder_api_key,
+    resolve_api_key,
+)
+from windows_ipc import (
+    IpcError,
+    ReceiveResult,
+    RejectionReason,
+    SingleInstanceServer,
+    decode_json_payload,
+    encode_json_frame,
+    send_request,
+    validate_request_dict,
+)
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTextEdit,
@@ -22,106 +57,95 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import (
     QColor, QScreen, QTextCursor, QTextCharFormat,
-    QTextBlockFormat, QTextFormat, QFont, QAction, QIcon
+    QTextBlockFormat, QTextFormat, QFont, QAction, QIcon, QImage
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QTimer, QByteArray, QBuffer, QIODevice, QMimeData
-from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
 warnings.filterwarnings("ignore")
 
 # ================= 配置区域 =================
-LOCAL_API_KEY_FILE = ".gptsapi_api_key"
-LOCAL_API_KEY_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    LOCAL_API_KEY_FILE,
-)
-TRANSLATION_HISTORY_FILE = "translation_history.json"
-TRANSLATION_HISTORY_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    TRANSLATION_HISTORY_FILE,
-)
-MAX_HISTORY_ITEMS = 50
-
-
-def read_local_api_key() -> str:
-    try:
-        if not os.path.exists(LOCAL_API_KEY_PATH):
-            return ""
-
-        with open(LOCAL_API_KEY_PATH, "r", encoding="utf-8") as f:
-            return f.read().strip()
-    except Exception:
-        return ""
-
-
-def save_local_api_key(api_key: str) -> bool:
-    api_key = (api_key or "").strip()
-    if not api_key:
-        return False
-
-    try:
-        with open(LOCAL_API_KEY_PATH, "w", encoding="utf-8") as f:
-            f.write(api_key + "\n")
-        return True
-    except Exception:
-        return False
-
-
-GPTSAPI_API_KEY = os.getenv("GPTSAPI_API_KEY", "").strip() or read_local_api_key()
-client = None
-
-# PROXY_URL = 'http://127.0.0.1:7897'
-# os.environ['HTTPS_PROXY'] = PROXY_URL
-# os.environ['HTTP_PROXY'] = PROXY_URL
-
 MODEL_NAME = 'gpt-5.4-nano'
 REQUEST_TIMEOUT_SECONDS = 15.0
-SERVER_NAME = "gptsapi_translate_snipdo_single_instance_v1"
-OCR_IMAGE_REQUEST_PREFIX = "__GPTSAPI_OCR_IMAGE__:"
-SHOW_WINDOW_REQUEST = "__GPTSAPI_SHOW_WINDOW__"
+MAX_HISTORY_ITEMS = 50
+APP_ID = "SnipDoTranslate"
+IPC_UI_TIMEOUT_SECONDS = 4.0
+
+APP_PATHS: AppPaths | None = None
+CREDENTIAL_STORE: WindowsCredentialStore | None = None
+EVENT_LOG: PrivacyEventLogger | None = None
+client = None
 
 
-def is_placeholder_api_key(api_key: str) -> bool:
-    api_key = (api_key or "").strip().lower()
-    return (
-        not api_key
-        or "填这里" in api_key
-        or "your_" in api_key
-        or "your-" in api_key
-        or "api_key" in api_key
-    )
+def record_event(event: AppEvent) -> None:
+    """Best-effort fixed-event logging; never accepts caller-provided data."""
+    if EVENT_LOG is None:
+        return
+    try:
+        EVENT_LOG.event(event)
+    except Exception:
+        pass
+
+
+def log(_discarded_message: object) -> None:
+    """Compatibility sink for legacy debug calls.
+
+    Older UI code still constructs diagnostic strings that may contain content,
+    paths, or exception text.  They are intentionally discarded.  New runtime
+    diagnostics must use ``record_event`` with an allow-listed ``AppEvent``.
+    """
+    return None
 
 
 def configure_api_client(api_key: str) -> bool:
-    global GPTSAPI_API_KEY, client
+    global client
 
     api_key = (api_key or "").strip()
     if is_placeholder_api_key(api_key):
+        client = None
         return False
 
-    GPTSAPI_API_KEY = api_key
-    os.environ["GPTSAPI_API_KEY"] = api_key
-    client = OpenAI(
-        api_key=GPTSAPI_API_KEY,
-        base_url="https://api.gptsapi.net/v1",
-        timeout=REQUEST_TIMEOUT_SECONDS,
-        max_retries=1,
-    )
-    return True
-
-
-configure_api_client(GPTSAPI_API_KEY)
-# ===========================================
-
-
-# ================= 调试日志 =================
-def log(msg: str):
     try:
-        log_file = os.path.join(os.getenv("TEMP", "."), "gemini_translate_debug.log")
-        with open(log_file, "a", encoding="utf-8") as f:
-            f.write(msg + "\n")
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://api.gptsapi.net/v1",
+            timeout=REQUEST_TIMEOUT_SECONDS,
+            max_retries=1,
+        )
+        return True
     except Exception:
-        pass
+        client = None
+        return False
+
+
+def initialize_credentials(paths: AppPaths) -> WindowsCredentialStore | None:
+    """Resolve a key without making a network request or writing plaintext."""
+    global CREDENTIAL_STORE
+
+    try:
+        store = WindowsCredentialStore()
+        CREDENTIAL_STORE = store
+        resolution = resolve_api_key(
+            os.getenv("GPTSAPI_API_KEY", ""),
+            store,
+            paths.legacy_dirs,
+        )
+    except Exception:
+        record_event(AppEvent.CREDENTIAL_UNAVAILABLE)
+        return CREDENTIAL_STORE
+
+    if not resolution.key or not configure_api_client(resolution.key):
+        record_event(AppEvent.CREDENTIAL_MISSING)
+        return store
+
+    record_event(
+        AppEvent.CREDENTIAL_MIGRATED
+        if resolution.migrated
+        else AppEvent.CREDENTIAL_AVAILABLE
+    )
+    return store
+
+
+# ===========================================
 
 
 # ================= Windows 前台显示工具 =================
@@ -556,27 +580,6 @@ def clipboard_mime_to_formatted_text(mime_data, sentinel: str = "") -> str:
     return ""
 
 
-def build_ocr_image_request(file_path: str, delete_after: bool = False) -> str:
-    delete_flag = "1" if delete_after else "0"
-    return f"{OCR_IMAGE_REQUEST_PREFIX}{delete_flag}:{file_path}"
-
-
-def parse_ocr_image_request(raw_text: str):
-    if not raw_text.startswith(OCR_IMAGE_REQUEST_PREFIX):
-        return None
-
-    payload = raw_text[len(OCR_IMAGE_REQUEST_PREFIX):]
-    delete_after = False
-
-    if len(payload) >= 2 and payload[0] in ("0", "1") and payload[1] == ":":
-        delete_after = payload[0] == "1"
-        file_path = payload[2:]
-    else:
-        file_path = payload
-
-    return file_path.strip(), delete_after
-
-
 def normalize_input_text(raw_text: str):
     """
     处理来自 SnipDo 的原始文本，返回段落列表
@@ -686,49 +689,6 @@ DICTIONARY_TARGET_LANGUAGES = [
 def dictionary_language_label(code: str, target: bool = False) -> str:
     options = DICTIONARY_TARGET_LANGUAGES if target else DICTIONARY_SOURCE_LANGUAGES
     return next((label for value, label in options if value == code), "Auto")
-
-
-def send_to_existing_instance(text: str, retries: int = 5, delay_ms: int = 180) -> bool:
-    """
-    尝试把文本发送给已运行的实例
-    增加短重试，提升首启竞争阶段的成功率
-    需要在 QApplication 创建之后调用
-    """
-    for attempt in range(1, retries + 1):
-        socket = None
-        try:
-            log(f"[IPC] send attempt {attempt}/{retries}, text={repr(text[:200])}")
-            socket = QLocalSocket()
-            socket.connectToServer(SERVER_NAME)
-
-            if not socket.waitForConnected(600):
-                log(f"[IPC] connect failed on attempt {attempt}")
-            else:
-                data = text.encode("utf-8")
-                socket.write(data)
-                socket.flush()
-
-                if socket.waitForBytesWritten(1000):
-                    socket.disconnectFromServer()
-                    log(f"[IPC] sent to existing instance successfully on attempt {attempt}")
-                    return True
-                else:
-                    log(f"[IPC] waitForBytesWritten failed on attempt {attempt}")
-
-        except Exception as e:
-            log(f"[IPC] send_to_existing_instance error on attempt {attempt}: {e}")
-        finally:
-            try:
-                if socket is not None:
-                    socket.abort()
-            except Exception:
-                pass
-
-        if attempt < retries:
-            time.sleep(delay_ms / 1000)
-
-    log("[IPC] failed to send to existing instance after retries")
-    return False
 
 
 # ================= 1. 统一后台翻译/查词线程 =================
@@ -1116,60 +1076,6 @@ class InteractiveTextEdit(QTextEdit):
 
 
 # ================= 3. 单实例本地通信服务 =================
-class SingleInstanceServer(QObject):
-    message_received = pyqtSignal(str)
-
-    def __init__(self):
-        super().__init__()
-        self.server = QLocalServer()
-
-        if not self.server.listen(SERVER_NAME):
-            log(f"[Server] first listen failed: {self.server.errorString()}")
-
-            probe = QLocalSocket()
-            probe.connectToServer(SERVER_NAME)
-            if probe.waitForConnected(300):
-                probe.disconnectFromServer()
-                log("[Server] another instance is already running")
-                raise RuntimeError("已有实例在运行")
-            else:
-                log("[Server] no running instance detected, removing stale server")
-                QLocalServer.removeServer(SERVER_NAME)
-                if not self.server.listen(SERVER_NAME):
-                    log(f"[Server] second listen failed: {self.server.errorString()}")
-                    raise RuntimeError(f"无法启动本地服务: {self.server.errorString()}")
-
-        self.server.newConnection.connect(self.handle_new_connection)
-        log("[Server] listen success")
-
-    def handle_new_connection(self):
-        log("[Server] new connection")
-        while self.server.hasPendingConnections():
-            socket = self.server.nextPendingConnection()
-            socket.readyRead.connect(lambda s=socket: self.read_socket_data(s))
-            socket.disconnected.connect(socket.deleteLater)
-            QTimer.singleShot(50, lambda s=socket: self.read_socket_data(s))
-
-    def read_socket_data(self, socket):
-        try:
-            if socket is None:
-                return
-            if socket.bytesAvailable() <= 0:
-                return
-
-            data = bytes(socket.readAll()).decode("utf-8", errors="ignore")
-            log(f"[Server] received data: {repr(data[:300])}")
-            if data.strip():
-                self.message_received.emit(data.strip())
-        except Exception as e:
-            log(f"[Server] read_socket_data error: {e}")
-        finally:
-            try:
-                socket.disconnectFromServer()
-            except Exception:
-                pass
-
-
 # ================= 4. 主窗口逻辑 =================
 class TranslationProgressWindow(QWidget):
     def __init__(self, parent=None):
@@ -1305,9 +1211,135 @@ class XButton1MouseHook(QObject):
         return user32.CallNextHookEx(self._hook, n_code, w_param, l_param)
 
 
-class TranslationWindow(QWidget):
-    def __init__(self):
+class _IpcRequestCompletion:
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.result = ReceiveResult.reject(RejectionReason.NOT_READY)
+        self._lock = threading.Lock()
+        self._state = "pending"
+
+    def claim(self) -> bool:
+        with self._lock:
+            if self._state != "pending":
+                return False
+            self._state = "claimed"
+            return True
+
+    def cancel_if_pending(self) -> bool:
+        with self._lock:
+            if self._state != "pending":
+                return False
+            self._state = "cancelled"
+            self.done.set()
+            return True
+
+    def complete(self, result: ReceiveResult) -> None:
+        with self._lock:
+            if self._state != "claimed":
+                return
+            self.result = result
+            self._state = "done"
+            self.done.set()
+
+
+class QtIpcRequestBridge(QObject):
+    """Synchronously bridge the pipe thread to the Qt GUI thread."""
+
+    request_ready = pyqtSignal(object, object)
+
+    def __init__(self) -> None:
         super().__init__()
+        self._window = None
+        self._ready = threading.Event()
+        self._failure_reason: RejectionReason | None = None
+        self.request_ready.connect(
+            self._dispatch,
+            Qt.ConnectionType.QueuedConnection,
+        )
+
+    def bind(self, window) -> None:
+        self._window = window
+        self._failure_reason = None
+        self._ready.set()
+
+    def fail(self, reason: RejectionReason = RejectionReason.STARTUP_FAILED) -> None:
+        self._failure_reason = reason
+        self._ready.set()
+
+    def receive(self, request: AppRequest) -> ReceiveResult:
+        if not self._ready.wait(IPC_UI_TIMEOUT_SECONDS):
+            return ReceiveResult.reject(RejectionReason.NOT_READY)
+        if self._failure_reason is not None or self._window is None:
+            return ReceiveResult.reject(
+                self._failure_reason or RejectionReason.NOT_READY
+            )
+
+        completion = _IpcRequestCompletion()
+        self.request_ready.emit(request, completion)
+        if not completion.done.wait(IPC_UI_TIMEOUT_SECONDS):
+            if completion.cancel_if_pending():
+                return ReceiveResult.reject(RejectionReason.NOT_READY)
+            # The GUI already claimed the request.  Wait for its explicit
+            # ownership decision instead of returning a rejection that could
+            # later race with a started operation.
+            completion.done.wait()
+        return completion.result
+
+    def _dispatch(self, request: AppRequest, completion: _IpcRequestCompletion) -> None:
+        if not completion.claim():
+            return
+        try:
+            if self._failure_reason is not None or self._window is None:
+                result = ReceiveResult.reject(
+                    self._failure_reason or RejectionReason.NOT_READY
+                )
+            else:
+                result = self._window.handle_app_request(
+                    request,
+                    allow_key_prompt=False,
+                )
+            result = (
+                result
+                if isinstance(result, ReceiveResult)
+                else ReceiveResult.reject(RejectionReason.HANDLER_FAILED)
+            )
+            record_event(
+                AppEvent.IPC_REQUEST_ACCEPTED
+                if result.accepted
+                else AppEvent.IPC_REQUEST_REJECTED
+            )
+            if not result.accepted and result.reason in {
+                RejectionReason.MISSING_KEY,
+                RejectionReason.BUSY,
+            }:
+                self._window.force_show_window()
+                message = (
+                    "[未设置 API Key，请先在窗口中发起一次翻译并输入 Key]"
+                    if result.reason is RejectionReason.MISSING_KEY
+                    else "[OCR 正忙，请稍后重试]"
+                )
+                self._window.set_result_message(message)
+        except Exception:
+            result = ReceiveResult.reject(
+                RejectionReason.HANDLER_FAILED
+            )
+            record_event(AppEvent.IPC_REQUEST_REJECTED)
+        finally:
+            completion.complete(result)
+
+
+class TranslationWindow(QWidget):
+    def __init__(
+        self,
+        paths: AppPaths | None = None,
+        credential_store: WindowsCredentialStore | None = None,
+    ):
+        super().__init__()
+
+        self.app_paths = paths or APP_PATHS
+        if self.app_paths is None:
+            raise RuntimeError("application paths are not initialized")
+        self.credential_store = credential_store or CREDENTIAL_STORE
 
         self.source_mode = "manual"         # manual / snipdo
         self.content_mode_override = "auto"  # auto / translate / dictionary
@@ -1348,9 +1380,8 @@ class TranslationWindow(QWidget):
     def setup_tray_icon(self):
         self.tray_icon = QSystemTrayIcon(self)
 
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        icon_path = os.path.join(current_dir, "snipdo_script_logo", "gemini-color.png")
-        icon = QIcon(icon_path) if os.path.exists(icon_path) else self.style().standardIcon(
+        icon_path = self.app_paths.icon_path
+        icon = QIcon(str(icon_path)) if icon_path.is_file() else self.style().standardIcon(
             self.style().StandardPixmap.SP_ComputerIcon
         )
 
@@ -2086,23 +2117,21 @@ class TranslationWindow(QWidget):
 
     def load_translation_history(self):
         try:
-            if not os.path.exists(TRANSLATION_HISTORY_PATH):
-                return []
-            with open(TRANSLATION_HISTORY_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if not isinstance(data, list):
-                return []
-            return [item for item in data if isinstance(item, dict)][:MAX_HISTORY_ITEMS]
-        except Exception as e:
-            log(f"[History] load error: {e}")
+            entries = load_history(self.app_paths.history_path)
+            record_event(AppEvent.HISTORY_LOADED)
+            return entries
+        except (HistoryDataError, OSError):
+            record_event(AppEvent.HISTORY_UNAVAILABLE)
             return []
 
     def save_translation_history(self):
         try:
-            with open(TRANSLATION_HISTORY_PATH, "w", encoding="utf-8") as f:
-                json.dump(self.translation_history[:MAX_HISTORY_ITEMS], f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            log(f"[History] save error: {e}")
+            save_history_atomic(
+                self.app_paths.history_path,
+                self.translation_history[:MAX_HISTORY_ITEMS],
+            )
+        except (HistoryDataError, OSError):
+            record_event(AppEvent.HISTORY_UNAVAILABLE)
 
     def history_preview(self, text: str, limit: int = 54) -> str:
         preview = re.sub(r"\s+", " ", (text or "").strip())
@@ -2211,27 +2240,34 @@ class TranslationWindow(QWidget):
         if self.progress_window:
             self.progress_window.hide()
 
-    def ensure_api_key(self) -> bool:
+    def ensure_api_key(self, *, allow_prompt: bool = True) -> bool:
         if client is not None:
             return True
+        if not allow_prompt:
+            record_event(AppEvent.CREDENTIAL_MISSING)
+            return False
 
         self.force_show_window()
         api_key, ok = QInputDialog.getText(
             self,
             "输入 API Key",
-            "未检测到 GPTSAPI_API_KEY，请手动输入：",
+            "未检测到 API Key，请手动输入（将保存到 Windows 凭据管理器）：",
             QLineEdit.EchoMode.Password
         )
 
         if ok and configure_api_client(api_key):
-            if save_local_api_key(api_key):
-                log(f"[UI] API key saved to {LOCAL_API_KEY_FILE}")
-            else:
-                log(f"[UI] API key configured but failed to save {LOCAL_API_KEY_FILE}")
-            log("[UI] API key configured from manual input")
+            try:
+                if self.credential_store is None or not self.credential_store.write(api_key):
+                    record_event(AppEvent.CREDENTIAL_UNAVAILABLE)
+                else:
+                    record_event(AppEvent.CREDENTIAL_AVAILABLE)
+            except Exception:
+                # The key remains available for this process only.  It is never
+                # written to a plaintext fallback.
+                record_event(AppEvent.CREDENTIAL_UNAVAILABLE)
             return True
 
-        log("[UI] API key input cancelled or empty")
+        record_event(AppEvent.CREDENTIAL_MISSING)
         return False
 
     def set_result_message(self, message: str):
@@ -2253,34 +2289,56 @@ class TranslationWindow(QWidget):
             log(f"[UI] start_clipboard_ocr error: {e}")
             self.set_result_message(f"[OCR 出错: {e}]")
 
-    def start_image_file_ocr(self, file_path: str, delete_after: bool = False):
-        log(f"[UI] start_image_file_ocr file={file_path}, delete_after={delete_after}")
+    def start_image_file_ocr(
+        self,
+        file_path: str,
+        *,
+        allow_key_prompt: bool = True,
+    ) -> ReceiveResult:
+        log(f"[UI] start_image_file_ocr file={file_path}")
+
+        # Deletion belongs exclusively to the launching process after an
+        # accepted ACK.  The primary must first own an in-memory copy.
+        if self.ocr_thread and self.ocr_thread.isRunning():
+            record_event(AppEvent.OCR_BUSY)
+            return ReceiveResult.reject(RejectionReason.BUSY)
+        if not self.ensure_api_key(allow_prompt=allow_key_prompt):
+            self.set_result_message("[未设置 API Key，已取消 OCR]")
+            return ReceiveResult.reject(RejectionReason.MISSING_KEY)
 
         try:
             image_data_url = image_file_to_data_url(file_path)
-        except Exception as e:
-            log(f"[UI] read OCR image error: {e}")
+        except Exception:
             self.force_show_window()
-            self.set_result_message(f"[OCR 出错: 无法读取图片 {e}]")
-            return
-        finally:
-            if delete_after:
-                try:
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                except Exception as e:
-                    log(f"[UI] remove OCR image error: {e}")
+            self.set_result_message("[OCR 出错: 无法读取图片]")
+            record_event(AppEvent.OCR_FAILED)
+            return ReceiveResult.reject(RejectionReason.NOT_OWNED)
 
-        self.start_ocr(image_data_url, result_source_mode="snipdo")
+        started = self.start_ocr(
+            image_data_url,
+            result_source_mode="snipdo",
+            allow_key_prompt=allow_key_prompt,
+        )
+        return (
+            ReceiveResult.accept()
+            if started
+            else ReceiveResult.reject(RejectionReason.STARTUP_FAILED)
+        )
 
-    def start_ocr(self, image_data_url: str, result_source_mode: str):
+    def start_ocr(
+        self,
+        image_data_url: str,
+        result_source_mode: str,
+        *,
+        allow_key_prompt: bool = True,
+    ):
         if self.ocr_thread and self.ocr_thread.isRunning():
-            log("[UI] OCR already running")
-            return
+            record_event(AppEvent.OCR_BUSY)
+            return False
 
-        if not self.ensure_api_key():
+        if not self.ensure_api_key(allow_prompt=allow_key_prompt):
             self.set_result_message("[未设置 API Key，已取消 OCR]")
-            return
+            return False
 
         self.cancel_current_translation()
         self.ocr_result_source_mode = result_source_mode
@@ -2307,9 +2365,18 @@ class TranslationWindow(QWidget):
         self.resize(560, 520)
         self.force_show_window()
 
-        self.ocr_thread = OcrThread(image_data_url)
-        self.ocr_thread.finished.connect(self.on_ocr_finished)
-        self.ocr_thread.start()
+        try:
+            self.ocr_thread = OcrThread(image_data_url)
+            self.ocr_thread.finished.connect(self.on_ocr_finished)
+            self.ocr_thread.start()
+        except Exception:
+            self.ocr_thread = None
+            self.set_result_message("[OCR 出错: 无法启动]")
+            record_event(AppEvent.OCR_FAILED)
+            return False
+
+        record_event(AppEvent.OCR_STARTED)
+        return True
 
     def on_ocr_finished(self, success: bool, extracted_text: str, error_msg: str):
         log(f"[UI] on_ocr_finished success={success}, error={error_msg}")
@@ -2324,14 +2391,18 @@ class TranslationWindow(QWidget):
         self.btn_copy.setEnabled(False)
 
         if not success:
+            record_event(AppEvent.OCR_FAILED)
             if error_msg != "已取消":
                 self.set_result_message(f"[OCR 出错: {error_msg}]")
             return
 
         ocr_text = normalize_newlines(extracted_text).strip()
         if not ocr_text:
+            record_event(AppEvent.OCR_FAILED)
             self.set_result_message("[OCR 出错: 未识别到文字]")
             return
+
+        record_event(AppEvent.OCR_COMPLETED)
 
         if self.ocr_result_source_mode == "snipdo":
             QTimer.singleShot(60, lambda text=ocr_text: self.handle_new_request(text))
@@ -3070,18 +3141,11 @@ class TranslationWindow(QWidget):
         self.resize(base_width, base_height)
 
     # ---------- 请求入口 ----------
-    def handle_new_request(self, raw_text):
+    def handle_new_request(self, raw_text, *, allow_key_prompt: bool = True):
         try:
             log(f"[UI] handle_new_request received: {repr(raw_text[:300])}")
-            if raw_text == SHOW_WINDOW_REQUEST:
-                self.show_manual_window()
-                return
-
-            ocr_request = parse_ocr_image_request(raw_text)
-            if ocr_request:
-                file_path, delete_after = ocr_request
-                self.start_image_file_ocr(file_path, delete_after)
-                return
+            if not isinstance(raw_text, str):
+                return False
 
             self.cancel_current_ocr()
             self.cancel_current_translation()
@@ -3091,7 +3155,7 @@ class TranslationWindow(QWidget):
 
             if not self.original_paragraphs:
                 log("[UI] no valid paragraphs after normalize_input_text")
-                return
+                return False
 
             total_text = "\n".join(self.original_paragraphs).strip()
             self.pending_snipdo_text = total_text
@@ -3114,9 +3178,76 @@ class TranslationWindow(QWidget):
             self.hide()
             self.show_translation_progress(effective_mode)
 
-            QTimer.singleShot(30, lambda: self.start_translation(total_text, effective_mode))
-        except Exception as e:
-            log(f"[UI] handle_new_request error: {e}")
+            return self.start_translation(
+                total_text,
+                effective_mode,
+                allow_key_prompt=allow_key_prompt,
+            )
+        except Exception:
+            record_event(AppEvent.REQUEST_REJECTED)
+            return False
+
+    def handle_app_request(
+        self,
+        request: AppRequest,
+        *,
+        allow_key_prompt: bool = True,
+    ) -> ReceiveResult:
+        """Synchronously decide whether this process has taken ownership."""
+        accepted = False
+        reason = RejectionReason.INVALID_REQUEST
+        try:
+            if not isinstance(request, AppRequest):
+                return ReceiveResult.reject(reason)
+            if request.action == "show":
+                self.show_manual_window()
+                accepted = True
+            elif request.action == "translate_text":
+                text = request.payload.get("text")
+                if not isinstance(text, str) or not text.strip():
+                    return ReceiveResult.reject(reason)
+                if not normalize_input_text(text):
+                    reason = RejectionReason.NOT_OWNED
+                    return ReceiveResult.reject(reason)
+                if client is None and not allow_key_prompt:
+                    reason = RejectionReason.MISSING_KEY
+                    return ReceiveResult.reject(reason)
+                accepted = self.handle_new_request(
+                    text,
+                    allow_key_prompt=allow_key_prompt,
+                )
+                reason = (
+                    RejectionReason.MISSING_KEY
+                    if client is None
+                    else RejectionReason.STARTUP_FAILED
+                )
+            elif request.action == "ocr_image":
+                file_path = request.payload.get("path")
+                if not isinstance(file_path, str) or not file_path:
+                    return ReceiveResult.reject(reason)
+                if self.ocr_thread and self.ocr_thread.isRunning():
+                    reason = RejectionReason.BUSY
+                    return ReceiveResult.reject(reason)
+                if client is None and not allow_key_prompt:
+                    reason = RejectionReason.MISSING_KEY
+                    return ReceiveResult.reject(reason)
+                result = self.start_image_file_ocr(
+                    file_path,
+                    allow_key_prompt=allow_key_prompt,
+                )
+                accepted = result.accepted
+                return result
+            return (
+                ReceiveResult.accept()
+                if accepted
+                else ReceiveResult.reject(reason)
+            )
+        except Exception:
+            return ReceiveResult.reject(RejectionReason.HANDLER_FAILED)
+        finally:
+            record_event(
+                AppEvent.REQUEST_ACCEPTED if accepted else AppEvent.REQUEST_REJECTED
+            )
 
     def start_manual_translation(self):
         if self.source_mode != "manual":
@@ -3167,12 +3298,14 @@ class TranslationWindow(QWidget):
         mode: str,
         dictionary_source_lang: str = None,
         dictionary_target_lang: str = None,
+        *,
+        allow_key_prompt: bool = True,
     ):
         log(f"[UI] start_translation, mode={mode}, text={repr(text[:300])}")
         self.active_translation_text = text
         self.active_translation_mode = mode
 
-        if not self.ensure_api_key():
+        if not self.ensure_api_key(allow_prompt=allow_key_prompt):
             cursor = self.txt_result.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.End)
             cursor.insertText("[未设置 API Key，已取消翻译]", self.result_char_fmt)
@@ -3187,7 +3320,7 @@ class TranslationWindow(QWidget):
                 self.defer_result_window_until_finished = False
                 self.hide_translation_progress()
                 self.force_show_window()
-            return
+            return False
 
         cursor = self.txt_result.textCursor()
         cursor.insertText(" ▍", self.result_char_fmt)
@@ -3195,15 +3328,26 @@ class TranslationWindow(QWidget):
         if dictionary_source_lang is None or dictionary_target_lang is None:
             dictionary_source_lang, dictionary_target_lang = self.current_dictionary_languages()
 
-        self.trans_thread = TranslationThread(
-            text,
-            mode,
-            dictionary_source_lang,
-            dictionary_target_lang,
-        )
-        self.trans_thread.chunk_received.connect(self.append_translation_chunk)
-        self.trans_thread.finished.connect(self.on_translation_finished)
-        self.trans_thread.start()
+        try:
+            self.trans_thread = TranslationThread(
+                text,
+                mode,
+                dictionary_source_lang,
+                dictionary_target_lang,
+            )
+            self.trans_thread.chunk_received.connect(self.append_translation_chunk)
+            self.trans_thread.finished.connect(self.on_translation_finished)
+            self.trans_thread.start()
+        except Exception:
+            self.trans_thread = None
+            self.hide_translation_progress()
+            self.force_show_window()
+            self.set_result_message("[翻译出错: 无法启动]")
+            record_event(AppEvent.TRANSLATION_FAILED)
+            return False
+
+        record_event(AppEvent.TRANSLATION_STARTED)
+        return True
 
     # ---------- 结果输出 ----------
     def append_translation_chunk(self, chunk):
@@ -3232,17 +3376,23 @@ class TranslationWindow(QWidget):
         if cursor.selectedText() == " ▍":
             cursor.removeSelectedText()
 
-        if not success and error_msg != "已取消":
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-            cursor.insertText(f"\n\n[翻译出错: {error_msg}]", self.result_char_fmt)
-
-        if success and self.full_translation.strip():
+        if not success:
+            if error_msg == "已取消":
+                record_event(AppEvent.TRANSLATION_CANCELLED)
+            else:
+                record_event(AppEvent.TRANSLATION_FAILED)
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+                cursor.insertText(f"\n\n[翻译出错: {error_msg}]", self.result_char_fmt)
+        elif self.full_translation.strip():
+            record_event(AppEvent.TRANSLATION_COMPLETED)
             self.render_markdown_text(self.txt_result, self.full_translation, "result")
             self.add_history_entry(
                 self.active_translation_text,
                 self.full_translation,
                 self.active_translation_mode,
             )
+        else:
+            record_event(AppEvent.TRANSLATION_FAILED)
 
         if self.source_mode == "manual":
             self.btn_translate.setEnabled(True)
@@ -3280,77 +3430,187 @@ class TranslationWindow(QWidget):
             self.hide()
 
 
-def main():
-    raw_text = ""
-    show_requested = False
+def configure_runtime(paths: AppPaths) -> None:
+    global APP_PATHS, EVENT_LOG
 
-    if len(sys.argv) > 1 and sys.argv[1] == "--show":
-        show_requested = True
-    elif len(sys.argv) > 2 and sys.argv[1] == "--image":
-        image_path = sys.argv[2]
-        delete_after = "--delete-after" in sys.argv[3:]
-        raw_text = build_ocr_image_request(image_path, delete_after)
-    elif len(sys.argv) > 2 and sys.argv[1] == "--file":
-        file_path = sys.argv[2]
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                raw_text = f.read()
-        except Exception as e:
-            log(f"[Main] read temp file error: {e}")
-            raw_text = ""
-        finally:
-            try:
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-            except Exception as e:
-                log(f"[Main] remove temp file error: {e}")
-    elif len(sys.argv) > 1:
-        raw_text = " ".join(sys.argv[1:]).strip()
+    APP_PATHS = paths
+    ensure_app_directories(paths)
+    EVENT_LOG = configure_app_logging(paths)
+    record_event(AppEvent.APP_STARTING)
 
-    log(f"[Main] program started, pid={os.getpid()}, raw_text={repr(raw_text[:300])}")
 
-    app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(False)
+def close_runtime_log() -> None:
+    global EVENT_LOG
 
-    if show_requested:
-        if send_to_existing_instance(SHOW_WINDOW_REQUEST):
-            log("[Main] show request sent to existing instance, exiting current process")
-            return
-    elif raw_text:
-        if send_to_existing_instance(raw_text):
-            log("[Main] text sent to existing instance, exiting current process")
-            return
+    if EVENT_LOG is None:
+        return
+    try:
+        EVENT_LOG.close()
+    except Exception:
+        pass
+    finally:
+        EVENT_LOG = None
 
-    window = TranslationWindow()
+
+def run_offline_self_test(paths: AppPaths) -> int:
+    """Exercise frozen imports and local codecs without credentials or network."""
+    try:
+        if os.name != "nt" or ctypes.sizeof(ctypes.c_void_p) != 8:
+            raise RuntimeError("unsupported platform")
+        if not paths.icon_path.is_file() or QImage(str(paths.icon_path)).isNull():
+            raise RuntimeError("bundled icon is unavailable")
+
+        request = AppRequest("show", request_id="offline-self-test")
+        frame = encode_json_frame(request.to_dict())
+        if len(frame) <= 4:
+            raise RuntimeError("framing failed")
+        restored = validate_request_dict(decode_json_payload(frame[4:]))
+        if restored != request:
+            raise RuntimeError("protocol round trip failed")
+
+        # A successful fixed-event write also verifies the per-user data/log
+        # directory without exposing its path in output.
+        record_event(AppEvent.SELF_TEST_PASSED)
+        if EVENT_LOG is not None:
+            EVENT_LOG.flush()
+        return 0
+    except Exception:
+        record_event(AppEvent.SELF_TEST_FAILED)
+        return 1
+
+
+def settle_source_file(prepared: PreparedRequest, accepted: bool) -> None:
+    if prepared.delete_path is None:
+        return
+    if not accepted:
+        record_event(AppEvent.SOURCE_DELETE_SKIPPED)
+        return
+    try:
+        if delete_acknowledged_source(prepared, accepted=True):
+            record_event(AppEvent.SOURCE_DELETE_COMPLETED)
+    except OSError:
+        record_event(AppEvent.SOURCE_DELETE_FAILED)
+
+
+def initialize_history(paths: AppPaths) -> None:
+    try:
+        if migrate_legacy_history(paths):
+            record_event(AppEvent.HISTORY_MIGRATED)
+    except (HistoryDataError, OSError):
+        record_event(AppEvent.HISTORY_UNAVAILABLE)
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    try:
+        command = parse_cli(arguments)
+    except CliError:
+        return 2
 
     try:
-        server = SingleInstanceServer()
-        server.message_received.connect(window.handle_new_request)
-        log("[Main] single instance server started")
-    except Exception as e:
-        server = None
-        log(f"[Main] single instance server init failed: {e}")
+        paths = resolve_app_paths(__file__)
+        configure_runtime(paths)
+    except Exception:
+        close_runtime_log()
+        return 1
 
-        if show_requested and send_to_existing_instance(SHOW_WINDOW_REQUEST, retries=6, delay_ms=220):
-            log("[Main] fallback show request succeeded after server init failed, exiting")
-            return
+    if command.action == "self_test":
+        try:
+            if command.value != "offline":
+                record_event(AppEvent.SELF_TEST_FAILED)
+                return 2
+            return run_offline_self_test(paths)
+        finally:
+            close_runtime_log()
 
-        if raw_text and send_to_existing_instance(raw_text, retries=6, delay_ms=220):
-            log("[Main] fallback send succeeded after server init failed, exiting")
-            return
+    try:
+        prepared = prepare_request(command)
+    except (CliError, OSError, UnicodeError):
+        record_event(AppEvent.REQUEST_REJECTED)
+        close_runtime_log()
+        return 2
 
-    if raw_text:
-        QTimer.singleShot(120, lambda: window.handle_new_request(raw_text))
-    elif show_requested:
-        QTimer.singleShot(120, window.show_manual_window)
-    else:
-        # 先真实显示一次窗口，再隐藏到托盘。
-        # 在 Windows + pythonw + 托盘场景下，这有助于后续窗口被可靠恢复显示。
-        window.show()
-        QTimer.singleShot(0, window.hide)
+    try:
+        app = QApplication.instance() or QApplication([sys.argv[0]])
+        app.setQuitOnLastWindowClosed(False)
+        bridge = QtIpcRequestBridge()
+        server = SingleInstanceServer(APP_ID, bridge.receive)
+        is_primary = server.start()
+    except Exception:
+        record_event(AppEvent.IPC_UNAVAILABLE)
+        settle_source_file(prepared, accepted=False)
+        close_runtime_log()
+        return 1
 
-    sys.exit(app.exec())
+    if not is_primary:
+        record_event(AppEvent.INSTANCE_SECONDARY)
+        try:
+            ack = send_request(APP_ID, prepared.request, timeout=5.0)
+        except IpcError:
+            record_event(AppEvent.IPC_UNAVAILABLE)
+            # The prior primary may have died after creating its mutex but
+            # before serving the pipe.  Re-run the same atomic election once.
+            try:
+                is_primary = server.start()
+            except (IpcError, OSError, RuntimeError):
+                is_primary = False
+            if not is_primary:
+                settle_source_file(prepared, accepted=False)
+                close_runtime_log()
+                return 4
+        else:
+            record_event(
+                AppEvent.IPC_FORWARD_ACCEPTED
+                if ack.accepted
+                else AppEvent.IPC_FORWARD_REJECTED
+            )
+            settle_source_file(prepared, accepted=ack.accepted)
+            close_runtime_log()
+            return 0 if ack.accepted else 3
+
+    record_event(AppEvent.INSTANCE_PRIMARY)
+    record_event(AppEvent.IPC_LISTENING)
+
+    try:
+        initialize_history(paths)
+        store = initialize_credentials(paths)
+        window = TranslationWindow(paths, store)
+        if server.failed or not server.running:
+            raise RuntimeError("IPC server stopped during startup")
+        bridge.bind(window)
+        record_event(AppEvent.APP_READY)
+    except Exception:
+        bridge.fail(RejectionReason.STARTUP_FAILED)
+        record_event(AppEvent.REQUEST_REJECTED)
+        settle_source_file(prepared, accepted=False)
+        try:
+            server.stop()
+        except IpcError:
+            record_event(AppEvent.IPC_UNAVAILABLE)
+        close_runtime_log()
+        return 1
+
+    initial_result = window.handle_app_request(
+        prepared.request,
+        allow_key_prompt=True,
+    )
+    settle_source_file(prepared, accepted=initial_result.accepted)
+
+    exit_code = 1
+    try:
+        exit_code = app.exec()
+    except Exception:
+        exit_code = 1
+    finally:
+        bridge.fail(RejectionReason.SHUTTING_DOWN)
+        try:
+            server.stop()
+        except IpcError:
+            record_event(AppEvent.IPC_UNAVAILABLE)
+        record_event(AppEvent.APP_STOPPED)
+        close_runtime_log()
+    return int(exit_code)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -1,38 +1,47 @@
-$pythonExe = "D:\test\my_snipdo_translate\.venv\Scripts\pythonw.exe"
-$scriptPath = "D:\test\my_snipdo_translate\gemini_translate.pyw"
+# 唯一需要配置的项目；路径可以包含空格。
+$exePath = "C:\Tools\SnipDoTranslate\SnipDoTranslate.exe"
 
-# ===== 在这里填写你的 API Key =====
-$apiKey = ""
-
-$inputText = $args -join " "
-
-if (!(Test-Path $pythonExe)) {
-    exit
-}
-
-if (!(Test-Path $scriptPath)) {
-    exit
-}
-
-# 如果这里填了 Key，就注入当前 PowerShell 进程环境变量，子进程 pythonw 会继承。
-# 如果留空，则交给 Python 界面在翻译前手动输入。
-if (![string]::IsNullOrWhiteSpace($apiKey)) {
-    $env:GPTSAPI_API_KEY = $apiKey
-}
+$inputText = [string]::Join(" ", [string[]]$args)
+$exeAvailable = Test-Path -LiteralPath $exePath -PathType Leaf
 
 if ([string]::IsNullOrWhiteSpace($inputText)) {
-    Start-Process -FilePath $pythonExe -ArgumentList @(
-        "`"$scriptPath`"",
-        "--show"
-    ) -WindowStyle Hidden
-    exit
+    if (!$exeAvailable) {
+        exit 1
+    }
+    try {
+        Start-Process -FilePath $exePath -ArgumentList @("--show") -ErrorAction Stop | Out-Null
+        exit 0
+    } catch {
+        exit 2
+    }
 }
 
-$tempFile = Join-Path $env:TEMP ("snipdo_gptsapi_" + [guid]::NewGuid().ToString() + ".txt")
-[System.IO.File]::WriteAllText($tempFile, $inputText, [System.Text.UTF8Encoding]::new($false))
+$tempFile = Join-Path (
+    [System.IO.Path]::GetTempPath()
+) ("SnipDoTranslate-" + [guid]::NewGuid().ToString("N") + ".txt")
 
-Start-Process -FilePath $pythonExe -ArgumentList @(
-    "`"$scriptPath`"",
-    "--file",
-    "`"$tempFile`""
-) -WindowStyle Hidden
+try {
+    $utf8WithoutBom = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($tempFile, $inputText, $utf8WithoutBom)
+} catch {
+    # 写入失败时不尝试删除可能已产生的临时文件。
+    exit 3
+}
+
+if (!$exeAvailable) {
+    # 选中文本已经安全写入临时文件；路径配置错误时也保留它。
+    exit 1
+}
+
+try {
+    Start-Process -FilePath $exePath -ArgumentList @(
+        "--file",
+        "`"$tempFile`"",
+        "--delete-after"
+    ) -ErrorAction Stop | Out-Null
+} catch {
+    # EXE 未能启动时保留临时文件；成功启动后只由 accepted ACK 触发删除。
+    exit 4
+}
+
+exit 0

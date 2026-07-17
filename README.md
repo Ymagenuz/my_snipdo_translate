@@ -1,133 +1,133 @@
-# SnipDo GPTSAPI 翻译工具
+# SnipDoTranslate
 
-这是一个面向 Windows 和 SnipDo 的轻量翻译/OCR 工具。核心脚本 `gemini_translate.pyw` 使用 PyQt6 提供桌面窗口和系统托盘入口，通过 GPTSAPI 兼容的 OpenAI 接口调用 `gpt-5.4-nano` 完成翻译、查词和图片 OCR。
+SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OCR 工具。正式交付物是单文件 `SnipDoTranslate.exe`；目标电脑不需要安装 Python、PyQt6、OpenAI SDK 或项目依赖。
 
-## 功能特性
+## 安装与首次启动
 
-- 支持手动输入或粘贴文本后翻译。
-- 支持 SnipDo 选中文本后调用脚本并弹出翻译窗口。
-- 支持自动识别中英及其他语言，默认中文译英文，英文或其他语言译简体中文。
-- 支持查词模式，可输出语言、读音、对应表达、释义、用法和例句。
-- 支持指定原文/目标语言：中文、英文、日文、韩文、法文、德文、西班牙文、俄文、意大利文。
-- 支持剪贴板图片 OCR，并在识别后自动翻译。
-- 支持单实例运行：多次从 SnipDo 调用时会复用已运行窗口。
-- 支持系统托盘：显示主窗口、OCR 剪贴板图片、彻底退出。
+1. 将 `SnipDoTranslate.exe` 复制到一个固定目录，例如 `C:\Tools\SnipDoTranslate\`。
+2. 双击 EXE，或在 PowerShell 中运行：
 
-## 项目结构
+   ```powershell
+   & "C:\Tools\SnipDoTranslate\SnipDoTranslate.exe"
+   ```
 
-```text
-.
-├── gemini_translate.pyw                  # 主程序：PyQt6 UI、翻译、查词、OCR、单实例通信
-├── snipdo_script_powershell_code/
-│   ├── snipdo_gemini.txt                 # SnipDo 调用主程序的 PowerShell 示例
-│   └── snipdo_google.txt                 # 旧版 Google 翻译脚本调用示例
-├── snipdo_script_logo/                   # 托盘和 SnipDo 图标资源
-├── diagnostics/                          # 手动诊断脚本
-│   └── test_gptsapi.py                   # GPTSAPI 连通性测试
-└── legacy/                               # 旧版脚本
-```
+3. 第一次执行需要联网的翻译或 OCR 时，程序会提示输入 API Key。Key 会保存到当前 Windows 用户的“凭据管理器”，目标名为 `SnipDoTranslate/GPTSAPI`；不会写入明文配置文件或进程环境变量。
 
-## 环境要求
+单文件 EXE 第一次启动可能比后续启动稍慢。程序使用单实例模式；再次运行时，请求会转发给已经运行的实例。
 
-- Windows
-- Python 3.11 或兼容版本
-- GPTSAPI API Key
+`start_gemini_translate.cmd` 是可选启动器。把它与 `SnipDoTranslate.exe` 放在同一目录即可使用，它会原样转发所有命令行参数，不包含源码运行回退。
 
-安装依赖：
+## Windows SmartScreen
+
+当前 EXE 没有 Authenticode 代码签名，因此 Windows SmartScreen 可能显示“Windows 已保护你的电脑”。请先确认文件来自可信渠道并核对 SHA-256；确认无误后，可在提示中选择“更多信息”再选择“仍要运行”。不要对哈希不匹配或来源不明的文件绕过警告。
+
+## 基本使用
+
+- 在主窗口输入或粘贴文本后翻译；可切换自动、翻译和查词模式。
+- 将图片复制到剪贴板后使用 OCR，或通过命令行传入图片文件。
+- 关闭主窗口通常只会隐藏到系统托盘；要完全退出，请使用托盘菜单中的退出命令。
+
+常用命令行入口：
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+# 显示窗口；不带参数时效果相同
+& .\SnipDoTranslate.exe --show
+
+# 直接传入文本
+& .\SnipDoTranslate.exe "Hello, world."
+
+# 读取 UTF-8 文本文件
+& .\SnipDoTranslate.exe --file "C:\路径 含空格\input.txt"
+
+# 对图片执行 OCR 后翻译
+& .\SnipDoTranslate.exe --image "C:\路径 含空格\image.png"
 ```
 
-## API Key 配置
-
-程序会读取环境变量 `GPTSAPI_API_KEY`。可以任选一种方式配置：
-
-1. 在系统环境变量中设置 `GPTSAPI_API_KEY`。
-2. 在 SnipDo 的 PowerShell 脚本中填写 `$apiKey`。
-3. 不预先设置，首次翻译或 OCR 时在弹窗中手动输入。
-
-示例：
+`--file` 和 `--image` 默认保留源文件。只有确实需要处理临时文件时才添加 `--delete-after`：
 
 ```powershell
-$env:GPTSAPI_API_KEY = "你的 API Key"
-.\.venv\Scripts\pythonw.exe .\gemini_translate.pyw
+& .\SnipDoTranslate.exe --file "C:\Temp\selection.txt" --delete-after
+& .\SnipDoTranslate.exe --image "C:\Temp\capture.png" --delete-after
 ```
 
-## 直接运行
-
-启动主窗口：
-
-```powershell
-.\.venv\Scripts\pythonw.exe .\gemini_translate.pyw
-```
-
-传入待翻译文本：
-
-```powershell
-.\.venv\Scripts\pythonw.exe .\gemini_translate.pyw "Hello, world."
-```
-
-从 UTF-8 文本文件读取输入：
-
-```powershell
-.\.venv\Scripts\pythonw.exe .\gemini_translate.pyw --file "C:\path\to\input.txt"
-```
-
-对图片文件做 OCR 后翻译：
-
-```powershell
-.\.venv\Scripts\pythonw.exe .\gemini_translate.pyw --image "C:\path\to\image.png"
-```
-
-如果图片是临时文件，希望 OCR 读取后删除：
-
-```powershell
-.\.venv\Scripts\pythonw.exe .\gemini_translate.pyw --image "C:\path\to\image.png" --delete-after
-```
+删除采用安全确认语义：当前实例必须真正接收并拥有数据，或已运行的主实例必须返回明确的 `accepted` ACK，程序才会删除源文件。OCR 正忙、缺少或取消输入 Key、文件读取失败、启动失败、IPC 超时或请求被拒绝时，源文件会保留。`--delete-after` 不能单独使用。
 
 ## SnipDo 集成
 
-1. 打开 `snipdo_script_powershell_code/snipdo_gemini.txt`。
-2. 按本机环境修改以下变量：
+1. 打开 `snipdo_script_powershell_code\snipdo_gemini.txt`。
+2. 只修改脚本第一处 `$exePath`，使其指向你实际存放的 `SnipDoTranslate.exe`。路径可以包含空格。
+3. 将完整脚本复制到 SnipDo 的 PowerShell 动作中。
+4. 在任意应用中选中文本并触发该动作。
 
-```powershell
-$pythonExe = "D:\test\my_snipdo_translate\.venv\Scripts\pythonw.exe"
-$scriptPath = "D:\test\my_snipdo_translate\gemini_translate.pyw"
-$apiKey = ""
-```
+该脚本兼容 Windows PowerShell 5.1。选中文本会写入无 BOM 的 UTF-8 临时文件，再以 `--file <临时文件> --delete-after` 启动 EXE。脚本自身不保存 Key，也不设置环境变量；若 EXE 未能启动，脚本不会主动删除临时文件，以便尽可能保留原始输入。
 
-3. 将脚本内容配置到 SnipDo 的脚本动作中。
-4. 在任意应用中选中文本，通过 SnipDo 触发该动作即可翻译。
+## 用户数据与隐私
 
-说明：
-
-- `$apiKey` 留空时，程序会尝试读取系统环境变量；仍未设置时会弹窗要求输入。
-- SnipDo 传入的文本会先写入临时 UTF-8 文件，再通过 `--file` 传给主程序，避免长文本或特殊字符在命令行参数中丢失。
-- 主程序使用 `pythonw.exe`，不会弹出控制台窗口。
-
-## 使用说明
-
-- 手动模式：打开主窗口，在上方文本框输入内容，点击 `Translate` 或按 `Ctrl + Enter`。
-- 模式切换：点击 `模式` 可在 Auto、Translate、Dictionary 之间切换。
-- 语言选择：通过窗口右上角的语言下拉框指定原文语言和目标语言。
-- OCR：复制图片到剪贴板后，点击窗口中的 `OCR`，或通过托盘菜单选择 `OCR 剪贴板图片`。
-- 复制结果：翻译或查词完成后点击 `Copy`。
-- 隐藏窗口：点击 `Hide` 或关闭窗口会隐藏到托盘；要完全退出请使用托盘菜单的 `彻底退出`。
-
-## 调试
-
-调试日志会写入系统临时目录：
+所有可写运行数据位于当前用户目录：
 
 ```text
-%TEMP%\gemini_translate_debug.log
+%LOCALAPPDATA%\SnipDoTranslate\
+  translation_history.json
+  logs\
+    SnipDoTranslate.log
+    SnipDoTranslate.log.1 ... .3
 ```
 
-可用于排查 API Key、SnipDo 调用、单实例通信、OCR 和翻译请求问题。
+- `translation_history.json` 保存最多 50 条历史记录，可能包含原文和译文，请按敏感用户数据对待。
+- 日志是固定事件组成的 UTF-8 JSON 行，不记录原文、译文、OCR 内容、API Key、完整路径或异常正文。
+- 日志单文件最多 512 KiB，并保留 3 个轮转备份，总上限约 2 MiB。
+- API Key 不在上述目录中，而是在 Windows Credential Manager 中按当前用户保存。
 
-## 备注
+发现旧版 `translation_history.json` 或 `.gptsapi_api_key` 时，程序只在新目标不存在时执行复制迁移。迁移不会删除、覆盖或改写旧文件，也不会用旧数据覆盖已经存在的新历史或凭据。
 
-- 当前模型名在 `gemini_translate.pyw` 中配置为 `gpt-5.4-nano`。
-- API 请求使用 GPTSAPI 兼容接口：`https://api.gptsapi.net/v1`。
-- `legacy/` 目录保留了旧版实现，日常使用推荐运行 `gemini_translate.pyw`。
+## 离线自检
+
+以下自检不读取真实 Key，也不会发出翻译 API 请求：
+
+```powershell
+& .\SnipDoTranslate.exe --self-test offline
+if ($LASTEXITCODE -ne 0) { throw "SnipDoTranslate 离线自检失败" }
+```
+
+自检会验证 Windows x64 运行环境、打包资源、本地数据目录写入和本地 IPC 编解码。成功时退出码为 `0`，失败时为非零。
+
+## SHA-256 验证
+
+交付目录同时包含 `SnipDoTranslate.exe.sha256`。可用 Windows PowerShell 核对：
+
+```powershell
+$expected = ((Get-Content -LiteralPath .\SnipDoTranslate.exe.sha256 -TotalCount 1) -split '\s+')[0].ToLowerInvariant()
+$actual = (Get-FileHash -Algorithm SHA256 -LiteralPath .\SnipDoTranslate.exe).Hash.ToLowerInvariant()
+if ($actual -ne $expected) { throw "SHA-256 不一致，请勿运行该文件" }
+"SHA-256 验证通过：$actual"
+```
+
+## 开发与构建
+
+最终用户不需要本节中的工具。构建电脑需要 Windows 10/11 x64、64 位 Python 和项目构建依赖；整个自动测试流程保持离线，不使用真实 Key，也不调用翻译 API。
+
+在本 worktree 根目录准备 `.venv` 后运行：
+
+```powershell
+py -3.11 -m venv .venv
+& .\.venv\Scripts\python.exe -m pip install -r .\requirements.txt
+& .\.venv\Scripts\python.exe -m pip install pytest pyinstaller
+PowerShell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
+```
+
+构建脚本严格按以下顺序执行：
+
+1. 运行全部离线测试并确认构建 Python 为 x64。
+2. 构建 PyInstaller `onedir` 预检产物。
+3. 检查 onedir 的 PE x64 格式并运行 `--self-test offline`。
+4. 预检通过后才构建最终 `onefile` EXE。
+5. 检查 onefile 的 PE x64 格式、未签名状态和离线自检，并生成 SHA-256 文件。
+
+最终产物位于：
+
+```text
+dist\SnipDoTranslate.exe
+dist\SnipDoTranslate.exe.sha256
+```
+
+本机构建和自检不能替代在一台未安装 Python 的干净 Windows 10/11 x64 电脑上做最终人工烟测。
