@@ -60,6 +60,7 @@ from windows_ipc import (
     send_request,
     validate_request_dict,
 )
+from windows_mouse_hook import WindowsMouseShortcutHook
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTextEdit,
@@ -181,15 +182,10 @@ MOD_SHIFT = 0x0004
 MOD_WIN = 0x0008
 MOD_NOREPEAT = 0x4000
 TRANSLATION_HOTKEY_ID = 0x5344
-VK_MBUTTON = 0x04
-VK_XBUTTON1 = 0x05
-VK_XBUTTON2 = 0x06
 VK_CONTROL = 0x11
 VK_C = 0x43
 KEYEVENTF_KEYUP = 0x0002
 
-user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
-user32.GetAsyncKeyState.restype = ctypes.c_short
 user32.RegisterHotKey.argtypes = [
     ctypes.c_void_p,
     ctypes.c_int,
@@ -1459,12 +1455,8 @@ class _KeyboardHotkeyEventFilter(QAbstractNativeEventFilter):
 
 class TranslationShortcutManager(QObject):
     triggered = pyqtSignal()
+    _mouse_hook_triggered = pyqtSignal(int)
 
-    _MOUSE_VIRTUAL_KEYS = {
-        "xbutton1": VK_XBUTTON1,
-        "xbutton2": VK_XBUTTON2,
-        "middle": VK_MBUTTON,
-    }
     _WIN32_MODIFIERS = {
         "ctrl": MOD_CONTROL,
         "alt": MOD_ALT,
@@ -1482,12 +1474,12 @@ class TranslationShortcutManager(QObject):
         self._binding = binding or DEFAULT_SETTINGS.shortcut
         self._enabled = False
         self._suspend_depth = 0
-        self._mouse_was_down = False
-        self._mouse_armed = False
-        self._mouse_timer = QTimer(self)
-        self._mouse_timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self._mouse_timer.setInterval(12)
-        self._mouse_timer.timeout.connect(self._poll_mouse_shortcut)
+        self._mouse_hook = None
+        self._mouse_hook_generation = 0
+        self._mouse_hook_triggered.connect(
+            self._handle_mouse_hook_triggered,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self._keyboard_registered = False
         self._native_event_filter = _KeyboardHotkeyEventFilter(self)
         self._native_filter_installed = False
@@ -1551,7 +1543,10 @@ class TranslationShortcutManager(QObject):
         return self._reconcile()
 
     def is_installed(self) -> bool:
-        return bool(self._mouse_timer.isActive() or self._keyboard_registered)
+        mouse_installed = bool(
+            self._mouse_hook is not None and self._mouse_hook.is_running()
+        )
+        return bool(mouse_installed or self._keyboard_registered)
 
     def handle_native_message(self, message) -> bool:
         if (
@@ -1585,63 +1580,37 @@ class TranslationShortcutManager(QObject):
         if self.is_installed():
             return True
         if self._binding.kind == "mouse":
-            return self._start_mouse_polling()
+            return self._start_mouse_hook()
         return self._register_keyboard_hotkey()
 
-    def _start_mouse_polling(self) -> bool:
-        if self._mouse_timer.isActive():
+    def _start_mouse_hook(self) -> bool:
+        if self._mouse_hook is not None and self._mouse_hook.is_running():
             return True
-        if self._binding.mouse_button not in self._MOUSE_VIRTUAL_KEYS:
+        if not self._binding.mouse_button:
             return False
 
-        pressed = self._read_mouse_pressed()
-        if pressed is None:
+        self._mouse_hook_generation += 1
+        generation = self._mouse_hook_generation
+        hook = WindowsMouseShortcutHook(
+            self._binding.mouse_button,
+            lambda: self._mouse_hook_triggered.emit(generation),
+        )
+        if not hook.start():
+            hook.stop(timeout=0.25)
             return False
+        self._mouse_hook = hook
+        return True
 
-        # If the button is already held while enabling/resuming, wait for a
-        # complete release before arming. This prevents a synthetic trigger.
-        self._mouse_was_down = False
-        self._mouse_armed = not pressed
-        self._mouse_timer.start()
-        return self._mouse_timer.isActive()
-
-    def _read_mouse_pressed(self) -> bool | None:
-        virtual_key = self._MOUSE_VIRTUAL_KEYS.get(self._binding.mouse_button)
-        if virtual_key is None:
-            return None
-        try:
-            state = int(user32.GetAsyncKeyState(virtual_key)) & 0xFFFF
-        except Exception:
-            return None
-        # Only the documented high-order bit represents the current state.
-        # The low-order "pressed since last call" bit is not reliable on
-        # pre-emptive Windows systems and is intentionally ignored.
-        return bool(state & 0x8000)
-
-    def _poll_mouse_shortcut(self) -> None:
+    def _handle_mouse_hook_triggered(self, generation: int) -> None:
         if (
-            not self._enabled
+            generation != self._mouse_hook_generation
+            or self._mouse_hook is None
+            or not self._enabled
             or self._suspend_depth
             or self._binding.kind != "mouse"
         ):
             return
 
-        pressed = self._read_mouse_pressed()
-        if pressed is None:
-            return
-
-        if not self._mouse_armed:
-            if not pressed:
-                self._mouse_armed = True
-            return
-
-        if pressed:
-            self._mouse_was_down = True
-            return
-        if not self._mouse_was_down:
-            return
-
-        self._mouse_was_down = False
         now = time.monotonic()
         if now - self._last_trigger_time < 0.25:
             return
@@ -1706,14 +1675,19 @@ class TranslationShortcutManager(QObject):
         self._native_filter_installed = False
 
     def _deactivate(self) -> bool:
-        self._stop_mouse_polling()
+        mouse_ok = self._stop_mouse_hook()
         keyboard_ok = self._unregister_keyboard_hotkey()
-        return keyboard_ok
+        return mouse_ok and keyboard_ok
 
-    def _stop_mouse_polling(self) -> None:
-        self._mouse_timer.stop()
-        self._mouse_was_down = False
-        self._mouse_armed = False
+    def _stop_mouse_hook(self) -> bool:
+        hook = self._mouse_hook
+        self._mouse_hook_generation += 1
+        if hook is None:
+            return True
+        stopped = hook.stop()
+        if stopped:
+            self._mouse_hook = None
+        return stopped
 
     def _unregister_keyboard_hotkey(self) -> bool:
         if not self._keyboard_registered:
@@ -1944,6 +1918,33 @@ class TranslationWindow(QWidget):
         # observes a menu that has already been destroyed.
         self.tray_menu = QMenu(self)
         tray_menu = self.tray_menu
+        tray_menu.setStyleSheet("""
+            QMenu {
+                background-color: #FFFFFF;
+                color: #303133;
+                border: 1px solid #DCDFE6;
+                padding: 5px;
+            }
+            QMenu::item {
+                background-color: transparent;
+                color: #303133;
+                padding: 6px 22px 6px 10px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #EDE7F6;
+                color: #303133;
+            }
+            QMenu::item:disabled {
+                background-color: transparent;
+                color: #A8ABB2;
+            }
+            QMenu::separator {
+                height: 1px;
+                background-color: #E4E7ED;
+                margin: 4px 6px;
+            }
+        """)
 
         show_action = QAction("显示主窗口", self)
         show_action.triggered.connect(self.show_manual_window)
@@ -2036,7 +2037,10 @@ class TranslationWindow(QWidget):
 
         self.selection_capture_busy = True
         self.suspend_xbutton1_hook()
-        QTimer.singleShot(10, self.translate_current_selection)
+        # The mouse hook suppresses the native button action.  Give the
+        # foreground application one event-loop turn to settle focus before
+        # sending Ctrl+C for the existing selection.
+        QTimer.singleShot(35, self.translate_current_selection)
 
     def capture_current_selection_text(self) -> str:
         clipboard = QApplication.clipboard()
@@ -2092,7 +2096,12 @@ class TranslationWindow(QWidget):
 
             if not selected_text:
                 log("[Shortcut] no selected text captured")
-                self.show_manual_window()
+                self.tray_icon.showMessage(
+                    "SnipDoTranslate",
+                    "未检测到选中文字，请先选择文本后再按快捷键。",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    1800,
+                )
                 return
 
             self.handle_new_request(selected_text)

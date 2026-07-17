@@ -71,10 +71,68 @@ class _Win32Harness:
         )
 
 
+class _MouseHookBackend:
+    def __init__(self, harness, button, on_trigger):
+        self.harness = harness
+        self.button = button
+        self.on_trigger = on_trigger
+        self.running = False
+        self.start_calls = 0
+        self.stop_calls = 0
+
+    def start(self):
+        self.start_calls += 1
+        result = (
+            self.harness.start_results.popleft()
+            if self.harness.start_results
+            else True
+        )
+        self.running = bool(result)
+        return self.running
+
+    def stop(self, timeout=2.0):
+        self.stop_calls += 1
+        self.harness.stop_timeouts.append(timeout)
+        result = (
+            self.harness.stop_results.popleft()
+            if self.harness.stop_results
+            else True
+        )
+        if result:
+            self.running = False
+        return bool(result)
+
+    def is_running(self):
+        return self.running
+
+    def fire(self):
+        self.on_trigger()
+
+
+class _MouseHookHarness:
+    def __init__(self):
+        self.instances = []
+        self.start_results = deque()
+        self.stop_results = deque()
+        self.stop_timeouts = []
+
+    def factory(self, button, on_trigger):
+        backend = _MouseHookBackend(self, button, on_trigger)
+        self.instances.append(backend)
+        return backend
+
+
 @pytest.fixture
 def mocked_win32(app, monkeypatch):
     harness = _Win32Harness()
     monkeypatch.setattr(app, "user32", harness)
+    return harness
+
+
+@pytest.fixture
+def mocked_mouse_hook(app, monkeypatch):
+    harness = _MouseHookHarness()
+    monkeypatch.setattr(app, "WindowsMouseShortcutHook", harness.factory)
     return harness
 
 
@@ -158,8 +216,94 @@ def test_default_main_settings_button_and_dialog_display_xbutton1(
         qapp.processEvents()
 
 
+def test_tray_menu_hover_style_has_explicit_foreground_and_background(
+    app, monkeypatch, qapp, tmp_path: Path
+):
+    monkeypatch.setattr(
+        app.TranslationWindow,
+        "setup_translation_shortcut",
+        lambda self: None,
+    )
+    window = app.TranslationWindow(_app_paths(tmp_path), object())
+    try:
+        compact_style = "".join(window.tray_menu.styleSheet().split()).lower()
+        assert window.tray_icon.contextMenu() is window.tray_menu
+        assert window.tray_menu.parent() is window
+        assert "qmenu::item:selected{" in compact_style
+        selected_style = compact_style.split(
+            "qmenu::item:selected{", 1
+        )[1].split("}", 1)[0]
+        assert "background-color:#ede7f6;" in selected_style
+        assert "color:#303133;" in selected_style
+    finally:
+        window.tray_icon.hide()
+        window.progress_window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_shortcut_selection_is_forwarded_directly_to_translation(
+    app, monkeypatch, qapp
+):
+    requests = []
+    scheduled = []
+    monkeypatch.setattr(
+        app,
+        "QTimer",
+        SimpleNamespace(
+            singleShot=lambda delay, callback: scheduled.append((delay, callback))
+        ),
+    )
+    window = SimpleNamespace(
+        app_settings=DEFAULT_SETTINGS,
+        selection_capture_busy=True,
+        capture_current_selection_text=lambda: "selected text",
+        handle_new_request=lambda text: requests.append(text) or True,
+        restore_xbutton1_hook=lambda: None,
+    )
+
+    app.TranslationWindow.translate_current_selection(window)
+
+    assert requests == ["selected text"]
+    assert window.selection_capture_busy is False
+    assert [delay for delay, _callback in scheduled] == [150]
+
+
+def test_empty_shortcut_selection_does_not_open_main_window(
+    app, monkeypatch, qapp
+):
+    messages = []
+    scheduled = []
+    monkeypatch.setattr(
+        app,
+        "QTimer",
+        SimpleNamespace(
+            singleShot=lambda delay, callback: scheduled.append((delay, callback))
+        ),
+    )
+    window = SimpleNamespace(
+        app_settings=DEFAULT_SETTINGS,
+        selection_capture_busy=True,
+        capture_current_selection_text=lambda: "",
+        handle_new_request=lambda _text: pytest.fail(
+            "empty selection must not start translation"
+        ),
+        tray_icon=SimpleNamespace(
+            showMessage=lambda *args: messages.append(args)
+        ),
+        restore_xbutton1_hook=lambda: None,
+    )
+
+    app.TranslationWindow.translate_current_selection(window)
+
+    assert len(messages) == 1
+    assert "未检测到选中文字" in messages[0][1]
+    assert window.selection_capture_busy is False
+    assert [delay for delay, _callback in scheduled] == [150]
+
+
 def test_shortcut_manager_enable_suspend_resume_disable_lifecycle(
-    app, mocked_win32, qapp
+    app, mocked_mouse_hook, qapp
 ):
     binding = mouse_shortcut("xbutton1")
     manager = app.TranslationShortcutManager(binding=binding)
@@ -167,11 +311,11 @@ def test_shortcut_manager_enable_suspend_resume_disable_lifecycle(
     assert manager.configure(binding, True) is True
     assert manager.enabled is True
     assert manager.is_installed() is True
-    assert manager._mouse_timer.isActive() is True
-    assert mocked_win32.async_key_calls == [app.VK_XBUTTON1]
+    assert [hook.button for hook in mocked_mouse_hook.instances] == ["xbutton1"]
 
     assert manager.suspend() is True
     assert manager.is_installed() is False
+    assert mocked_mouse_hook.instances[0].stop_calls == 1
 
     assert manager.suspend() is True
     assert manager.resume() is True
@@ -179,9 +323,9 @@ def test_shortcut_manager_enable_suspend_resume_disable_lifecycle(
 
     assert manager.resume() is True
     assert manager.is_installed() is True
-    assert mocked_win32.async_key_calls == [
-        app.VK_XBUTTON1,
-        app.VK_XBUTTON1,
+    assert [hook.button for hook in mocked_mouse_hook.instances] == [
+        "xbutton1",
+        "xbutton1",
     ]
 
     assert manager.configure(binding, False) is True
@@ -193,34 +337,17 @@ def test_shortcut_manager_enable_suspend_resume_disable_lifecycle(
 
 
 @pytest.mark.parametrize(
-    ("button_name", "virtual_key_name"),
-    [
-        ("xbutton1", "VK_XBUTTON1"),
-        ("xbutton2", "VK_XBUTTON2"),
-        ("middle", "VK_MBUTTON"),
-    ],
+    "button_name",
+    ["xbutton1", "xbutton2", "middle"],
 )
-def test_mouse_polling_emits_once_per_complete_press_release_transition(
+def test_mouse_hook_notifications_are_queued_and_debounced(
     app,
-    mocked_win32,
+    mocked_mouse_hook,
     monkeypatch,
     qapp,
     button_name,
-    virtual_key_name,
 ):
-    mocked_win32.async_key_results.extend(
-        (
-            0,       # initial idle state used to arm polling
-            0x8000,  # first press
-            0x8001,  # still held; low-order bit must be ignored
-            0,       # first release -> one trigger
-            0,       # remains released; no duplicate
-            0x8000,  # second press
-            0x8000,  # still held; no duplicate
-            0,       # second release -> one trigger
-        )
-    )
-    trigger_times = iter((10.0, 11.0))
+    trigger_times = iter((10.0, 10.1, 11.0))
     monkeypatch.setattr(app.time, "monotonic", lambda: next(trigger_times))
 
     manager = app.TranslationShortcutManager(binding=mouse_shortcut(button_name))
@@ -228,29 +355,62 @@ def test_mouse_polling_emits_once_per_complete_press_release_transition(
     manager.triggered.connect(lambda: emitted.append(button_name))
     assert manager.install() is True
 
-    for _ in range(7):
-        manager._poll_mouse_shortcut()
+    backend = mocked_mouse_hook.instances[-1]
+    backend.fire()
+    backend.fire()
+    backend.fire()
+    qapp.processEvents()
 
     assert emitted == [button_name, button_name]
-    expected_virtual_key = getattr(app, virtual_key_name)
-    assert mocked_win32.async_key_calls == [expected_virtual_key] * 8
     assert manager.uninstall() is True
 
 
-def test_mouse_path_contains_no_low_level_hook_or_mouse_event_interception():
+def test_queued_mouse_notification_from_old_binding_is_ignored(
+    app, mocked_mouse_hook, qapp
+):
+    manager = app.TranslationShortcutManager(
+        binding=mouse_shortcut("xbutton1")
+    )
+    emitted = []
+    manager.triggered.connect(
+        lambda: emitted.append(manager.binding.mouse_button)
+    )
+    assert manager.install() is True
+
+    old_backend = mocked_mouse_hook.instances[-1]
+    old_backend.fire()
+    assert manager.configure(mouse_shortcut("xbutton2"), True) is True
+    qapp.processEvents()
+    assert emitted == []
+
+    new_backend = mocked_mouse_hook.instances[-1]
+    new_backend.fire()
+    qapp.processEvents()
+    assert emitted == ["xbutton2"]
+    assert manager.uninstall() is True
+
+
+def test_mouse_hook_isolated_from_gui_thread_and_callback_work():
     source = (
         Path(__file__).resolve().parents[1] / "gemini_translate.pyw"
     ).read_text(encoding="utf-8")
-    forbidden_symbols = (
-        "SetWindowsHookEx",
-        "CallNextHookEx",
-        "UnhookWindowsHookEx",
-        "WH_MOUSE_LL",
-        "LowLevelMouseProc",
-        "WM_MOUSEMOVE",
-    )
+    hook_source = (
+        Path(__file__).resolve().parents[1] / "windows_mouse_hook.py"
+    ).read_text(encoding="utf-8")
 
-    assert not [symbol for symbol in forbidden_symbols if symbol in source]
+    assert "SetWindowsHookEx" not in source
+    assert "GetMessageW" not in source
+    assert 'name="SnipDoTranslateMouseHook"' in hook_source
+    assert "SetWindowsHookExW" in hook_source
+    assert "GetMessageW" in hook_source
+    hook_callback = hook_source.split("    def _hook_proc", 1)[1].split(
+        "    def _call_next", 1
+    )[0]
+    assert "return 1" in hook_callback
+    assert not any(
+        forbidden in hook_callback
+        for forbidden in ("clipboard", "sleep(", "join(", "translation")
+    )
     assert "app.aboutToQuit.connect(window.shutdown_translation_shortcut)" in source
     assert "    def nativeEvent(self, event_type, message):" not in source
 
@@ -275,30 +435,17 @@ def test_keyboard_native_filter_never_returns_a_null_result_pointer(app):
     assert isinstance(result, int)
 
 
-def test_polling_started_while_button_is_held_waits_for_release_before_arming(
-    app, mocked_win32, monkeypatch, qapp
+def test_mouse_hook_install_failure_does_not_report_active(
+    app, mocked_mouse_hook, qapp
 ):
-    mocked_win32.async_key_results.extend(
-        (
-            0x8000,  # held before the manager starts
-            0x8000,  # still held: must not trigger
-            0,       # release only arms the manager
-            0x8000,  # a new press
-            0,       # its release triggers once
-        )
-    )
-    monkeypatch.setattr(app.time, "monotonic", lambda: 10.0)
+    mocked_mouse_hook.start_results.append(False)
     manager = app.TranslationShortcutManager(
         binding=mouse_shortcut("xbutton1")
     )
-    emitted = []
-    manager.triggered.connect(lambda: emitted.append("triggered"))
 
-    assert manager.install() is True
-    for _ in range(4):
-        manager._poll_mouse_shortcut()
-
-    assert emitted == ["triggered"]
+    assert manager.install() is False
+    assert manager.is_installed() is False
+    assert mocked_mouse_hook.instances[0].stop_calls == 1
     assert manager.uninstall() is True
 
 
@@ -331,7 +478,7 @@ def test_quit_path_deactivates_shortcut_before_qapplication_quit(app, monkeypatc
 
 
 def test_shutdown_shortcut_is_idempotent_for_explicit_and_about_to_quit_paths(
-    app, mocked_win32, qapp
+    app, mocked_mouse_hook, qapp
 ):
     manager = app.TranslationShortcutManager(
         binding=mouse_shortcut("xbutton1")
@@ -344,8 +491,7 @@ def test_shutdown_shortcut_is_idempotent_for_explicit_and_about_to_quit_paths(
 
     assert manager.enabled is False
     assert manager.is_installed() is False
-    assert manager._mouse_timer.isActive() is False
-    assert mocked_win32.async_key_calls == [app.VK_XBUTTON1]
+    assert mocked_mouse_hook.instances[0].stop_calls == 1
 
 
 def test_keyboard_hotkey_uses_win32_flags_and_rolls_back_on_conflict(
@@ -519,7 +665,7 @@ def test_apply_settings_replaces_client_only_after_credential_write_succeeds(
 
 
 def test_disable_while_suspended_prevents_delayed_resume_from_reinstalling(
-    app, mocked_win32, qapp, tmp_path: Path
+    app, mocked_mouse_hook, qapp, tmp_path: Path
 ):
     previous = DEFAULT_SETTINGS
     candidate = AppSettings(
@@ -529,8 +675,7 @@ def test_disable_while_suspended_prevents_delayed_resume_from_reinstalling(
     manager = app.TranslationShortcutManager(binding=previous.shortcut)
     assert manager.configure(previous.shortcut, True) is True
     assert manager.suspend() is True
-    assert mocked_win32.async_key_calls == [app.VK_XBUTTON1]
-    assert manager._mouse_timer.isActive() is False
+    assert manager.is_installed() is False
 
     window, refreshes = _settings_window_stub(
         tmp_path / "settings.json",
@@ -545,5 +690,5 @@ def test_disable_while_suspended_prevents_delayed_resume_from_reinstalling(
     assert window.app_settings == candidate
     assert manager.enabled is False
     assert manager.is_installed() is False
-    assert mocked_win32.async_key_calls == [app.VK_XBUTTON1]
+    assert len(mocked_mouse_hook.instances) == 1
     assert len(refreshes) == 2
