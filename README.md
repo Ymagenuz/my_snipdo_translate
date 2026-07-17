@@ -25,6 +25,8 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 
 - 在主窗口输入或粘贴文本后翻译；可切换自动、翻译和查词模式。
 - 将图片复制到剪贴板后使用 OCR，或通过命令行传入图片文件。
+- 点击主窗口右上角显示当前快捷键的按钮，或使用托盘菜单中的“设置…”，可以启用/禁用全局划词翻译、录入新的翻译快捷键及更新 API Key。默认快捷键为 `XButton1`。
+- 鼠标快捷键使用非拦截检测，不会安装全局低级鼠标钩子；XButton1/XButton2/中键的系统原生动作仍会执行。若不希望同时触发浏览器后退/前进，建议改用带修饰键的键盘快捷键。
 - 关闭主窗口通常只会隐藏到系统托盘；要完全退出，请使用托盘菜单中的退出命令。
 
 常用命令行入口：
@@ -67,6 +69,7 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 
 ```text
 %LOCALAPPDATA%\SnipDoTranslate\
+  settings.json
   translation_history.json
   logs\
     SnipDoTranslate.log
@@ -74,6 +77,7 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 ```
 
 - `translation_history.json` 保存最多 50 条历史记录，可能包含原文和译文，请按敏感用户数据对待。
+- `settings.json` 只保存工具启用状态和快捷键，不保存 API Key。
 - 日志是固定事件组成的 UTF-8 JSON 行，不记录原文、译文、OCR 内容、API Key、完整路径或异常正文。
 - 日志单文件最多 512 KiB，并保留 3 个轮转备份，总上限约 2 MiB。
 - API Key 不在上述目录中，而是在 Windows Credential Manager 中按当前用户保存。

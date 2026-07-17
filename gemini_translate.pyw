@@ -9,6 +9,7 @@ import base64
 import mimetypes
 import uuid
 import threading
+from ctypes import wintypes
 from html import unescape
 from html.parser import HTMLParser
 from urllib.parse import unquote
@@ -24,6 +25,17 @@ from app_cli import (
     prepare_request,
 )
 from app_logging import AppEvent, PrivacyEventLogger, configure_app_logging
+from app_settings import (
+    DEFAULT_SETTINGS,
+    SETTINGS_FILE_NAME,
+    AppSettings,
+    SettingsDataError,
+    ShortcutBinding,
+    keyboard_shortcut,
+    load_settings,
+    mouse_shortcut,
+    save_settings_atomic,
+)
 from app_paths import (
     AppPaths,
     HistoryDataError,
@@ -53,13 +65,18 @@ from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTextEdit,
     QPushButton, QLabel, QFrame, QGraphicsDropShadowEffect,
     QHBoxLayout, QSystemTrayIcon, QMenu, QInputDialog, QLineEdit,
-    QComboBox, QProgressBar
+    QComboBox, QProgressBar, QDialog, QCheckBox, QFormLayout,
+    QDialogButtonBox, QMessageBox
 )
 from PyQt6.QtGui import (
     QColor, QScreen, QTextCursor, QTextCharFormat,
-    QTextBlockFormat, QTextFormat, QFont, QAction, QIcon, QImage
+    QTextBlockFormat, QTextFormat, QFont, QAction, QIcon, QImage,
+    QKeySequence
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QTimer, QByteArray, QBuffer, QIODevice, QMimeData
+from PyQt6.QtCore import (
+    Qt, pyqtSignal, QThread, QObject, QTimer, QByteArray, QBuffer,
+    QIODevice, QMimeData, QKeyCombination, QAbstractNativeEventFilter
+)
 
 warnings.filterwarnings("ignore")
 
@@ -96,25 +113,28 @@ def log(_discarded_message: object) -> None:
     return None
 
 
-def configure_api_client(api_key: str) -> bool:
-    global client
-
+def create_api_client(api_key: str):
     api_key = (api_key or "").strip()
     if is_placeholder_api_key(api_key):
-        client = None
-        return False
+        return None
 
     try:
-        client = OpenAI(
+        return OpenAI(
             api_key=api_key,
             base_url="https://api.gptsapi.net/v1",
             timeout=REQUEST_TIMEOUT_SECONDS,
             max_retries=1,
         )
-        return True
     except Exception:
-        client = None
-        return False
+        return None
+
+
+def configure_api_client(api_key: str) -> bool:
+    global client
+
+    candidate = create_api_client(api_key)
+    client = candidate
+    return candidate is not None
 
 
 def initialize_credentials(paths: AppPaths) -> WindowsCredentialStore | None:
@@ -150,66 +170,35 @@ def initialize_credentials(paths: AppPaths) -> WindowsCredentialStore | None:
 
 # ================= Windows 前台显示工具 =================
 user32 = ctypes.windll.user32
-kernel32 = ctypes.windll.kernel32
 
 SW_RESTORE = 9
 SW_SHOW = 5
 
-WH_MOUSE_LL = 14
-HC_ACTION = 0
-WM_XBUTTONDOWN = 0x020B
-WM_XBUTTONUP = 0x020C
-XBUTTON1 = 0x0001
+WM_HOTKEY = 0x0312
+MOD_ALT = 0x0001
+MOD_CONTROL = 0x0002
+MOD_SHIFT = 0x0004
+MOD_WIN = 0x0008
+MOD_NOREPEAT = 0x4000
+TRANSLATION_HOTKEY_ID = 0x5344
+VK_MBUTTON = 0x04
+VK_XBUTTON1 = 0x05
+VK_XBUTTON2 = 0x06
 VK_CONTROL = 0x11
 VK_C = 0x43
 KEYEVENTF_KEYUP = 0x0002
 
-ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
-LRESULT = ctypes.c_ssize_t
-
-
-class POINT(ctypes.Structure):
-    _fields_ = [
-        ("x", ctypes.c_long),
-        ("y", ctypes.c_long),
-    ]
-
-
-class MSLLHOOKSTRUCT(ctypes.Structure):
-    _fields_ = [
-        ("pt", POINT),
-        ("mouseData", ctypes.c_ulong),
-        ("flags", ctypes.c_ulong),
-        ("time", ctypes.c_ulong),
-        ("dwExtraInfo", ULONG_PTR),
-    ]
-
-
-LowLevelMouseProc = ctypes.WINFUNCTYPE(
-    LRESULT,
-    ctypes.c_int,
-    ctypes.c_size_t,
-    ctypes.c_ssize_t,
-)
-
-user32.SetWindowsHookExW.argtypes = [
-    ctypes.c_int,
-    LowLevelMouseProc,
-    ctypes.c_void_p,
-    ctypes.c_ulong,
-]
-user32.SetWindowsHookExW.restype = ctypes.c_void_p
-user32.CallNextHookEx.argtypes = [
+user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+user32.GetAsyncKeyState.restype = ctypes.c_short
+user32.RegisterHotKey.argtypes = [
     ctypes.c_void_p,
     ctypes.c_int,
-    ctypes.c_size_t,
-    ctypes.c_ssize_t,
+    ctypes.c_uint,
+    ctypes.c_uint,
 ]
-user32.CallNextHookEx.restype = LRESULT
-user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
-user32.UnhookWindowsHookEx.restype = ctypes.c_bool
-kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
-kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+user32.RegisterHotKey.restype = wintypes.BOOL
+user32.UnregisterHotKey.argtypes = [ctypes.c_void_p, ctypes.c_int]
+user32.UnregisterHotKey.restype = wintypes.BOOL
 user32.GetClipboardSequenceNumber.restype = ctypes.c_ulong
 
 
@@ -1075,6 +1064,318 @@ class InteractiveTextEdit(QTextEdit):
         super().keyPressEvent(event)
 
 
+def qt_key_to_virtual_key(qt_key: int) -> int | None:
+    """Best-effort Qt-to-Win32 key mapping for synthetic/non-native events."""
+    if ord("0") <= qt_key <= ord("9") or ord("A") <= qt_key <= ord("Z"):
+        return qt_key
+
+    f1 = Qt.Key.Key_F1.value
+    f24 = Qt.Key.Key_F24.value
+    if f1 <= qt_key <= f24:
+        return 0x70 + (qt_key - f1)
+
+    return {
+        Qt.Key.Key_Backspace.value: 0x08,
+        Qt.Key.Key_Tab.value: 0x09,
+        Qt.Key.Key_Return.value: 0x0D,
+        Qt.Key.Key_Enter.value: 0x0D,
+        Qt.Key.Key_Escape.value: 0x1B,
+        Qt.Key.Key_Space.value: 0x20,
+        Qt.Key.Key_PageUp.value: 0x21,
+        Qt.Key.Key_PageDown.value: 0x22,
+        Qt.Key.Key_End.value: 0x23,
+        Qt.Key.Key_Home.value: 0x24,
+        Qt.Key.Key_Left.value: 0x25,
+        Qt.Key.Key_Up.value: 0x26,
+        Qt.Key.Key_Right.value: 0x27,
+        Qt.Key.Key_Down.value: 0x28,
+        Qt.Key.Key_Insert.value: 0x2D,
+        Qt.Key.Key_Delete.value: 0x2E,
+    }.get(qt_key)
+
+
+def keyboard_modifier_names(modifiers) -> tuple[str, ...]:
+    names = []
+    if modifiers & Qt.KeyboardModifier.ControlModifier:
+        names.append("ctrl")
+    if modifiers & Qt.KeyboardModifier.AltModifier:
+        names.append("alt")
+    if modifiers & Qt.KeyboardModifier.ShiftModifier:
+        names.append("shift")
+    if modifiers & Qt.KeyboardModifier.MetaModifier:
+        names.append("win")
+    return tuple(names)
+
+
+def keyboard_shortcut_display(qt_key: int, modifiers: tuple[str, ...]) -> str:
+    try:
+        key_name = QKeySequence(
+            QKeyCombination(
+                Qt.KeyboardModifier.NoModifier,
+                Qt.Key(qt_key),
+            )
+        ).toString(QKeySequence.SequenceFormat.NativeText)
+    except (TypeError, ValueError):
+        key_name = ""
+
+    if not key_name:
+        return ""
+
+    modifier_labels = {
+        "ctrl": "Ctrl",
+        "alt": "Alt",
+        "shift": "Shift",
+        "win": "Win",
+    }
+    return "+".join([*(modifier_labels[name] for name in modifiers), key_name])
+
+
+class ShortcutCaptureButton(QPushButton):
+    capture_error = pyqtSignal(str)
+
+    _MOUSE_BUTTONS = {
+        Qt.MouseButton.BackButton: "xbutton1",
+        Qt.MouseButton.ForwardButton: "xbutton2",
+        Qt.MouseButton.MiddleButton: "middle",
+    }
+
+    def __init__(self, binding: ShortcutBinding, parent=None):
+        super().__init__(parent)
+        self._binding = binding
+        self._capturing = False
+        self.setMinimumWidth(180)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("点击后按下新的全局快捷键；Esc 取消")
+        self.setStyleSheet("""
+            QPushButton {
+                background-color: #F5F7FA;
+                color: #606266;
+                border: 1px solid #DCDFE6;
+                border-radius: 6px;
+                padding: 7px 12px;
+                font-family: 'Segoe UI', 'Microsoft YaHei UI';
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QPushButton:hover, QPushButton:focus {
+                border-color: #8E44AD;
+                color: #8E44AD;
+            }
+        """)
+        self.clicked.connect(self.begin_capture)
+        self._refresh_text()
+
+    @property
+    def binding(self) -> ShortcutBinding:
+        return self._binding
+
+    def set_binding(self, binding: ShortcutBinding) -> None:
+        self._binding = binding
+        if not self._capturing:
+            self._refresh_text()
+
+    def _refresh_text(self) -> None:
+        self.setText(self._binding.display)
+
+    def begin_capture(self) -> None:
+        if self._capturing:
+            return
+        self._capturing = True
+        self.setText("请按下快捷键…")
+        self.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.grabKeyboard()
+        self.grabMouse()
+
+    def cancel_capture(self) -> None:
+        if not self._capturing:
+            return
+        self._finish_capture()
+        self._refresh_text()
+
+    def _finish_capture(self) -> None:
+        self._capturing = False
+        if QWidget.keyboardGrabber() is self:
+            self.releaseKeyboard()
+        if QWidget.mouseGrabber() is self:
+            self.releaseMouse()
+
+    def keyPressEvent(self, event):
+        if not self._capturing:
+            super().keyPressEvent(event)
+            return
+
+        if event.key() == Qt.Key.Key_Escape:
+            self.cancel_capture()
+            event.accept()
+            return
+
+        modifier_keys = {
+            Qt.Key.Key_Control,
+            Qt.Key.Key_Alt,
+            Qt.Key.Key_Shift,
+            Qt.Key.Key_Meta,
+        }
+        if event.key() in modifier_keys:
+            event.accept()
+            return
+
+        modifiers = keyboard_modifier_names(event.modifiers())
+        virtual_key = int(event.nativeVirtualKey()) or qt_key_to_virtual_key(event.key())
+        display = keyboard_shortcut_display(event.key(), modifiers)
+        if virtual_key is None or not display:
+            self.capture_error.emit("无法识别该按键，请换一个组合键。")
+            event.accept()
+            return
+
+        try:
+            binding = keyboard_shortcut(virtual_key, modifiers, display)
+        except (SettingsDataError, TypeError, ValueError):
+            self.capture_error.emit("普通按键需要搭配 Ctrl、Alt、Shift 或 Win；F1–F24 可单独使用。")
+            event.accept()
+            return
+
+        self._binding = binding
+        self._finish_capture()
+        self._refresh_text()
+        event.accept()
+
+    def mousePressEvent(self, event):
+        if not self._capturing:
+            super().mousePressEvent(event)
+            return
+
+        button_name = self._MOUSE_BUTTONS.get(event.button())
+        if button_name is None:
+            self.capture_error.emit("鼠标快捷键支持 XButton1、XButton2 和中键；Esc 取消。")
+            event.accept()
+            return
+
+        self._binding = mouse_shortcut(button_name)
+        self._finish_capture()
+        self._refresh_text()
+        event.accept()
+
+
+class SettingsDialog(QDialog):
+    def __init__(
+        self,
+        settings: AppSettings,
+        *,
+        api_key_configured: bool,
+        environment_key_active: bool,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("设置")
+        self.setModal(True)
+        self.setMinimumWidth(470)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #F5F7FA;
+            }
+            QLabel {
+                color: #606266;
+                font-family: 'Segoe UI', 'Microsoft YaHei UI';
+                font-size: 13px;
+            }
+            QCheckBox {
+                color: #303133;
+                font-family: 'Segoe UI', 'Microsoft YaHei UI';
+                font-size: 13px;
+                spacing: 8px;
+            }
+            QLineEdit {
+                background-color: #FFFFFF;
+                color: #303133;
+                border: 1px solid #DCDFE6;
+                border-radius: 6px;
+                padding: 7px 10px;
+                font-family: 'Segoe UI', 'Microsoft YaHei UI';
+                font-size: 13px;
+            }
+            QLineEdit:focus {
+                border-color: #8E44AD;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 20, 22, 18)
+        layout.setSpacing(14)
+
+        title = QLabel("翻译工具设置")
+        title.setStyleSheet("color: #303133; font-size: 18px; font-weight: 700;")
+        layout.addWidget(title)
+
+        description = QLabel(
+            "启用状态控制全局划词翻译；主窗口和 SnipDo 调用仍可继续使用。"
+            "鼠标快捷键采用安全的非拦截检测，因此原生后退、前进或中键动作仍会执行。"
+        )
+        description.setWordWrap(True)
+        description.setStyleSheet("color: #909399; font-size: 12px;")
+        layout.addWidget(description)
+
+        form = QFormLayout()
+        form.setContentsMargins(0, 4, 0, 0)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(14)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        self.chk_enabled = QCheckBox("启用全局划词翻译")
+        self.chk_enabled.setChecked(settings.enabled)
+        form.addRow("启用工具", self.chk_enabled)
+
+        self.shortcut_button = ShortcutCaptureButton(settings.shortcut)
+        self.shortcut_button.capture_error.connect(self._show_capture_error)
+        form.addRow("翻译快捷键", self.shortcut_button)
+
+        self.api_key_input = QLineEdit()
+        self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key_input.setPlaceholderText("输入新 API Key（留空不修改）")
+        self.api_key_input.setClearButtonEnabled(True)
+        form.addRow("API Key", self.api_key_input)
+        layout.addLayout(form)
+
+        self.status_label = QLabel()
+        self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet("color: #909399; font-size: 12px;")
+        if environment_key_active:
+            self.status_label.setText(
+                "当前 API Key 来自 GPTSAPI_API_KEY 环境变量；它会在下次启动时优先于已保存的 Key。"
+            )
+        elif api_key_configured:
+            self.status_label.setText("已设置 API Key。为保护密钥，输入框不会回填原值。")
+        else:
+            self.status_label.setText("尚未设置 API Key；新 Key 将安全保存到 Windows 凭据管理器。")
+        layout.addWidget(self.status_label)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        button_box.button(QDialogButtonBox.StandardButton.Save).setText("保存")
+        button_box.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        layout.addWidget(button_box)
+
+    def _show_capture_error(self, message: str) -> None:
+        self.status_label.setText(message)
+        self.status_label.setStyleSheet("color: #E6A23C; font-size: 12px;")
+
+    def candidate_settings(self) -> AppSettings:
+        return AppSettings(
+            enabled=self.chk_enabled.isChecked(),
+            shortcut=self.shortcut_button.binding,
+        )
+
+    def api_key(self) -> str:
+        return self.api_key_input.text().strip()
+
+    def done(self, result: int) -> None:
+        self.shortcut_button.cancel_capture()
+        super().done(result)
+
+
 # ================= 3. 单实例本地通信服务 =================
 # ================= 4. 主窗口逻辑 =================
 class TranslationProgressWindow(QWidget):
@@ -1141,74 +1442,310 @@ class TranslationProgressWindow(QWidget):
         self.raise_()
 
 
-class XButton1MouseHook(QObject):
+class _KeyboardHotkeyEventFilter(QAbstractNativeEventFilter):
+    """Receive WM_HOTKEY without overriding the main QWidget nativeEvent."""
+
+    def __init__(self, manager):
+        super().__init__()
+        self._manager = manager
+
+    def nativeEventFilter(self, _event_type, message):
+        try:
+            handled = self._manager.handle_native_message(message)
+        except Exception:
+            handled = False
+        return bool(handled), 0
+
+
+class TranslationShortcutManager(QObject):
     triggered = pyqtSignal()
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._hook = None
-        self._callback = None
+    _MOUSE_VIRTUAL_KEYS = {
+        "xbutton1": VK_XBUTTON1,
+        "xbutton2": VK_XBUTTON2,
+        "middle": VK_MBUTTON,
+    }
+    _WIN32_MODIFIERS = {
+        "ctrl": MOD_CONTROL,
+        "alt": MOD_ALT,
+        "shift": MOD_SHIFT,
+        "win": MOD_WIN,
+    }
+
+    def __init__(
+        self,
+        host_window=None,
+        binding: ShortcutBinding | None = None,
+    ):
+        super().__init__(host_window)
+        self._host_window = host_window
+        self._binding = binding or DEFAULT_SETTINGS.shortcut
+        self._enabled = False
+        self._suspend_depth = 0
+        self._mouse_was_down = False
+        self._mouse_armed = False
+        self._mouse_timer = QTimer(self)
+        self._mouse_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._mouse_timer.setInterval(12)
+        self._mouse_timer.timeout.connect(self._poll_mouse_shortcut)
+        self._keyboard_registered = False
+        self._native_event_filter = _KeyboardHotkeyEventFilter(self)
+        self._native_filter_installed = False
         self._last_trigger_time = 0.0
 
-    def install(self) -> bool:
-        if self._hook:
-            return True
+    @property
+    def binding(self) -> ShortcutBinding:
+        return self._binding
 
-        self._callback = LowLevelMouseProc(self._handle_mouse_event)
-        module_handle = kernel32.GetModuleHandleW(None)
-        self._hook = user32.SetWindowsHookExW(
-            WH_MOUSE_LL,
-            self._callback,
-            module_handle,
-            0,
-        )
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
 
-        if not self._hook:
-            error_code = kernel32.GetLastError()
-            log(f"[XButton1] install hook failed, error={error_code}")
-            self._callback = None
+    def configure(self, binding: ShortcutBinding, enabled: bool) -> bool:
+        if not isinstance(binding, ShortcutBinding):
+            return False
+        requested_enabled = bool(enabled)
+        if binding == self._binding and requested_enabled == self._enabled:
+            return self._reconcile()
+
+        previous_binding = self._binding
+        previous_enabled = self._enabled
+        if not self._deactivate():
             return False
 
-        log("[XButton1] hook installed")
+        self._binding = binding
+        self._enabled = requested_enabled
+        if self._reconcile():
+            return True
+
+        # Registration can fail when another application owns the keyboard
+        # combination. Keep the previously active binding in that case.
+        self._deactivate()
+        self._binding = previous_binding
+        self._enabled = previous_enabled
+        self._reconcile()
+        return False
+
+    def install(self) -> bool:
+        return self.configure(self._binding, True)
+
+    def uninstall(self) -> bool:
+        if not self._deactivate():
+            return False
+        self._enabled = False
+        self._suspend_depth = 0
         return True
 
-    def is_installed(self) -> bool:
-        return bool(self._hook)
+    def suspend(self) -> bool:
+        self._suspend_depth += 1
+        if self._suspend_depth > 1:
+            return True
+        if self._deactivate():
+            return True
+        self._suspend_depth -= 1
+        return False
 
-    def uninstall(self):
-        if not self._hook:
+    def resume(self) -> bool:
+        if self._suspend_depth:
+            self._suspend_depth -= 1
+        return self._reconcile()
+
+    def is_installed(self) -> bool:
+        return bool(self._mouse_timer.isActive() or self._keyboard_registered)
+
+    def handle_native_message(self, message) -> bool:
+        if (
+            not self._enabled
+            or self._suspend_depth
+            or not self._keyboard_registered
+            or self._binding.kind != "keyboard"
+        ):
+            return False
+
+        try:
+            message_address = int(message)
+            if not message_address:
+                return False
+            native_message = wintypes.MSG.from_address(message_address)
+        except (TypeError, ValueError, OSError):
+            return False
+
+        if (
+            native_message.message == WM_HOTKEY
+            and int(native_message.wParam) == TRANSLATION_HOTKEY_ID
+        ):
+            QTimer.singleShot(0, self._emit_if_active)
+            return True
+        return False
+
+    def _reconcile(self) -> bool:
+        should_be_active = self._enabled and self._suspend_depth == 0
+        if not should_be_active:
+            return self._deactivate()
+        if self.is_installed():
+            return True
+        if self._binding.kind == "mouse":
+            return self._start_mouse_polling()
+        return self._register_keyboard_hotkey()
+
+    def _start_mouse_polling(self) -> bool:
+        if self._mouse_timer.isActive():
+            return True
+        if self._binding.mouse_button not in self._MOUSE_VIRTUAL_KEYS:
+            return False
+
+        pressed = self._read_mouse_pressed()
+        if pressed is None:
+            return False
+
+        # If the button is already held while enabling/resuming, wait for a
+        # complete release before arming. This prevents a synthetic trigger.
+        self._mouse_was_down = False
+        self._mouse_armed = not pressed
+        self._mouse_timer.start()
+        return self._mouse_timer.isActive()
+
+    def _read_mouse_pressed(self) -> bool | None:
+        virtual_key = self._MOUSE_VIRTUAL_KEYS.get(self._binding.mouse_button)
+        if virtual_key is None:
+            return None
+        try:
+            state = int(user32.GetAsyncKeyState(virtual_key)) & 0xFFFF
+        except Exception:
+            return None
+        # Only the documented high-order bit represents the current state.
+        # The low-order "pressed since last call" bit is not reliable on
+        # pre-emptive Windows systems and is intentionally ignored.
+        return bool(state & 0x8000)
+
+    def _poll_mouse_shortcut(self) -> None:
+        if (
+            not self._enabled
+            or self._suspend_depth
+            or self._binding.kind != "mouse"
+        ):
             return
 
+        pressed = self._read_mouse_pressed()
+        if pressed is None:
+            return
+
+        if not self._mouse_armed:
+            if not pressed:
+                self._mouse_armed = True
+            return
+
+        if pressed:
+            self._mouse_was_down = True
+            return
+        if not self._mouse_was_down:
+            return
+
+        self._mouse_was_down = False
+        now = time.monotonic()
+        if now - self._last_trigger_time < 0.25:
+            return
+        self._last_trigger_time = now
+        self._emit_if_active()
+
+    def _register_keyboard_hotkey(self) -> bool:
+        if self._keyboard_registered:
+            return True
+        if self._host_window is None or self._binding.virtual_key is None:
+            return False
+
+        modifiers = MOD_NOREPEAT
+        for name in self._binding.modifiers:
+            modifiers |= self._WIN32_MODIFIERS[name]
+
         try:
-            user32.UnhookWindowsHookEx(self._hook)
-            log("[XButton1] hook uninstalled")
-        except Exception as e:
-            log(f"[XButton1] uninstall hook error: {e}")
-        finally:
-            self._hook = None
-            self._callback = None
+            hwnd = int(self._host_window.winId())
+            registered = user32.RegisterHotKey(
+                hwnd,
+                TRANSLATION_HOTKEY_ID,
+                modifiers,
+                self._binding.virtual_key,
+            )
+        except Exception:
+            registered = False
 
-    def _handle_mouse_event(self, n_code, w_param, l_param):
+        if registered and not self._install_native_event_filter():
+            try:
+                user32.UnregisterHotKey(hwnd, TRANSLATION_HOTKEY_ID)
+            except Exception:
+                pass
+            registered = False
+
+        self._keyboard_registered = bool(registered)
+        if not registered:
+            log("[Shortcut] keyboard hotkey registration failed")
+        return bool(registered)
+
+    def _install_native_event_filter(self) -> bool:
+        if self._native_filter_installed:
+            return True
+        app = QApplication.instance()
+        if app is None:
+            return False
         try:
-            if n_code == HC_ACTION and w_param in (WM_XBUTTONDOWN, WM_XBUTTONUP):
-                mouse_info = ctypes.cast(
-                    l_param,
-                    ctypes.POINTER(MSLLHOOKSTRUCT),
-                ).contents
-                xbutton = (mouse_info.mouseData >> 16) & 0xFFFF
+            app.installNativeEventFilter(self._native_event_filter)
+        except (RuntimeError, TypeError):
+            return False
+        self._native_filter_installed = True
+        return True
 
-                if xbutton == XBUTTON1:
-                    if w_param == WM_XBUTTONUP:
-                        now = time.monotonic()
-                        if now - self._last_trigger_time >= 0.25:
-                            self._last_trigger_time = now
-                            self.triggered.emit()
+    def _remove_native_event_filter(self) -> None:
+        if not self._native_filter_installed:
+            return
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                app.removeNativeEventFilter(self._native_event_filter)
+            except (RuntimeError, TypeError):
+                pass
+        self._native_filter_installed = False
 
-                    return 1
-        except Exception as e:
-            log(f"[XButton1] hook callback error: {e}")
+    def _deactivate(self) -> bool:
+        self._stop_mouse_polling()
+        keyboard_ok = self._unregister_keyboard_hotkey()
+        return keyboard_ok
 
-        return user32.CallNextHookEx(self._hook, n_code, w_param, l_param)
+    def _stop_mouse_polling(self) -> None:
+        self._mouse_timer.stop()
+        self._mouse_was_down = False
+        self._mouse_armed = False
+
+    def _unregister_keyboard_hotkey(self) -> bool:
+        if not self._keyboard_registered:
+            self._remove_native_event_filter()
+            return True
+        if self._host_window is None:
+            return False
+
+        try:
+            removed = bool(
+                user32.UnregisterHotKey(
+                    int(self._host_window.winId()),
+                    TRANSLATION_HOTKEY_ID,
+                )
+            )
+        except Exception:
+            removed = False
+        if not removed:
+            return False
+
+        self._keyboard_registered = False
+        self._remove_native_event_filter()
+        log("[Shortcut] keyboard hotkey unregistered")
+        return True
+
+    def _emit_if_active(self) -> None:
+        if self._enabled and not self._suspend_depth and self.is_installed():
+            self.triggered.emit()
+
+
+# Backward-compatible name for callers that imported the original class.
+XButton1MouseHook = TranslationShortcutManager
 
 
 class _IpcRequestCompletion:
@@ -1340,6 +1877,8 @@ class TranslationWindow(QWidget):
         if self.app_paths is None:
             raise RuntimeError("application paths are not initialized")
         self.credential_store = credential_store or CREDENTIAL_STORE
+        self.settings_path = self.app_paths.data_dir / SETTINGS_FILE_NAME
+        self.app_settings = self.load_app_settings()
 
         self.source_mode = "manual"         # manual / snipdo
         self.content_mode_override = "auto"  # auto / translate / dictionary
@@ -1361,6 +1900,7 @@ class TranslationWindow(QWidget):
         self.alignment_selected_sentence = ""
         self.alignment_selection_is_sentence = False
         self.selection_capture_busy = False
+        self.shortcut_manager = None
         self.xbutton1_hook = None
         self.current_request_is_structured = False
         self.defer_result_window_until_finished = False
@@ -1372,9 +1912,19 @@ class TranslationWindow(QWidget):
         self.init_ui()
         self.setup_result_format()
         self.setup_tray_icon()
-        self.setup_xbutton1_hook()
+        self.setup_translation_shortcut()
         self.apply_manual_mode_ui()
-        log(f"[UI] TranslationWindow initialized, hwnd={int(self.winId())}")
+        # Do not create a native HWND solely for a debug message.  Native
+        # handle creation synchronously dispatches Windows messages, so keep
+        # construction free of that unnecessary platform side effect.  A
+        # handle is requested later only when foreground activation needs it.
+        log("[UI] TranslationWindow initialized")
+
+    def load_app_settings(self) -> AppSettings:
+        try:
+            return load_settings(self.settings_path)
+        except (SettingsDataError, OSError):
+            return DEFAULT_SETTINGS
 
     # ---------- 托盘 ----------
     def setup_tray_icon(self):
@@ -1389,11 +1939,19 @@ class TranslationWindow(QWidget):
         self.setWindowIcon(icon)
         self.tray_icon.setToolTip("Gemini 翻译")
 
-        tray_menu = QMenu()
+        # QSystemTrayIcon does not own its context menu.  Keep both a Python
+        # reference and a QObject parent so the native tray integration never
+        # observes a menu that has already been destroyed.
+        self.tray_menu = QMenu(self)
+        tray_menu = self.tray_menu
 
         show_action = QAction("显示主窗口", self)
         show_action.triggered.connect(self.show_manual_window)
         tray_menu.addAction(show_action)
+
+        settings_action = QAction("设置…", self)
+        settings_action.triggered.connect(self.show_settings)
+        tray_menu.addAction(settings_action)
 
         ocr_action = QAction("OCR 剪贴板图片", self)
         ocr_action.triggered.connect(self.start_clipboard_ocr)
@@ -1409,33 +1967,71 @@ class TranslationWindow(QWidget):
         self.tray_icon.activated.connect(self.on_tray_activated)
         self.tray_icon.show()
 
-    def setup_xbutton1_hook(self):
-        self.xbutton1_hook = XButton1MouseHook(self)
-        self.xbutton1_hook.triggered.connect(self.on_xbutton1_triggered)
+    def setup_translation_shortcut(self):
+        self.shortcut_manager = TranslationShortcutManager(
+            self,
+            self.app_settings.shortcut,
+        )
+        # Retain the old attribute for compatibility with existing lifecycle
+        # code and third-party imports.
+        self.xbutton1_hook = self.shortcut_manager
+        self.shortcut_manager.triggered.connect(
+            self.on_translation_shortcut_triggered
+        )
 
-        if self.xbutton1_hook.install():
-            self.tray_icon.setToolTip("Gemini Translate - XButton1")
-        else:
+        if not self.shortcut_manager.configure(
+            self.app_settings.shortcut,
+            self.app_settings.enabled,
+        ):
             self.tray_icon.showMessage(
-                "Gemini Translate",
-                "XButton1 hook failed",
+                "SnipDoTranslate",
+                "快捷键注册失败；请在设置中选择其他快捷键。",
                 QSystemTrayIcon.MessageIcon.Warning,
                 1800,
             )
+        self.refresh_shortcut_status()
+
+    def setup_xbutton1_hook(self):
+        """Compatibility wrapper for the original hard-coded setup method."""
+        self.setup_translation_shortcut()
+
+    def shutdown_translation_shortcut(self):
+        manager = getattr(self, "shortcut_manager", None)
+        if manager:
+            manager.uninstall()
+
+    def refresh_shortcut_status(self):
+        if not self.app_settings.enabled:
+            tooltip = "SnipDoTranslate · 全局划词翻译已禁用"
+        elif self.shortcut_manager and self.shortcut_manager.is_installed():
+            tooltip = f"SnipDoTranslate · {self.app_settings.shortcut.display}"
+        else:
+            tooltip = "SnipDoTranslate · 快捷键未激活"
+        self.tray_icon.setToolTip(tooltip)
+        if hasattr(self, "btn_settings"):
+            self.btn_settings.setText(self.app_settings.shortcut.display)
+            self.btn_settings.setToolTip(tooltip + "；点击打开设置")
 
     def suspend_xbutton1_hook(self):
-        if self.xbutton1_hook and self.xbutton1_hook.is_installed():
-            self.xbutton1_hook.uninstall()
+        if self.shortcut_manager:
+            self.shortcut_manager.suspend()
 
     def restore_xbutton1_hook(self):
         if self.force_quit:
             return
-        if self.xbutton1_hook and not self.xbutton1_hook.is_installed():
-            self.xbutton1_hook.install()
+        if self.shortcut_manager:
+            self.shortcut_manager.resume()
+            self.refresh_shortcut_status()
 
     def on_xbutton1_triggered(self):
+        """Compatibility wrapper for the original XButton1 callback."""
+        self.on_translation_shortcut_triggered()
+
+    def on_translation_shortcut_triggered(self):
+        if not self.app_settings.enabled:
+            return
         if self.selection_capture_busy:
-            log("[XButton1] capture skipped: busy")
+            log("[Shortcut] capture skipped: busy")
             return
 
         self.selection_capture_busy = True
@@ -1489,17 +2085,19 @@ class TranslationWindow(QWidget):
 
     def translate_current_selection(self):
         try:
-            log("[XButton1] triggered")
+            if not self.app_settings.enabled:
+                return
+            log("[Shortcut] triggered")
             selected_text = self.capture_current_selection_text()
 
             if not selected_text:
-                log("[XButton1] no selected text captured")
+                log("[Shortcut] no selected text captured")
                 self.show_manual_window()
                 return
 
             self.handle_new_request(selected_text)
         except Exception as e:
-            log(f"[XButton1] translate_current_selection error: {e}")
+            log(f"[Shortcut] translate_current_selection error: {e}")
         finally:
             self.selection_capture_busy = False
             QTimer.singleShot(150, self.restore_xbutton1_hook)
@@ -1511,6 +2109,99 @@ class TranslationWindow(QWidget):
             QSystemTrayIcon.ActivationReason.DoubleClick
         ):
             self.show_manual_window()
+
+    def show_settings(self):
+        self.force_show_window()
+        dialog = SettingsDialog(
+            self.app_settings,
+            api_key_configured=client is not None,
+            environment_key_active=not is_placeholder_api_key(
+                os.getenv("GPTSAPI_API_KEY", "")
+            ),
+            parent=self,
+        )
+        if self.shortcut_manager:
+            self.shortcut_manager.suspend()
+        try:
+            result = dialog.exec()
+        finally:
+            if self.shortcut_manager:
+                self.shortcut_manager.resume()
+                self.refresh_shortcut_status()
+
+        if result != QDialog.DialogCode.Accepted:
+            return
+        self.apply_settings(dialog.candidate_settings(), dialog.api_key())
+
+    def apply_settings(self, candidate: AppSettings, api_key: str = "") -> bool:
+        global client
+
+        candidate_client = None
+        normalized_key = (api_key or "").strip()
+        if normalized_key:
+            candidate_client = create_api_client(normalized_key)
+            if candidate_client is None:
+                QMessageBox.warning(
+                    self,
+                    "API Key 无效",
+                    "请输入有效的 API Key；其他设置尚未更改。",
+                )
+                return False
+
+        previous = self.app_settings
+        if self.shortcut_manager and not self.shortcut_manager.configure(
+            candidate.shortcut,
+            candidate.enabled,
+        ):
+            QMessageBox.warning(
+                self,
+                "快捷键不可用",
+                "该快捷键可能已被其他程序占用。原快捷键仍保持激活。",
+            )
+            self.refresh_shortcut_status()
+            return False
+
+        try:
+            save_settings_atomic(self.settings_path, candidate)
+        except (OSError, SettingsDataError):
+            if self.shortcut_manager:
+                self.shortcut_manager.configure(
+                    previous.shortcut,
+                    previous.enabled,
+                )
+            QMessageBox.warning(
+                self,
+                "设置保存失败",
+                "无法保存设置，已恢复原来的启用状态和快捷键。",
+            )
+            self.refresh_shortcut_status()
+            return False
+
+        self.app_settings = candidate
+        self.refresh_shortcut_status()
+
+        if candidate_client is not None:
+            try:
+                stored = bool(
+                    self.credential_store
+                    and self.credential_store.write(normalized_key)
+                )
+            except Exception:
+                stored = False
+
+            if stored:
+                client = candidate_client
+                record_event(AppEvent.CREDENTIAL_AVAILABLE)
+            else:
+                record_event(AppEvent.CREDENTIAL_UNAVAILABLE)
+                QMessageBox.warning(
+                    self,
+                    "API Key 保存失败",
+                    "启用状态和快捷键已保存，但 API Key 无法写入 Windows 凭据管理器。",
+                )
+                return False
+
+        return True
 
     def show_manual_window(self):
         log("[UI] show_manual_window called")
@@ -1528,8 +2219,7 @@ class TranslationWindow(QWidget):
         self.cancel_current_ocr()
         self.cancel_current_translation()
         self.hide_translation_progress()
-        if self.xbutton1_hook:
-            self.xbutton1_hook.uninstall()
+        self.shutdown_translation_shortcut()
         self.tray_icon.hide()
         QApplication.quit()
 
@@ -1675,6 +2365,27 @@ class TranslationWindow(QWidget):
         """)
         self.lbl_model_name.setToolTip("当前使用的模型")
         header_layout.addWidget(self.lbl_model_name)
+
+        self.btn_settings = QPushButton(self.app_settings.shortcut.display)
+        self.btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_settings.setToolTip("设置（按钮文字为当前全局翻译快捷键）")
+        self.btn_settings.setStyleSheet("""
+            QPushButton {
+                background-color: #F5F7FA;
+                color: #606266;
+                border: 1px solid #E4E7ED;
+                border-radius: 4px;
+                padding: 2px 7px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                color: #8E44AD;
+                border-color: #C39BD3;
+            }
+        """)
+        self.btn_settings.clicked.connect(self.show_settings)
+        header_layout.addWidget(self.btn_settings)
 
         self.lbl_dictionary_lang = QLabel("语言")
         self.lbl_dictionary_lang.setStyleSheet("color: #909399; font-size: 11px; font-weight: 600;")
@@ -3421,8 +4132,7 @@ class TranslationWindow(QWidget):
         if self.force_quit:
             log("[UI] closeEvent force quit")
             self.cancel_current_translation()
-            if self.xbutton1_hook:
-                self.xbutton1_hook.uninstall()
+            self.shutdown_translation_shortcut()
             super().closeEvent(event)
         else:
             log("[UI] closeEvent hide to tray")
@@ -3575,6 +4285,7 @@ def main(argv: list[str] | None = None) -> int:
         initialize_history(paths)
         store = initialize_credentials(paths)
         window = TranslationWindow(paths, store)
+        app.aboutToQuit.connect(window.shutdown_translation_shortcut)
         if server.failed or not server.running:
             raise RuntimeError("IPC server stopped during startup")
         bridge.bind(window)
