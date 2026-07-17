@@ -11,7 +11,7 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
    & "C:\Tools\SnipDoTranslate\SnipDoTranslate.exe"
    ```
 
-3. 第一次执行需要联网的翻译或 OCR 时，程序会提示输入 API Key。Key 会保存到当前 Windows 用户的“凭据管理器”，目标名为 `SnipDoTranslate/GPTSAPI`；不会写入明文配置文件或进程环境变量。
+3. 第一次执行需要联网的翻译或 OCR 时，程序会提示输入所选接口的 API Key。Key 会按接口分别保存到当前 Windows 用户的“凭据管理器”；不会写入明文配置文件或进程环境变量。
 
 单文件 EXE 第一次启动可能比后续启动稍慢。程序使用单实例模式；再次运行时，请求会转发给已经运行的实例。
 
@@ -25,9 +25,16 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 
 - 在主窗口输入或粘贴文本后翻译；可切换自动、翻译和查词模式。
 - 将图片复制到剪贴板后使用 OCR，或通过命令行传入图片文件。
-- 点击主窗口右上角显示当前快捷键的按钮，或使用托盘菜单中的“设置…”，可以启用/禁用全局划词翻译、录入新的翻译快捷键及更新 API Key。默认快捷键为 `XButton1`。
+- 点击主窗口右上角显示当前快捷键的按钮，或使用托盘菜单中的“设置…”，可以启用/禁用全局划词翻译、录入新的翻译快捷键、选择 API 接口及更新对应的 API Key。默认快捷键为 `XButton1`。
 - 鼠标快捷键会拦截对应的 XButton1/XButton2/中键原生动作，避免同时触发浏览器后退、前进或中键功能。低级鼠标回调运行在独立的 Win32 消息线程中，只投递翻译信号，不在回调内执行剪贴板、界面或网络工作。
 - 关闭主窗口通常只会隐藏到系统托盘；要完全退出，请使用托盘菜单中的退出命令。
+
+设置中的“API 接口”目前提供：
+
+- `OpenAI 兼容（GPTSAPI）`：保持原有行为，使用 `https://api.gptsapi.net/v1` 和 `gpt-5.4-nano`；可选环境变量为 `GPTSAPI_API_KEY`，凭据目标为 `SnipDoTranslate/GPTSAPI`。
+- `DeepSeek 官方接口`：使用 `https://api.deepseek.com` 和 `deepseek-v4-flash`；可选环境变量为 `DEEPSEEK_API_KEY`，凭据目标为 `SnipDoTranslate/DeepSeek`。该接口当前用于文本翻译、查词和文本对齐，不支持本程序的图片 OCR；执行 OCR 前程序会明确拒绝并保留传入的源文件。
+
+两种接口都通过 OpenAI Chat Completions 兼容格式调用，但服务地址、模型和凭据相互独立。切换接口时，API Key 输入框留空会尝试使用目标接口已有的环境变量或 Windows 凭据；不存在时会在下一次请求前提示输入。
 
 常用命令行入口：
 
@@ -77,10 +84,10 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 ```
 
 - `translation_history.json` 保存最多 50 条历史记录，可能包含原文和译文，请按敏感用户数据对待。
-- `settings.json` 只保存工具启用状态和快捷键，不保存 API Key。
+- `settings.json` 只保存工具启用状态、快捷键和所选 API 接口，不保存 API Key。
 - 日志是固定事件组成的 UTF-8 JSON 行，不记录原文、译文、OCR 内容、API Key、完整路径或异常正文。
 - 日志单文件最多 512 KiB，并保留 3 个轮转备份，总上限约 2 MiB。
-- API Key 不在上述目录中，而是在 Windows Credential Manager 中按当前用户保存。
+- API Key 不在上述目录中，而是在 Windows Credential Manager 中按当前用户、按接口分别保存。
 
 发现旧版 `translation_history.json` 或 `.gptsapi_api_key` 时，程序只在新目标不存在时执行复制迁移。迁移不会删除、覆盖或改写旧文件，也不会用旧数据覆盖已经存在的新历史或凭据。
 

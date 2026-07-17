@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import app_settings
+from api_providers import DEFAULT_API_PROVIDER, DEEPSEEK_API_PROVIDER
 from app_settings import (
     AppSettings,
     DEFAULT_SETTINGS,
@@ -49,6 +50,11 @@ def test_missing_settings_returns_enabled_xbutton1_default(tmp_path: Path):
         ),
         AppSettings(enabled=False, shortcut=keyboard_shortcut(0x70, (), "F1")),
         AppSettings(enabled=True, shortcut=keyboard_shortcut(0x87, (), "F24")),
+        AppSettings(
+            enabled=True,
+            shortcut=mouse_shortcut("xbutton1"),
+            api_provider=DEEPSEEK_API_PROVIDER,
+        ),
     ],
 )
 def test_settings_round_trip_is_utf8_and_canonical(
@@ -60,7 +66,8 @@ def test_settings_round_trip_is_utf8_and_canonical(
 
     assert load_settings(path) == settings
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert set(payload) == {"enabled", "shortcut"}
+    assert set(payload) == {"enabled", "shortcut", "api_provider"}
+    assert payload["api_provider"] == settings.api_provider
     assert set(payload["shortcut"]) == {
         "kind",
         "mouse_button",
@@ -122,6 +129,8 @@ def test_mouse_factory_rejects_invalid_button(button: object):
     [
         lambda: AppSettings(enabled=1),
         lambda: AppSettings(shortcut="xbutton1"),
+        lambda: AppSettings(api_provider="unknown"),
+        lambda: AppSettings(api_provider=1),
         lambda: ShortcutBinding("touch", None, None, (), "Touch"),
         lambda: ShortcutBinding("mouse", "xbutton1", 1, (), "XButton1"),
         lambda: ShortcutBinding("mouse", "xbutton1", None, ("ctrl",), "XButton1"),
@@ -147,6 +156,31 @@ def _valid_mouse_payload() -> dict[str, object]:
             "display": "XButton1",
         },
     }
+
+
+def test_load_migrates_legacy_payload_to_default_provider(tmp_path: Path):
+    path = tmp_path / "settings.json"
+    _write_json(path, _valid_mouse_payload())
+
+    settings = load_settings(path)
+
+    assert settings.api_provider == DEFAULT_API_PROVIDER
+    assert settings.shortcut == mouse_shortcut("xbutton1")
+
+
+@pytest.mark.parametrize("api_provider", ["unknown", "DeepSeek", 1, None, []])
+def test_load_rejects_unsupported_api_provider(
+    tmp_path: Path,
+    api_provider: object,
+):
+    path = tmp_path / "settings.json"
+    _write_json(
+        path,
+        {**_valid_mouse_payload(), "api_provider": api_provider},
+    )
+
+    with pytest.raises(SettingsDataError):
+        load_settings(path)
 
 
 @pytest.mark.parametrize(

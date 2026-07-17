@@ -10,11 +10,20 @@ import mimetypes
 import uuid
 import threading
 from ctypes import wintypes
+from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
 from urllib.parse import unquote
 
 from openai import OpenAI
+
+from api_providers import (
+    DEFAULT_API_PROVIDER,
+    ApiProviderSpec,
+    api_provider_options,
+    chat_completion_options,
+    get_api_provider,
+)
 
 from app_cli import (
     AppRequest,
@@ -82,7 +91,7 @@ from PyQt6.QtCore import (
 warnings.filterwarnings("ignore")
 
 # ================= 配置区域 =================
-MODEL_NAME = 'gpt-5.4-nano'
+MODEL_NAME = get_api_provider(DEFAULT_API_PROVIDER).model
 REQUEST_TIMEOUT_SECONDS = 15.0
 MAX_HISTORY_ITEMS = 50
 APP_ID = "SnipDoTranslate"
@@ -92,6 +101,15 @@ APP_PATHS: AppPaths | None = None
 CREDENTIAL_STORE: WindowsCredentialStore | None = None
 EVENT_LOG: PrivacyEventLogger | None = None
 client = None
+
+
+@dataclass(frozen=True)
+class ApiRuntime:
+    provider: ApiProviderSpec
+    client: object | None
+
+
+api_runtime = ApiRuntime(get_api_provider(DEFAULT_API_PROVIDER), None)
 
 
 def record_event(event: AppEvent) -> None:
@@ -114,15 +132,32 @@ def log(_discarded_message: object) -> None:
     return None
 
 
-def create_api_client(api_key: str):
+def activate_api_runtime(api_provider: str, api_client: object | None) -> None:
+    global api_runtime, client
+
+    api_runtime = ApiRuntime(get_api_provider(api_provider), api_client)
+    # Keep the original module global as a compatibility alias for existing
+    # integrations. Runtime calls use the immutable snapshot above.
+    client = api_client
+
+
+def create_api_client(
+    api_key: str,
+    api_provider: str = DEFAULT_API_PROVIDER,
+):
     api_key = (api_key or "").strip()
     if is_placeholder_api_key(api_key):
         return None
 
     try:
+        provider = get_api_provider(api_provider)
+    except ValueError:
+        return None
+
+    try:
         return OpenAI(
             api_key=api_key,
-            base_url="https://api.gptsapi.net/v1",
+            base_url=provider.base_url,
             timeout=REQUEST_TIMEOUT_SECONDS,
             max_retries=1,
         )
@@ -130,31 +165,93 @@ def create_api_client(api_key: str):
         return None
 
 
-def configure_api_client(api_key: str) -> bool:
-    global client
-
-    candidate = create_api_client(api_key)
-    client = candidate
+def configure_api_client(
+    api_key: str,
+    api_provider: str = DEFAULT_API_PROVIDER,
+) -> bool:
+    candidate = create_api_client(api_key, api_provider)
+    activate_api_runtime(api_provider, candidate)
     return candidate is not None
 
 
-def initialize_credentials(paths: AppPaths) -> WindowsCredentialStore | None:
+def create_credential_store(api_provider: str) -> WindowsCredentialStore:
+    provider = get_api_provider(api_provider)
+    return WindowsCredentialStore(target_name=provider.credential_target)
+
+
+def provider_api_key(
+    api_provider: str,
+    store: WindowsCredentialStore | None,
+) -> str:
+    provider = get_api_provider(api_provider)
+    environment_key = os.getenv(provider.environment_variable, "")
+    if not is_placeholder_api_key(environment_key):
+        return environment_key.strip()
+    if store is None:
+        return ""
+    try:
+        stored_key = store.read()
+    except Exception:
+        return ""
+    return "" if is_placeholder_api_key(stored_key) else stored_key.strip()
+
+
+def credential_store_for_window(window: object, api_provider: str):
+    current_settings = getattr(window, "app_settings", None)
+    current_store = getattr(window, "credential_store", None)
+    expected_target = get_api_provider(api_provider).credential_target
+    if (
+        current_settings is not None
+        and current_settings.api_provider == api_provider
+        and current_store is not None
+        and getattr(current_store, "target_name", None) == expected_target
+    ):
+        return current_store
+    try:
+        return create_credential_store(api_provider)
+    except Exception:
+        return None
+
+
+def api_provider_for_window(window: object) -> ApiProviderSpec:
+    settings = getattr(window, "app_settings", None)
+    provider_id = getattr(settings, "api_provider", DEFAULT_API_PROVIDER)
+    try:
+        return get_api_provider(provider_id)
+    except ValueError:
+        return get_api_provider(DEFAULT_API_PROVIDER)
+
+
+def initialize_credentials(
+    paths: AppPaths,
+    api_provider: str = DEFAULT_API_PROVIDER,
+) -> WindowsCredentialStore | None:
     """Resolve a key without making a network request or writing plaintext."""
     global CREDENTIAL_STORE
 
     try:
-        store = WindowsCredentialStore()
+        provider = get_api_provider(api_provider)
+    except ValueError:
+        provider = get_api_provider(DEFAULT_API_PROVIDER)
+        api_provider = provider.provider_id
+    activate_api_runtime(api_provider, None)
+
+    try:
+        store = create_credential_store(api_provider)
         CREDENTIAL_STORE = store
         resolution = resolve_api_key(
-            os.getenv("GPTSAPI_API_KEY", ""),
+            os.getenv(provider.environment_variable, ""),
             store,
-            paths.legacy_dirs,
+            paths.legacy_dirs if api_provider == DEFAULT_API_PROVIDER else (),
         )
     except Exception:
         record_event(AppEvent.CREDENTIAL_UNAVAILABLE)
         return CREDENTIAL_STORE
 
-    if not resolution.key or not configure_api_client(resolution.key):
+    if not resolution.key or not configure_api_client(
+        resolution.key,
+        api_provider,
+    ):
         record_event(AppEvent.CREDENTIAL_MISSING)
         return store
 
@@ -694,6 +791,7 @@ class TranslationThread(QThread):
         self.dictionary_source_lang = dictionary_source_lang
         self.dictionary_target_lang = dictionary_target_lang
         self._stop_requested = False
+        self.runtime = api_runtime
 
     def request_stop(self):
         self._stop_requested = True
@@ -791,8 +889,14 @@ class TranslationThread(QThread):
 
     def run(self):
         try:
-            if client is None:
-                raise RuntimeError("未设置 GPTSAPI_API_KEY")
+            runtime = self.runtime
+            if self._stop_requested:
+                self.finished.emit(False, "已取消")
+                return
+            if runtime.client is None:
+                raise RuntimeError(
+                    f"未设置 {runtime.provider.display_name} API Key"
+                )
 
             prompt = self.build_prompt()
             format_instruction = markdown_format_instruction(self.text)
@@ -800,12 +904,12 @@ class TranslationThread(QThread):
                 prompt = f"{format_instruction}\n\n{prompt}"
             log(f"[TranslateThread] start, mode={self.mode}, text={repr(self.text[:200])}")
 
-            response = client.chat.completions.create(
-                model=MODEL_NAME,
+            response = runtime.client.chat.completions.create(
                 messages=[
                     {"role": "user", "content": prompt}
                 ],
-                stream=True
+                stream=True,
+                **chat_completion_options(runtime.provider),
             )
 
             for chunk in response:
@@ -853,6 +957,7 @@ class AlignmentThread(QThread):
         self.left_context = left_context
         self.right_context = right_context
         self._stop_requested = False
+        self.runtime = api_runtime
 
     def request_stop(self):
         self._stop_requested = True
@@ -923,16 +1028,22 @@ JSON 格式：
 
     def run(self):
         try:
-            if client is None:
-                raise RuntimeError("未设置 GPTSAPI_API_KEY")
+            runtime = self.runtime
+            if self._stop_requested:
+                self.finished.emit(False, {"text": ""}, "已取消")
+                return
+            if runtime.client is None:
+                raise RuntimeError(
+                    f"未设置 {runtime.provider.display_name} API Key"
+                )
 
             log(f"[AlignmentThread] start, selected={repr(self.selected_text[:120])}")
-            response = client.chat.completions.create(
-                model=MODEL_NAME,
+            response = runtime.client.chat.completions.create(
                 messages=[
                     {"role": "user", "content": self.build_prompt()}
                 ],
                 stream=False,
+                **chat_completion_options(runtime.provider),
             )
 
             if self._stop_requested:
@@ -957,18 +1068,28 @@ class OcrThread(QThread):
         super().__init__()
         self.image_data_url = image_data_url
         self._stop_requested = False
+        self.runtime = api_runtime
 
     def request_stop(self):
         self._stop_requested = True
 
     def run(self):
         try:
-            if client is None:
-                raise RuntimeError("未设置 GPTSAPI_API_KEY")
+            runtime = self.runtime
+            if self._stop_requested:
+                self.finished.emit(False, "", "已取消")
+                return
+            if runtime.client is None:
+                raise RuntimeError(
+                    f"未设置 {runtime.provider.display_name} API Key"
+                )
+            if not runtime.provider.supports_vision:
+                raise RuntimeError(
+                    f"{runtime.provider.display_name} 不支持图片 OCR"
+                )
 
             log("[OcrThread] start")
-            response = client.chat.completions.create(
-                model=MODEL_NAME,
+            response = runtime.client.chat.completions.create(
                 messages=[
                     {
                         "role": "user",
@@ -991,6 +1112,7 @@ class OcrThread(QThread):
                     }
                 ],
                 stream=False,
+                **chat_completion_options(runtime.provider),
             )
 
             if self._stop_requested:
@@ -1262,6 +1384,9 @@ class SettingsDialog(QDialog):
         parent=None,
     ):
         super().__init__(parent)
+        self._initial_api_provider = settings.api_provider
+        self._api_key_configured = api_key_configured
+        self._environment_key_active = environment_key_active
         self.setWindowTitle("设置")
         self.setModal(True)
         self.setMinimumWidth(470)
@@ -1280,7 +1405,7 @@ class SettingsDialog(QDialog):
                 font-size: 13px;
                 spacing: 8px;
             }
-            QLineEdit {
+            QLineEdit, QComboBox {
                 background-color: #FFFFFF;
                 color: #303133;
                 border: 1px solid #DCDFE6;
@@ -1289,7 +1414,7 @@ class SettingsDialog(QDialog):
                 font-family: 'Segoe UI', 'Microsoft YaHei UI';
                 font-size: 13px;
             }
-            QLineEdit:focus {
+            QLineEdit:focus, QComboBox:focus {
                 border-color: #8E44AD;
             }
         """)
@@ -1324,6 +1449,16 @@ class SettingsDialog(QDialog):
         self.shortcut_button.capture_error.connect(self._show_capture_error)
         form.addRow("翻译快捷键", self.shortcut_button)
 
+        self.api_provider_combo = NoWheelComboBox()
+        for provider in api_provider_options():
+            self.api_provider_combo.addItem(
+                provider.display_name,
+                provider.provider_id,
+            )
+        provider_index = self.api_provider_combo.findData(settings.api_provider)
+        self.api_provider_combo.setCurrentIndex(max(0, provider_index))
+        form.addRow("API 接口", self.api_provider_combo)
+
         self.api_key_input = QLineEdit()
         self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.api_key_input.setPlaceholderText("输入新 API Key（留空不修改）")
@@ -1334,14 +1469,10 @@ class SettingsDialog(QDialog):
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet("color: #909399; font-size: 12px;")
-        if environment_key_active:
-            self.status_label.setText(
-                "当前 API Key 来自 GPTSAPI_API_KEY 环境变量；它会在下次启动时优先于已保存的 Key。"
-            )
-        elif api_key_configured:
-            self.status_label.setText("已设置 API Key。为保护密钥，输入框不会回填原值。")
-        else:
-            self.status_label.setText("尚未设置 API Key；新 Key 将安全保存到 Windows 凭据管理器。")
+        self.api_provider_combo.currentIndexChanged.connect(
+            self._on_api_provider_changed
+        )
+        self._refresh_api_key_status()
         layout.addWidget(self.status_label)
 
         button_box = QDialogButtonBox(
@@ -1358,10 +1489,45 @@ class SettingsDialog(QDialog):
         self.status_label.setText(message)
         self.status_label.setStyleSheet("color: #E6A23C; font-size: 12px;")
 
+    def selected_api_provider(self) -> str:
+        provider_id = self.api_provider_combo.currentData()
+        return str(provider_id or DEFAULT_API_PROVIDER)
+
+    def _on_api_provider_changed(self, _index: int) -> None:
+        self.api_key_input.clear()
+        self._refresh_api_key_status()
+
+    def _refresh_api_key_status(self) -> None:
+        provider = get_api_provider(self.selected_api_provider())
+        self.api_key_input.setPlaceholderText(
+            f"输入新的 {provider.display_name} API Key（留空不修改）"
+        )
+
+        if provider.provider_id != self._initial_api_provider:
+            message = (
+                f"将切换到 {provider.display_name}。留空时会使用该接口已有的凭据或"
+                f" {provider.environment_variable}；若均不存在，下次请求时会提示输入。"
+            )
+        elif self._environment_key_active:
+            message = (
+                f"当前 API Key 来自 {provider.environment_variable} 环境变量；"
+                "它会在下次启动时优先于已保存的 Key。"
+            )
+        elif self._api_key_configured:
+            message = "已设置 API Key。为保护密钥，输入框不会回填原值。"
+        else:
+            message = "尚未设置 API Key；新 Key 将安全保存到 Windows 凭据管理器。"
+
+        if not provider.supports_vision:
+            message += " 此接口当前仅用于文本翻译和查词，不支持图片 OCR。"
+        self.status_label.setText(message)
+        self.status_label.setStyleSheet("color: #909399; font-size: 12px;")
+
     def candidate_settings(self) -> AppSettings:
         return AppSettings(
             enabled=self.chk_enabled.isChecked(),
             shortcut=self.shortcut_button.binding,
+            api_provider=self.selected_api_provider(),
         )
 
     def api_key(self) -> str:
@@ -1844,6 +2010,7 @@ class TranslationWindow(QWidget):
         self,
         paths: AppPaths | None = None,
         credential_store: WindowsCredentialStore | None = None,
+        initial_settings: AppSettings | None = None,
     ):
         super().__init__()
 
@@ -1852,7 +2019,11 @@ class TranslationWindow(QWidget):
             raise RuntimeError("application paths are not initialized")
         self.credential_store = credential_store or CREDENTIAL_STORE
         self.settings_path = self.app_paths.data_dir / SETTINGS_FILE_NAME
-        self.app_settings = self.load_app_settings()
+        self.app_settings = (
+            initial_settings
+            if initial_settings is not None
+            else self.load_app_settings()
+        )
 
         self.source_mode = "manual"         # manual / snipdo
         self.content_mode_override = "auto"  # auto / translate / dictionary
@@ -2013,6 +2184,19 @@ class TranslationWindow(QWidget):
             self.btn_settings.setText(self.app_settings.shortcut.display)
             self.btn_settings.setToolTip(tooltip + "；点击打开设置")
 
+    def refresh_api_status(self):
+        if not hasattr(self, "lbl_model_name"):
+            return
+        provider = get_api_provider(self.app_settings.api_provider)
+        self.lbl_model_name.setText(
+            f"{provider.short_name} · {provider.model}"
+        )
+        self.lbl_model_name.setToolTip(
+            f"当前接口：{provider.display_name}\n"
+            f"服务地址：{provider.base_url}\n"
+            f"模型：{provider.model}"
+        )
+
     def suspend_xbutton1_hook(self):
         if self.shortcut_manager:
             self.shortcut_manager.suspend()
@@ -2121,11 +2305,15 @@ class TranslationWindow(QWidget):
 
     def show_settings(self):
         self.force_show_window()
+        provider = get_api_provider(self.app_settings.api_provider)
         dialog = SettingsDialog(
             self.app_settings,
-            api_key_configured=client is not None,
+            api_key_configured=(
+                client is not None
+                and api_runtime.provider.provider_id == provider.provider_id
+            ),
             environment_key_active=not is_placeholder_api_key(
-                os.getenv("GPTSAPI_API_KEY", "")
+                os.getenv(provider.environment_variable, "")
             ),
             parent=self,
         )
@@ -2143,12 +2331,19 @@ class TranslationWindow(QWidget):
         self.apply_settings(dialog.candidate_settings(), dialog.api_key())
 
     def apply_settings(self, candidate: AppSettings, api_key: str = "") -> bool:
-        global client
-
+        previous = self.app_settings
+        provider_changed = candidate.api_provider != previous.api_provider
+        target_store = credential_store_for_window(
+            self,
+            candidate.api_provider,
+        )
         candidate_client = None
         normalized_key = (api_key or "").strip()
         if normalized_key:
-            candidate_client = create_api_client(normalized_key)
+            candidate_client = create_api_client(
+                normalized_key,
+                candidate.api_provider,
+            )
             if candidate_client is None:
                 QMessageBox.warning(
                     self,
@@ -2156,8 +2351,47 @@ class TranslationWindow(QWidget):
                     "请输入有效的 API Key；其他设置尚未更改。",
                 )
                 return False
+        elif provider_changed:
+            selected_key = provider_api_key(
+                candidate.api_provider,
+                target_store,
+            )
+            if selected_key:
+                candidate_client = create_api_client(
+                    selected_key,
+                    candidate.api_provider,
+                )
 
-        previous = self.app_settings
+        if provider_changed:
+            for method_name in (
+                "cancel_current_ocr",
+                "cancel_current_alignment",
+                "cancel_current_translation",
+            ):
+                method = getattr(self, method_name, None)
+                if callable(method):
+                    method()
+            running_threads = []
+            for attribute_name in (
+                "ocr_thread",
+                "align_thread",
+                "trans_thread",
+            ):
+                thread = getattr(self, attribute_name, None)
+                try:
+                    is_running = bool(thread and thread.isRunning())
+                except Exception:
+                    is_running = True
+                if is_running:
+                    running_threads.append(attribute_name)
+            if running_threads:
+                QMessageBox.warning(
+                    self,
+                    "接口暂未切换",
+                    "当前请求尚未结束。请稍后再次保存接口设置。",
+                )
+                return False
+
         if self.shortcut_manager and not self.shortcut_manager.configure(
             candidate.shortcut,
             candidate.enabled,
@@ -2188,27 +2422,42 @@ class TranslationWindow(QWidget):
 
         self.app_settings = candidate
         self.refresh_shortcut_status()
+        refresh_api_status = getattr(self, "refresh_api_status", None)
+        if callable(refresh_api_status):
+            refresh_api_status()
 
-        if candidate_client is not None:
+        if normalized_key:
             try:
                 stored = bool(
-                    self.credential_store
-                    and self.credential_store.write(normalized_key)
+                    target_store
+                    and target_store.write(normalized_key)
                 )
             except Exception:
                 stored = False
 
             if stored:
-                client = candidate_client
+                self.credential_store = target_store
+                activate_api_runtime(candidate.api_provider, candidate_client)
                 record_event(AppEvent.CREDENTIAL_AVAILABLE)
             else:
+                if provider_changed:
+                    self.credential_store = target_store
+                    activate_api_runtime(candidate.api_provider, None)
                 record_event(AppEvent.CREDENTIAL_UNAVAILABLE)
                 QMessageBox.warning(
                     self,
                     "API Key 保存失败",
-                    "启用状态和快捷键已保存，但 API Key 无法写入 Windows 凭据管理器。",
+                    "接口类型、启用状态和快捷键已保存，但 API Key 无法写入 Windows 凭据管理器。",
                 )
                 return False
+        elif provider_changed:
+            self.credential_store = target_store
+            activate_api_runtime(candidate.api_provider, candidate_client)
+            record_event(
+                AppEvent.CREDENTIAL_AVAILABLE
+                if candidate_client is not None
+                else AppEvent.CREDENTIAL_MISSING
+            )
 
         return True
 
@@ -2360,7 +2609,7 @@ class TranslationWindow(QWidget):
         self.btn_content_mode.clicked.connect(self.toggle_content_mode)
         header_layout.addWidget(self.btn_content_mode)
 
-        self.lbl_model_name = QLabel(f"Model: {MODEL_NAME}")
+        self.lbl_model_name = QLabel()
         self.lbl_model_name.setStyleSheet("""
             QLabel {
                 background-color: #F5F7FA;
@@ -2372,7 +2621,7 @@ class TranslationWindow(QWidget):
                 font-weight: 600;
             }
         """)
-        self.lbl_model_name.setToolTip("当前使用的模型")
+        self.refresh_api_status()
         header_layout.addWidget(self.lbl_model_name)
 
         self.btn_settings = QPushButton(self.app_settings.shortcut.display)
@@ -2961,7 +3210,11 @@ class TranslationWindow(QWidget):
             self.progress_window.hide()
 
     def ensure_api_key(self, *, allow_prompt: bool = True) -> bool:
-        if client is not None:
+        provider = get_api_provider(self.app_settings.api_provider)
+        if (
+            client is not None
+            and api_runtime.provider.provider_id == provider.provider_id
+        ):
             return True
         if not allow_prompt:
             record_event(AppEvent.CREDENTIAL_MISSING)
@@ -2970,16 +3223,22 @@ class TranslationWindow(QWidget):
         self.force_show_window()
         api_key, ok = QInputDialog.getText(
             self,
-            "输入 API Key",
-            "未检测到 API Key，请手动输入（将保存到 Windows 凭据管理器）：",
+            f"输入 {provider.short_name} API Key",
+            f"未检测到 {provider.display_name} API Key，请手动输入"
+            "（将保存到 Windows 凭据管理器）：",
             QLineEdit.EchoMode.Password
         )
 
-        if ok and configure_api_client(api_key):
+        if ok and configure_api_client(api_key, provider.provider_id):
+            target_store = credential_store_for_window(
+                self,
+                provider.provider_id,
+            )
             try:
-                if self.credential_store is None or not self.credential_store.write(api_key):
+                if target_store is None or not target_store.write(api_key):
                     record_event(AppEvent.CREDENTIAL_UNAVAILABLE)
                 else:
+                    self.credential_store = target_store
                     record_event(AppEvent.CREDENTIAL_AVAILABLE)
             except Exception:
                 # The key remains available for this process only.  It is never
@@ -3016,6 +3275,16 @@ class TranslationWindow(QWidget):
         allow_key_prompt: bool = True,
     ) -> ReceiveResult:
         log(f"[UI] start_image_file_ocr file={file_path}")
+
+        provider = api_provider_for_window(self)
+        if not provider.supports_vision:
+            self.force_show_window()
+            self.set_result_message(
+                f"[当前 {provider.short_name} 接口不支持图片 OCR；"
+                "请在设置中切换到支持图片的接口]"
+            )
+            record_event(AppEvent.OCR_FAILED)
+            return ReceiveResult.reject(RejectionReason.STARTUP_FAILED)
 
         # Deletion belongs exclusively to the launching process after an
         # accepted ACK.  The primary must first own an in-memory copy.
@@ -3054,6 +3323,15 @@ class TranslationWindow(QWidget):
     ):
         if self.ocr_thread and self.ocr_thread.isRunning():
             record_event(AppEvent.OCR_BUSY)
+            return False
+
+        provider = api_provider_for_window(self)
+        if not provider.supports_vision:
+            self.set_result_message(
+                f"[当前 {provider.short_name} 接口不支持图片 OCR；"
+                "请在设置中切换到支持图片的接口]"
+            )
+            record_event(AppEvent.OCR_FAILED)
             return False
 
         if not self.ensure_api_key(allow_prompt=allow_key_prompt):
@@ -3948,6 +4226,11 @@ class TranslationWindow(QWidget):
                 if self.ocr_thread and self.ocr_thread.isRunning():
                     reason = RejectionReason.BUSY
                     return ReceiveResult.reject(reason)
+                if not api_provider_for_window(self).supports_vision:
+                    return self.start_image_file_ocr(
+                        file_path,
+                        allow_key_prompt=allow_key_prompt,
+                    )
                 if client is None and not allow_key_prompt:
                     reason = RejectionReason.MISSING_KEY
                     return ReceiveResult.reject(reason)
@@ -4292,8 +4575,21 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         initialize_history(paths)
-        store = initialize_credentials(paths)
-        window = TranslationWindow(paths, store)
+        try:
+            startup_settings = load_settings(
+                paths.data_dir / SETTINGS_FILE_NAME
+            )
+        except (SettingsDataError, OSError):
+            startup_settings = DEFAULT_SETTINGS
+        store = initialize_credentials(
+            paths,
+            startup_settings.api_provider,
+        )
+        window = TranslationWindow(
+            paths,
+            store,
+            initial_settings=startup_settings,
+        )
         app.aboutToQuit.connect(window.shutdown_translation_shortcut)
         if server.failed or not server.running:
             raise RuntimeError("IPC server stopped during startup")

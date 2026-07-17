@@ -14,6 +14,8 @@ import pytest
 
 from app_cli import AppRequest, PreparedRequest
 from app_paths import AppPaths
+from app_settings import AppSettings
+from api_providers import DEEPSEEK_API_PROVIDER
 from windows_ipc import RejectionReason
 
 
@@ -243,6 +245,37 @@ def test_handle_ocr_rejects_when_source_cannot_be_read(app, monkeypatch, tmp_pat
     assert result.accepted is False
     assert result.reason is RejectionReason.NOT_OWNED
     assert not missing_source.exists()
+
+
+def test_deepseek_rejects_ocr_before_reading_and_retains_source(
+    app,
+    monkeypatch,
+    tmp_path: Path,
+):
+    source = tmp_path / "deepseek-unsupported.png"
+    source.write_bytes(b"must-remain-owned-by-caller")
+    window = _ocr_window(app)
+    window.app_settings = AppSettings(api_provider=DEEPSEEK_API_PROVIDER)
+    messages = []
+    window.set_result_message = messages.append
+    app.activate_api_runtime(DEEPSEEK_API_PROVIDER, None)
+    monkeypatch.setattr(
+        app,
+        "image_file_to_data_url",
+        lambda _path: pytest.fail("unsupported OCR must not read the source"),
+    )
+
+    result = app.TranslationWindow.handle_app_request(
+        window,
+        AppRequest("ocr_image", {"path": str(source)}),
+        allow_key_prompt=False,
+    )
+
+    assert result.accepted is False
+    assert result.reason is RejectionReason.STARTUP_FAILED
+    assert source.exists()
+    assert messages and "DeepSeek" in messages[-1]
+    assert "不支持图片 OCR" in messages[-1]
 
 
 def test_handle_ocr_rejects_when_thread_start_fails_and_retains_source(

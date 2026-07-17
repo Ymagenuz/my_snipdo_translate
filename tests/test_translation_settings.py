@@ -10,6 +10,11 @@ from types import SimpleNamespace
 import pytest
 
 from app_paths import AppPaths
+from api_providers import (
+    DEFAULT_API_PROVIDER,
+    DEEPSEEK_API_PROVIDER,
+    get_api_provider,
+)
 from app_settings import (
     AppSettings,
     DEFAULT_SETTINGS,
@@ -214,6 +219,178 @@ def test_default_main_settings_button_and_dialog_display_xbutton1(
         window.progress_window.close()
         window.deleteLater()
         qapp.processEvents()
+
+
+def test_settings_dialog_lists_api_providers_and_returns_stable_id(
+    app, qapp
+):
+    dialog = app.SettingsDialog(
+        DEFAULT_SETTINGS,
+        api_key_configured=False,
+        environment_key_active=False,
+    )
+    try:
+        provider_ids = [
+            dialog.api_provider_combo.itemData(index)
+            for index in range(dialog.api_provider_combo.count())
+        ]
+        assert provider_ids == [
+            DEFAULT_API_PROVIDER,
+            DEEPSEEK_API_PROVIDER,
+        ]
+        assert dialog.selected_api_provider() == DEFAULT_API_PROVIDER
+
+        deepseek_index = dialog.api_provider_combo.findData(
+            DEEPSEEK_API_PROVIDER
+        )
+        dialog.api_provider_combo.setCurrentIndex(deepseek_index)
+
+        assert (
+            dialog.candidate_settings().api_provider
+            == DEEPSEEK_API_PROVIDER
+        )
+        assert "不支持图片 OCR" in dialog.status_label.text()
+        assert "DEEPSEEK_API_KEY" in dialog.status_label.text()
+    finally:
+        dialog.deleteLater()
+        qapp.processEvents()
+
+
+def test_create_api_client_uses_selected_provider_endpoint(
+    app, monkeypatch
+):
+    calls = []
+    expected_client = object()
+
+    def fake_openai(**kwargs):
+        calls.append(kwargs)
+        return expected_client
+
+    monkeypatch.setattr(app, "OpenAI", fake_openai)
+
+    result = app.create_api_client("deepseek-test-key", DEEPSEEK_API_PROVIDER)
+
+    assert result is expected_client
+    assert calls == [
+        {
+            "api_key": "deepseek-test-key",
+            "base_url": "https://api.deepseek.com",
+            "timeout": app.REQUEST_TIMEOUT_SECONDS,
+            "max_retries": 1,
+        }
+    ]
+    provider = get_api_provider(DEEPSEEK_API_PROVIDER)
+    assert app.chat_completion_options(provider) == {
+        "model": "deepseek-v4-flash",
+        "extra_body": {"thinking": {"type": "disabled"}},
+    }
+
+
+def test_initialize_deepseek_credentials_uses_separate_sources(
+    app,
+    monkeypatch,
+    tmp_path: Path,
+):
+    store = object()
+    resolutions = []
+    configurations = []
+    events = []
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-env-key")
+    monkeypatch.setattr(
+        app,
+        "create_credential_store",
+        lambda provider: (
+            store
+            if provider == DEEPSEEK_API_PROVIDER
+            else pytest.fail("unexpected provider")
+        ),
+    )
+
+    def fake_resolve(environment_key, selected_store, legacy_dirs):
+        resolutions.append((environment_key, selected_store, legacy_dirs))
+        return SimpleNamespace(
+            key="deepseek-env-key",
+            source="environment",
+            persisted=False,
+            migrated=False,
+        )
+
+    monkeypatch.setattr(app, "resolve_api_key", fake_resolve)
+    monkeypatch.setattr(
+        app,
+        "configure_api_client",
+        lambda key, provider: configurations.append((key, provider)) or True,
+    )
+    monkeypatch.setattr(app, "record_event", events.append)
+
+    result = app.initialize_credentials(
+        _app_paths(tmp_path),
+        DEEPSEEK_API_PROVIDER,
+    )
+
+    assert result is store
+    assert resolutions == [("deepseek-env-key", store, ())]
+    assert configurations == [
+        ("deepseek-env-key", DEEPSEEK_API_PROVIDER)
+    ]
+    assert events == [app.AppEvent.CREDENTIAL_AVAILABLE]
+    assert get_api_provider(DEEPSEEK_API_PROVIDER).credential_target == (
+        "SnipDoTranslate/DeepSeek"
+    )
+
+
+def test_translation_thread_keeps_creation_time_api_runtime(
+    app,
+    qapp,
+):
+    old_calls = []
+    new_calls = []
+
+    class CompletionsStub:
+        def __init__(self, calls):
+            self.calls = calls
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return []
+
+    old_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=CompletionsStub(old_calls))
+    )
+    new_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=CompletionsStub(new_calls))
+    )
+    app.activate_api_runtime(DEFAULT_API_PROVIDER, old_client)
+    thread = app.TranslationThread("runtime snapshot")
+    app.activate_api_runtime(DEEPSEEK_API_PROVIDER, new_client)
+
+    thread.run()
+
+    assert len(old_calls) == 1
+    assert old_calls[0]["model"] == "gpt-5.4-nano"
+    assert "extra_body" not in old_calls[0]
+    assert new_calls == []
+
+
+def test_cancelled_translation_thread_never_calls_api(app, qapp):
+    calls = []
+
+    class CompletionsStub:
+        @staticmethod
+        def create(**kwargs):
+            calls.append(kwargs)
+            return []
+
+    api_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=CompletionsStub())
+    )
+    app.activate_api_runtime(DEFAULT_API_PROVIDER, api_client)
+    thread = app.TranslationThread("cancel before run")
+    thread.request_stop()
+
+    thread.run()
+
+    assert calls == []
 
 
 def test_tray_menu_hover_style_has_explicit_foreground_and_background(
@@ -601,6 +778,145 @@ def test_apply_settings_rolls_shortcut_back_when_save_fails(
     assert warnings and warnings[-1][1] == "设置保存失败"
 
 
+@pytest.mark.parametrize(
+    ("stored_key", "expects_client"),
+    [("deepseek-key", True), ("", False)],
+)
+def test_switching_provider_uses_only_the_target_provider_credential(
+    app,
+    monkeypatch,
+    tmp_path: Path,
+    stored_key: str,
+    expects_client: bool,
+):
+    old_client = object()
+    deepseek_client = object()
+    requested_clients = []
+    events = []
+
+    class DeepSeekStoreStub:
+        def read(self):
+            return stored_key
+
+    target_store = DeepSeekStoreStub()
+    candidate = AppSettings(
+        shortcut=mouse_shortcut("xbutton1"),
+        api_provider=DEEPSEEK_API_PROVIDER,
+    )
+    manager = _ShortcutManagerStub()
+    window, _refreshes = _settings_window_stub(
+        tmp_path / "settings.json",
+        DEFAULT_SETTINGS,
+        manager,
+        credential_store=object(),
+    )
+    app.activate_api_runtime(DEFAULT_API_PROVIDER, old_client)
+    monkeypatch.setattr(
+        app,
+        "create_credential_store",
+        lambda provider: (
+            target_store
+            if provider == DEEPSEEK_API_PROVIDER
+            else pytest.fail("unexpected provider")
+        ),
+    )
+
+    def fake_create_client(key, provider):
+        requested_clients.append((key, provider))
+        return deepseek_client
+
+    monkeypatch.setattr(app, "create_api_client", fake_create_client)
+    monkeypatch.setattr(app, "record_event", events.append)
+
+    result = app.TranslationWindow.apply_settings(window, candidate)
+
+    assert result is True
+    assert window.app_settings == candidate
+    assert window.credential_store is target_store
+    assert app.api_runtime.provider.provider_id == DEEPSEEK_API_PROVIDER
+    assert app.client is (deepseek_client if expects_client else None)
+    assert requested_clients == (
+        [("deepseek-key", DEEPSEEK_API_PROVIDER)]
+        if expects_client
+        else []
+    )
+    assert events == [
+        app.AppEvent.CREDENTIAL_AVAILABLE
+        if expects_client
+        else app.AppEvent.CREDENTIAL_MISSING
+    ]
+
+
+def test_provider_switch_is_deferred_while_cancelled_thread_is_still_running(
+    app,
+    monkeypatch,
+    tmp_path: Path,
+):
+    class RunningThreadStub:
+        @staticmethod
+        def isRunning():
+            return True
+
+    class StoreStub:
+        @staticmethod
+        def read():
+            return ""
+
+    manager = _ShortcutManagerStub()
+    window, refreshes = _settings_window_stub(
+        tmp_path / "settings.json",
+        DEFAULT_SETTINGS,
+        manager,
+        credential_store=object(),
+    )
+    window.ocr_thread = RunningThreadStub()
+    window.align_thread = None
+    window.trans_thread = None
+    window.cancel_current_ocr = lambda: None
+    warnings = []
+    monkeypatch.setattr(app, "create_credential_store", lambda _provider: StoreStub())
+    monkeypatch.setattr(
+        app,
+        "QMessageBox",
+        SimpleNamespace(warning=lambda *args: warnings.append(args)),
+    )
+    candidate = AppSettings(api_provider=DEEPSEEK_API_PROVIDER)
+
+    result = app.TranslationWindow.apply_settings(window, candidate)
+
+    assert result is False
+    assert window.app_settings == DEFAULT_SETTINGS
+    assert manager.calls == []
+    assert refreshes == []
+    assert not (tmp_path / "settings.json").exists()
+    assert warnings and warnings[-1][1] == "接口暂未切换"
+
+
+def test_mismatched_credential_target_is_not_reused(app, monkeypatch):
+    wrong_store = SimpleNamespace(target_name="SnipDoTranslate/GPTSAPI")
+    correct_store = SimpleNamespace(target_name="SnipDoTranslate/DeepSeek")
+    window = SimpleNamespace(
+        app_settings=AppSettings(api_provider=DEEPSEEK_API_PROVIDER),
+        credential_store=wrong_store,
+    )
+    monkeypatch.setattr(
+        app,
+        "create_credential_store",
+        lambda provider: (
+            correct_store
+            if provider == DEEPSEEK_API_PROVIDER
+            else pytest.fail("unexpected provider")
+        ),
+    )
+
+    selected = app.credential_store_for_window(
+        window,
+        DEEPSEEK_API_PROVIDER,
+    )
+
+    assert selected is correct_store
+
+
 @pytest.mark.parametrize("stored", [True, False])
 def test_apply_settings_replaces_client_only_after_credential_write_succeeds(
     app, monkeypatch, tmp_path: Path, stored: bool
@@ -617,6 +933,8 @@ def test_apply_settings_replaces_client_only_after_credential_write_succeeds(
     events = []
 
     class CredentialStoreStub:
+        target_name = "SnipDoTranslate/GPTSAPI"
+
         def write(self, key):
             stored_keys.append(key)
             observed_clients.append(app.client)
@@ -633,7 +951,11 @@ def test_apply_settings_replaces_client_only_after_credential_write_succeeds(
     monkeypatch.setattr(
         app,
         "create_api_client",
-        lambda key: candidate_client if key == "new-test-key" else None,
+        lambda key, provider=DEFAULT_API_PROVIDER: (
+            candidate_client
+            if key == "new-test-key" and provider == DEFAULT_API_PROVIDER
+            else None
+        ),
     )
     monkeypatch.setattr(app, "save_settings_atomic", lambda _path, _value: None)
     monkeypatch.setattr(app, "record_event", events.append)

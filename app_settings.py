@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from api_providers import API_PROVIDER_IDS, DEFAULT_API_PROVIDER
+
 
 SETTINGS_FILE_NAME = "settings.json"
 
@@ -23,7 +25,8 @@ _MOUSE_DISPLAY = {
     "xbutton2": "XButton2",
     "middle": "Middle Mouse",
 }
-_ROOT_FIELDS = frozenset({"enabled", "shortcut"})
+_LEGACY_ROOT_FIELDS = frozenset({"enabled", "shortcut"})
+_ROOT_FIELDS = frozenset({"enabled", "shortcut", "api_provider"})
 _SHORTCUT_FIELDS = frozenset(
     {"kind", "mouse_button", "virtual_key", "modifiers", "display"}
 )
@@ -155,12 +158,18 @@ DEFAULT_SHORTCUT = mouse_shortcut("xbutton1")
 class AppSettings:
     enabled: bool = True
     shortcut: ShortcutBinding = field(default_factory=lambda: DEFAULT_SHORTCUT)
+    api_provider: str = DEFAULT_API_PROVIDER
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
             raise SettingsDataError("enabled must be a boolean")
         if not isinstance(self.shortcut, ShortcutBinding):
             raise SettingsDataError("shortcut must be a ShortcutBinding")
+        if (
+            not isinstance(self.api_provider, str)
+            or self.api_provider not in API_PROVIDER_IDS
+        ):
+            raise SettingsDataError("unsupported API provider")
 
 
 DEFAULT_SETTINGS = AppSettings()
@@ -216,12 +225,19 @@ def _decode_shortcut(value: object) -> ShortcutBinding:
 def _decode_settings(value: object) -> AppSettings:
     if not isinstance(value, dict):
         raise SettingsDataError("settings root must be an object")
-    _require_exact_fields(value, _ROOT_FIELDS)
+    fields = frozenset(value)
+    if fields == _LEGACY_ROOT_FIELDS:
+        api_provider = DEFAULT_API_PROVIDER
+    elif fields == _ROOT_FIELDS:
+        api_provider = value["api_provider"]
+    else:
+        raise SettingsDataError("settings fields do not match the supported schema")
     if not isinstance(value["enabled"], bool):
         raise SettingsDataError("enabled must be a boolean")
     return AppSettings(
         enabled=value["enabled"],
         shortcut=_decode_shortcut(value["shortcut"]),
+        api_provider=api_provider,
     )
 
 
@@ -245,6 +261,7 @@ def _encode_settings(settings: AppSettings) -> dict[str, object]:
     shortcut = settings.shortcut
     return {
         "enabled": settings.enabled,
+        "api_provider": settings.api_provider,
         "shortcut": {
             "kind": shortcut.kind,
             "mouse_button": shortcut.mouse_button,
@@ -279,6 +296,7 @@ def save_settings_atomic(path: Path, settings: AppSettings) -> None:
 
 __all__ = [
     "AppSettings",
+    "DEFAULT_API_PROVIDER",
     "DEFAULT_SETTINGS",
     "DEFAULT_SHORTCUT",
     "MOUSE_BUTTONS",
