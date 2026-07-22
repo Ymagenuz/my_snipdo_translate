@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import binascii
+import math
 import struct
 import zlib
 from pathlib import Path
@@ -9,9 +10,13 @@ from pathlib import Path
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 ICON_SIZES = (16, 32, 48, 64, 128, 256)
+APP_IMAGE_SIZE = 512
+RENDER_SCALE = 3
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "snipdo_script_logo" / "gemini-color.png"
+SOURCE = ROOT / "snipdo_script_logo" / "snipdo-translate-enabled.png"
+DISABLED_SOURCE = ROOT / "snipdo_script_logo" / "snipdo-translate-disabled.png"
 DESTINATION = ROOT / "snipdo_script_logo" / "SnipDoTranslate.ico"
+DISABLED_DESTINATION = ROOT / "snipdo_script_logo" / "SnipDoTranslate-disabled.ico"
 
 
 def _paeth(left: int, above: int, upper_left: int) -> int:
@@ -213,6 +218,216 @@ def _encode_rgba_png(size: int, pixels: bytes) -> bytes:
     )
 
 
+def _inside_rounded_rect(
+    x: float,
+    y: float,
+    left: int,
+    top: int,
+    right: int,
+    bottom: int,
+    radius: int,
+) -> bool:
+    if x < left or x >= right or y < top or y >= bottom:
+        return False
+    if left + radius <= x < right - radius:
+        return True
+    if top + radius <= y < bottom - radius:
+        return True
+    center_x = left + radius if x < left + radius else right - radius
+    center_y = top + radius if y < top + radius else bottom - radius
+    return (x - center_x) ** 2 + (y - center_y) ** 2 <= radius**2
+
+
+def _paint_pixel(
+    pixels: bytearray,
+    size: int,
+    x: int,
+    y: int,
+    color: tuple[int, int, int, int],
+) -> None:
+    offset = (y * size + x) * 4
+    pixels[offset : offset + 4] = bytes(color)
+
+
+def _fill_rounded_rect(
+    pixels: bytearray,
+    size: int,
+    bounds: tuple[int, int, int, int],
+    radius: int,
+    color: tuple[int, int, int, int],
+) -> None:
+    left, top, right, bottom = bounds
+    for y in range(max(0, top), min(size, bottom)):
+        sample_y = y + 0.5
+        for x in range(max(0, left), min(size, right)):
+            if _inside_rounded_rect(
+                x + 0.5,
+                sample_y,
+                left,
+                top,
+                right,
+                bottom,
+                radius,
+            ):
+                _paint_pixel(pixels, size, x, y, color)
+
+
+def _fill_polygon(
+    pixels: bytearray,
+    size: int,
+    points: tuple[tuple[int, int], ...],
+    color: tuple[int, int, int, int],
+) -> None:
+    minimum_y = max(0, min(y for _x, y in points))
+    maximum_y = min(size, max(y for _x, y in points))
+    for y in range(minimum_y, maximum_y):
+        scan_y = y + 0.5
+        intersections: list[float] = []
+        for index, (x1, y1) in enumerate(points):
+            x2, y2 = points[(index + 1) % len(points)]
+            if y1 == y2 or not (min(y1, y2) <= scan_y < max(y1, y2)):
+                continue
+            ratio = (scan_y - y1) / (y2 - y1)
+            intersections.append(x1 + ratio * (x2 - x1))
+        intersections.sort()
+        for left, right in zip(intersections[0::2], intersections[1::2]):
+            start = max(0, math.ceil(left - 0.5))
+            stop = min(size, math.ceil(right - 0.5))
+            for x in range(start, stop):
+                _paint_pixel(pixels, size, x, y, color)
+
+
+def _downsample_rgba(source: bytes, source_size: int, scale: int) -> bytes:
+    destination_size = source_size // scale
+    destination = bytearray(destination_size * destination_size * 4)
+    sample_count = scale * scale
+    output = 0
+    for destination_y in range(destination_size):
+        for destination_x in range(destination_size):
+            samples = [
+                ((source_y * source_size + source_x) * 4)
+                for source_y in range(destination_y * scale, (destination_y + 1) * scale)
+                for source_x in range(destination_x * scale, (destination_x + 1) * scale)
+            ]
+            alpha_sum = sum(source[offset + 3] for offset in samples)
+            alpha = (alpha_sum + sample_count // 2) // sample_count
+            if alpha_sum:
+                for channel in range(3):
+                    premultiplied = sum(
+                        source[offset + channel] * source[offset + 3]
+                        for offset in samples
+                    )
+                    destination[output + channel] = (
+                        premultiplied + alpha_sum // 2
+                    ) // alpha_sum
+            destination[output + 3] = alpha
+            output += 4
+    return bytes(destination)
+
+
+def _draw_app_icon_rgba(
+    colors: tuple[tuple[int, int, int, int], tuple[int, int, int, int]],
+    size: int = APP_IMAGE_SIZE,
+) -> bytes:
+    scale = RENDER_SCALE
+    render_size = size * scale
+    pixels = bytearray(render_size * render_size * 4)
+
+    def scaled(value: int) -> int:
+        return value * scale
+
+    upper_color, lower_color = colors
+    _fill_rounded_rect(
+        pixels,
+        render_size,
+        tuple(scaled(value) for value in (38, 116, 358, 220)),
+        scaled(36),
+        upper_color,
+    )
+    _fill_polygon(
+        pixels,
+        render_size,
+        tuple(
+            (scaled(x), scaled(y))
+            for x, y in ((300, 58), (488, 168), (300, 278))
+        ),
+        upper_color,
+    )
+    _fill_rounded_rect(
+        pixels,
+        render_size,
+        tuple(scaled(value) for value in (154, 292, 474, 396)),
+        scaled(36),
+        lower_color,
+    )
+    _fill_polygon(
+        pixels,
+        render_size,
+        tuple(
+            (scaled(x), scaled(y))
+            for x, y in ((212, 234), (24, 344), (212, 454))
+        ),
+        lower_color,
+    )
+
+    glyph_color = (255, 255, 255, 255)
+    for stroke in (
+        ((150, 205), (180, 130), (196, 130), (171, 205)),
+        ((180, 130), (196, 130), (225, 205), (203, 205)),
+    ):
+        _fill_polygon(
+            pixels,
+            render_size,
+            tuple((scaled(x), scaled(y)) for x, y in stroke),
+            glyph_color,
+        )
+    _fill_rounded_rect(
+        pixels,
+        render_size,
+        tuple(scaled(value) for value in (166, 174, 210, 188)),
+        scaled(7),
+        glyph_color,
+    )
+
+    _fill_polygon(
+        pixels,
+        render_size,
+        tuple(
+            (scaled(x), scaled(y))
+            for x, y in ((316, 294), (336, 309), (325, 323), (307, 308))
+        ),
+        glyph_color,
+    )
+    _fill_rounded_rect(
+        pixels,
+        render_size,
+        tuple(scaled(value) for value in (276, 321, 364, 337)),
+        scaled(8),
+        glyph_color,
+    )
+    for stroke in (
+        ((314, 334), (330, 340), (293, 389), (274, 396), (267, 384), (284, 374)),
+        ((308, 339), (325, 334), (337, 358), (371, 383), (359, 398), (326, 372)),
+    ):
+        _fill_polygon(
+            pixels,
+            render_size,
+            tuple((scaled(x), scaled(y)) for x, y in stroke),
+            glyph_color,
+        )
+
+    return _downsample_rgba(bytes(pixels), render_size, scale)
+
+
+def build_app_image(*, enabled: bool = True) -> bytes:
+    colors = (
+        ((55, 112, 238, 255), (18, 181, 164, 255))
+        if enabled
+        else ((156, 163, 175, 255), (100, 111, 126, 255))
+    )
+    return _encode_rgba_png(APP_IMAGE_SIZE, _draw_app_icon_rgba(colors))
+
+
 def build_icon(source_path: Path = SOURCE) -> bytes:
     width, height, source = _read_png_rgba(source_path)
     images = [
@@ -243,25 +458,47 @@ def build_icon(source_path: Path = SOURCE) -> bytes:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build the deterministic Windows icon")
+    parser = argparse.ArgumentParser(
+        description="Build the deterministic SnipDo Translate application icons"
+    )
     parser.add_argument(
         "--check",
         action="store_true",
-        help="fail if the tracked icon does not match the source PNG",
+        help="fail if the tracked PNG or Windows icon is out of date",
     )
     args = parser.parse_args()
-    expected = build_icon()
+    expected_sources = {
+        SOURCE: build_app_image(enabled=True),
+        DISABLED_SOURCE: build_app_image(enabled=False),
+    }
 
     if args.check:
-        if not DESTINATION.is_file() or DESTINATION.read_bytes() != expected:
-            raise SystemExit("SnipDoTranslate.ico is missing or out of date")
-        print("SnipDoTranslate.ico matches gemini-color.png")
+        for source_path, expected_source in expected_sources.items():
+            if not source_path.is_file() or source_path.read_bytes() != expected_source:
+                raise SystemExit(f"{source_path.name} is missing or out of date")
+    else:
+        for source_path, expected_source in expected_sources.items():
+            temporary_source = source_path.with_suffix(".png.tmp")
+            temporary_source.write_bytes(expected_source)
+            temporary_source.replace(source_path)
+
+    expected_icons = {
+        DESTINATION: build_icon(SOURCE),
+        DISABLED_DESTINATION: build_icon(DISABLED_SOURCE),
+    }
+
+    if args.check:
+        for icon_path, expected_icon in expected_icons.items():
+            if not icon_path.is_file() or icon_path.read_bytes() != expected_icon:
+                raise SystemExit(f"{icon_path.name} is missing or out of date")
+        print("SnipDo Translate application icons are up to date")
         return 0
 
-    temporary = DESTINATION.with_suffix(".ico.tmp")
-    temporary.write_bytes(expected)
-    temporary.replace(DESTINATION)
-    print("generated SnipDoTranslate.ico")
+    for icon_path, expected_icon in expected_icons.items():
+        temporary = icon_path.with_suffix(".ico.tmp")
+        temporary.write_bytes(expected_icon)
+        temporary.replace(icon_path)
+    print("generated enabled and disabled SnipDo Translate application icons")
     return 0
 
 

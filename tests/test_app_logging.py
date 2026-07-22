@@ -21,7 +21,7 @@ SYNTHETIC_PATH = r"C:\Users\Synthetic\private-image.png"
 
 def test_events_are_structured_and_stored_under_app_log_dir(tmp_path: Path):
     paths = resolve_app_paths(
-        tmp_path / "bundle" / "gemini_translate.pyw",
+        tmp_path / "bundle" / "snipdo_translate.pyw",
         tmp_path / "bundle" / "pythonw.exe",
         False,
         tmp_path / "LocalAppData",
@@ -49,7 +49,7 @@ def test_public_interface_rejects_arbitrary_messages_and_sensitive_values(
     tmp_path: Path,
 ):
     paths = resolve_app_paths(
-        tmp_path / "gemini_translate.pyw",
+        tmp_path / "snipdo_translate.pyw",
         tmp_path / "pythonw.exe",
         False,
         tmp_path / "LocalAppData",
@@ -79,7 +79,7 @@ def test_public_interface_rejects_arbitrary_messages_and_sensitive_values(
 
 def test_rotation_keeps_only_configured_backups(tmp_path: Path):
     paths = resolve_app_paths(
-        tmp_path / "gemini_translate.pyw",
+        tmp_path / "snipdo_translate.pyw",
         tmp_path / "pythonw.exe",
         False,
         tmp_path / "LocalAppData",
@@ -104,7 +104,7 @@ def test_logging_does_not_touch_root_logger_or_write_to_console(
     tmp_path: Path, capsys
 ):
     paths = resolve_app_paths(
-        tmp_path / "gemini_translate.pyw",
+        tmp_path / "snipdo_translate.pyw",
         tmp_path / "pythonw.exe",
         False,
         tmp_path / "LocalAppData",
@@ -132,7 +132,7 @@ def test_event_severity_is_fixed_by_event(
     tmp_path: Path, event: AppEvent, expected_level: str
 ):
     paths = resolve_app_paths(
-        tmp_path / event.name / "gemini_translate.pyw",
+        tmp_path / event.name / "snipdo_translate.pyw",
         tmp_path / event.name / "pythonw.exe",
         False,
         tmp_path / "LocalAppData" / event.name,
@@ -152,7 +152,7 @@ def test_invalid_rotation_settings_are_rejected(
     tmp_path: Path, max_bytes: int, backup_count: int
 ):
     paths = resolve_app_paths(
-        tmp_path / "gemini_translate.pyw",
+        tmp_path / "snipdo_translate.pyw",
         tmp_path / "pythonw.exe",
         False,
         tmp_path / "LocalAppData",

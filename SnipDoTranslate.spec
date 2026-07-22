@@ -11,13 +11,16 @@ BUILD_MODE = os.environ.get("SNIPDO_BUILD_MODE", "onefile").strip().lower()
 if BUILD_MODE not in {"onedir", "onefile"}:
     raise ValueError(f"Unsupported SNIPDO_BUILD_MODE: {BUILD_MODE}")
 
-ENTRY_POINT = ROOT / "gemini_translate.pyw"
-APP_IMAGE = ROOT / "snipdo_script_logo" / "gemini-color.png"
+ENTRY_POINT = ROOT / "snipdo_translate.pyw"
+APP_IMAGE = ROOT / "snipdo_script_logo" / "snipdo-translate-enabled.png"
+DISABLED_APP_IMAGE = ROOT / "snipdo_script_logo" / "snipdo-translate-disabled.png"
 WINDOWS_ICON = ROOT / "snipdo_script_logo" / "SnipDoTranslate.ico"
 if not ENTRY_POINT.is_file():
     raise FileNotFoundError(f"Entry point not found: {ENTRY_POINT}")
 if not APP_IMAGE.is_file():
     raise FileNotFoundError(f"Application image not found: {APP_IMAGE}")
+if not DISABLED_APP_IMAGE.is_file():
+    raise FileNotFoundError(f"Disabled application image not found: {DISABLED_APP_IMAGE}")
 if not WINDOWS_ICON.is_file():
     raise FileNotFoundError(f"Windows icon not found: {WINDOWS_ICON}")
 
@@ -25,7 +28,10 @@ a = Analysis(
     [str(ENTRY_POINT)],
     pathex=[str(ROOT)],
     binaries=[],
-    datas=[(str(APP_IMAGE), "snipdo_script_logo")],
+    datas=[
+        (str(APP_IMAGE), "snipdo_script_logo"),
+        (str(DISABLED_APP_IMAGE), "snipdo_script_logo"),
+    ],
     hiddenimports=collect_submodules("openai"),
     hookspath=[],
     hooksconfig={},

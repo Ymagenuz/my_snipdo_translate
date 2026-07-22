@@ -22,7 +22,7 @@ from windows_ipc import RejectionReason
 @pytest.fixture(scope="module")
 def app_module():
     """Load the .pyw entry point without invoking main()."""
-    module_path = Path(__file__).resolve().parents[1] / "gemini_translate.pyw"
+    module_path = Path(__file__).resolve().parents[1] / "snipdo_translate.pyw"
     module_name = "_snipdo_translate_integration_target"
     loader = importlib.machinery.SourceFileLoader(module_name, str(module_path))
     spec = importlib.util.spec_from_loader(module_name, loader)
@@ -158,7 +158,7 @@ def test_offline_self_test_never_touches_credentials_client_or_network(
 ):
     # Use the checked-in bitmap so this also exercises the entry point's
     # offline image decoder check without generating a test-only image.
-    icon = Path(app.__file__).resolve().parent / "snipdo_script_logo" / "gemini-color.png"
+    icon = Path(app.__file__).resolve().parent / "snipdo_script_logo" / "snipdo-translate-enabled.png"
     assert icon.is_file()
     paths = AppPaths(
         bundle_dir=tmp_path,

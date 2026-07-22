@@ -10,7 +10,7 @@ import mimetypes
 import uuid
 import threading
 from ctypes import wintypes
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html import unescape
 from html.parser import HTMLParser
 from urllib.parse import unquote
@@ -95,6 +95,7 @@ MODEL_NAME = get_api_provider(DEFAULT_API_PROVIDER).model
 REQUEST_TIMEOUT_SECONDS = 15.0
 MAX_HISTORY_ITEMS = 50
 APP_ID = "SnipDoTranslate"
+APP_DISPLAY_NAME = "SnipDo Translate"
 IPC_UI_TIMEOUT_SECONDS = 4.0
 
 APP_PATHS: AppPaths | None = None
@@ -2075,14 +2076,28 @@ class TranslationWindow(QWidget):
     def setup_tray_icon(self):
         self.tray_icon = QSystemTrayIcon(self)
 
-        icon_path = self.app_paths.icon_path
-        icon = QIcon(str(icon_path)) if icon_path.is_file() else self.style().standardIcon(
+        fallback_icon = self.style().standardIcon(
             self.style().StandardPixmap.SP_ComputerIcon
+        )
+        self.enabled_app_icon = (
+            QIcon(str(self.app_paths.icon_path))
+            if self.app_paths.icon_path.is_file()
+            else fallback_icon
+        )
+        self.disabled_app_icon = (
+            QIcon(str(self.app_paths.disabled_icon_path))
+            if self.app_paths.disabled_icon_path.is_file()
+            else fallback_icon
+        )
+        icon = (
+            self.enabled_app_icon
+            if self.app_settings.enabled
+            else self.disabled_app_icon
         )
 
         self.tray_icon.setIcon(icon)
         self.setWindowIcon(icon)
-        self.tray_icon.setToolTip("Gemini 翻译")
+        self.tray_icon.setToolTip(APP_DISPLAY_NAME)
 
         # QSystemTrayIcon does not own its context menu.  Keep both a Python
         # reference and a QObject parent so the native tray integration never
@@ -2121,6 +2136,14 @@ class TranslationWindow(QWidget):
         show_action.triggered.connect(self.show_manual_window)
         tray_menu.addAction(show_action)
 
+        self.toggle_translation_action = QAction("禁用", self)
+        self.toggle_translation_action.setCheckable(True)
+        self.toggle_translation_action.setChecked(not self.app_settings.enabled)
+        self.toggle_translation_action.triggered.connect(
+            self.toggle_global_translation
+        )
+        tray_menu.addAction(self.toggle_translation_action)
+
         settings_action = QAction("设置…", self)
         settings_action.triggered.connect(self.show_settings)
         tray_menu.addAction(settings_action)
@@ -2156,7 +2179,7 @@ class TranslationWindow(QWidget):
             self.app_settings.enabled,
         ):
             self.tray_icon.showMessage(
-                "SnipDoTranslate",
+                APP_DISPLAY_NAME,
                 "快捷键注册失败；请在设置中选择其他快捷键。",
                 QSystemTrayIcon.MessageIcon.Warning,
                 1800,
@@ -2173,13 +2196,29 @@ class TranslationWindow(QWidget):
             manager.uninstall()
 
     def refresh_shortcut_status(self):
+        shortcut_active = bool(
+            self.app_settings.enabled
+            and self.shortcut_manager
+            and self.shortcut_manager.is_installed()
+        )
         if not self.app_settings.enabled:
-            tooltip = "SnipDoTranslate · 全局划词翻译已禁用"
-        elif self.shortcut_manager and self.shortcut_manager.is_installed():
-            tooltip = f"SnipDoTranslate · {self.app_settings.shortcut.display}"
+            tooltip = f"{APP_DISPLAY_NAME} · 全局划词翻译已禁用"
+        elif shortcut_active:
+            tooltip = f"{APP_DISPLAY_NAME} · {self.app_settings.shortcut.display}"
         else:
-            tooltip = "SnipDoTranslate · 快捷键未激活"
+            tooltip = f"{APP_DISPLAY_NAME} · 快捷键未激活"
+        icon = (
+            self.enabled_app_icon
+            if shortcut_active
+            else self.disabled_app_icon
+        )
+        self.tray_icon.setIcon(icon)
+        self.setWindowIcon(icon)
         self.tray_icon.setToolTip(tooltip)
+        if hasattr(self, "toggle_translation_action"):
+            self.toggle_translation_action.setChecked(
+                not self.app_settings.enabled
+            )
         if hasattr(self, "btn_settings"):
             self.btn_settings.setText(self.app_settings.shortcut.display)
             self.btn_settings.setToolTip(tooltip + "；点击打开设置")
@@ -2281,7 +2320,7 @@ class TranslationWindow(QWidget):
             if not selected_text:
                 log("[Shortcut] no selected text captured")
                 self.tray_icon.showMessage(
-                    "SnipDoTranslate",
+                    APP_DISPLAY_NAME,
                     "未检测到选中文字，请先选择文本后再按快捷键。",
                     QSystemTrayIcon.MessageIcon.Information,
                     1800,
@@ -2329,6 +2368,13 @@ class TranslationWindow(QWidget):
         if result != QDialog.DialogCode.Accepted:
             return
         self.apply_settings(dialog.candidate_settings(), dialog.api_key())
+
+    def toggle_global_translation(self):
+        candidate = replace(
+            self.app_settings,
+            enabled=not self.app_settings.enabled,
+        )
+        self.apply_settings(candidate)
 
     def apply_settings(self, candidate: AppSettings, api_key: str = "") -> bool:
         previous = self.app_settings
@@ -2550,7 +2596,7 @@ class TranslationWindow(QWidget):
 
     # ---------- UI ----------
     def init_ui(self):
-        self.setWindowTitle("Gemini 翻译")
+        self.setWindowTitle(APP_DISPLAY_NAME)
         self.resize(560, 680)
         self.setStyleSheet("background-color: #F5F7FA;")
 
@@ -4459,8 +4505,9 @@ def run_offline_self_test(paths: AppPaths) -> int:
     try:
         if os.name != "nt" or ctypes.sizeof(ctypes.c_void_p) != 8:
             raise RuntimeError("unsupported platform")
-        if not paths.icon_path.is_file() or QImage(str(paths.icon_path)).isNull():
-            raise RuntimeError("bundled icon is unavailable")
+        for icon_path in (paths.icon_path, paths.disabled_icon_path):
+            if not icon_path.is_file() or QImage(str(icon_path)).isNull():
+                raise RuntimeError("bundled icon is unavailable")
 
         request = AppRequest("show", request_id="offline-self-test")
         frame = encode_json_frame(request.to_dict())

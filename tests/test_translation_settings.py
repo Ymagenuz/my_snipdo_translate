@@ -4,6 +4,7 @@ import importlib.machinery
 import importlib.util
 import sys
 from collections import deque
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,7 +28,7 @@ from app_settings import (
 @pytest.fixture(scope="module")
 def app_module():
     """Load the GUI entry point without invoking main()."""
-    module_path = Path(__file__).resolve().parents[1] / "gemini_translate.pyw"
+    module_path = Path(__file__).resolve().parents[1] / "snipdo_translate.pyw"
     module_name = "_snipdo_translate_settings_target"
     loader = importlib.machinery.SourceFileLoader(module_name, str(module_path))
     spec = importlib.util.spec_from_loader(module_name, loader)
@@ -210,6 +211,8 @@ def test_default_main_settings_button_and_dialog_display_xbutton1(
         parent=window,
     )
     try:
+        assert app.APP_DISPLAY_NAME == "SnipDo Translate"
+        assert window.windowTitle() == app.APP_DISPLAY_NAME
         assert window.app_settings == DEFAULT_SETTINGS
         assert window.btn_settings.text() == "XButton1"
         assert dialog.shortcut_button.text() == "XButton1"
@@ -403,6 +406,10 @@ def test_tray_menu_hover_style_has_explicit_foreground_and_background(
     )
     window = app.TranslationWindow(_app_paths(tmp_path), object())
     try:
+        assert window.tray_icon.toolTip() == app.APP_DISPLAY_NAME
+        assert window.toggle_translation_action.text() == "禁用"
+        assert window.toggle_translation_action.isCheckable()
+        assert not window.toggle_translation_action.isChecked()
         compact_style = "".join(window.tray_menu.styleSheet().split()).lower()
         assert window.tray_icon.contextMenu() is window.tray_menu
         assert window.tray_menu.parent() is window
@@ -417,6 +424,61 @@ def test_tray_menu_hover_style_has_explicit_foreground_and_background(
         window.progress_window.close()
         window.deleteLater()
         qapp.processEvents()
+
+
+@pytest.mark.parametrize(
+    ("enabled", "installed", "expected_icon", "tooltip_fragment"),
+    (
+        (True, True, "enabled", "XButton1"),
+        (True, False, "disabled", "快捷键未激活"),
+        (False, False, "disabled", "全局划词翻译已禁用"),
+    ),
+)
+def test_tray_icon_tracks_actual_shortcut_state(
+    app, enabled: bool, installed: bool, expected_icon: str, tooltip_fragment: str
+):
+    tray_icons = []
+    window_icons = []
+    tooltips = []
+    disabled_checks = []
+    window = SimpleNamespace(
+        app_settings=replace(DEFAULT_SETTINGS, enabled=enabled),
+        shortcut_manager=SimpleNamespace(is_installed=lambda: installed),
+        enabled_app_icon="enabled",
+        disabled_app_icon="disabled",
+        tray_icon=SimpleNamespace(
+            setIcon=lambda icon: tray_icons.append(icon),
+            setToolTip=lambda tooltip: tooltips.append(tooltip),
+        ),
+        toggle_translation_action=SimpleNamespace(
+            setChecked=lambda checked: disabled_checks.append(checked)
+        ),
+        setWindowIcon=lambda icon: window_icons.append(icon),
+    )
+
+    app.TranslationWindow.refresh_shortcut_status(window)
+
+    assert tray_icons == [expected_icon]
+    assert window_icons == [expected_icon]
+    assert disabled_checks == [not enabled]
+    assert len(tooltips) == 1
+    assert tooltip_fragment in tooltips[0]
+
+
+@pytest.mark.parametrize("enabled", (True, False))
+def test_tray_disable_action_toggles_and_persists_through_apply_settings(
+    app, enabled: bool
+):
+    candidates = []
+    window = SimpleNamespace(
+        app_settings=replace(DEFAULT_SETTINGS, enabled=enabled),
+        apply_settings=lambda candidate: candidates.append(candidate) or True,
+    )
+
+    app.TranslationWindow.toggle_global_translation(window)
+
+    assert len(candidates) == 1
+    assert candidates[0] == replace(window.app_settings, enabled=not enabled)
 
 
 def test_shortcut_selection_is_forwarded_directly_to_translation(
@@ -569,7 +631,7 @@ def test_queued_mouse_notification_from_old_binding_is_ignored(
 
 def test_mouse_hook_isolated_from_gui_thread_and_callback_work():
     source = (
-        Path(__file__).resolve().parents[1] / "gemini_translate.pyw"
+        Path(__file__).resolve().parents[1] / "snipdo_translate.pyw"
     ).read_text(encoding="utf-8")
     hook_source = (
         Path(__file__).resolve().parents[1] / "windows_mouse_hook.py"

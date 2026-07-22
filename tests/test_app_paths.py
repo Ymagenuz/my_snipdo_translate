@@ -22,14 +22,15 @@ def valid_entry(index: int) -> dict[str, str]:
 
 
 def test_source_paths_separate_bundle_and_user_data(tmp_path: Path):
-    source = tmp_path / "project" / "gemini_translate.pyw"
+    source = tmp_path / "project" / "snipdo_translate.pyw"
     source.parent.mkdir()
     source.write_text("", encoding="utf-8")
     local = tmp_path / "LocalAppData"
     paths = resolve_app_paths(source, source, False, local)
     assert paths.bundle_dir == source.parent.resolve()
     assert paths.data_dir == local / "SnipDoTranslate"
-    assert paths.icon_path == source.parent / "snipdo_script_logo" / "gemini-color.png"
+    assert paths.icon_path == source.parent / "snipdo_script_logo" / "snipdo-translate-enabled.png"
+    assert paths.disabled_icon_path == source.parent / "snipdo_script_logo" / "snipdo-translate-disabled.png"
     assert paths.legacy_dirs == (source.parent.resolve(),)
 
 
@@ -37,10 +38,10 @@ def test_frozen_dist_build_discovers_project_parent(tmp_path: Path):
     project = tmp_path / "project"
     dist = project / "dist"
     dist.mkdir(parents=True)
-    (project / "gemini_translate.pyw").write_text("", encoding="utf-8")
+    (project / "snipdo_translate.pyw").write_text("", encoding="utf-8")
     executable = dist / "SnipDoTranslate.exe"
     paths = resolve_app_paths(
-        tmp_path / "_MEI123" / "gemini_translate.pyw",
+        tmp_path / "_MEI123" / "snipdo_translate.pyw",
         executable,
         True,
         tmp_path / "LocalAppData",
@@ -70,7 +71,7 @@ def test_migration_copies_once_without_deleting_or_overwriting(tmp_path: Path):
     old = legacy / "translation_history.json"
     old.write_text(json.dumps([valid_entry(1)]), encoding="utf-8")
     paths = resolve_app_paths(
-        legacy / "gemini_translate.pyw",
+        legacy / "snipdo_translate.pyw",
         legacy / "pythonw.exe",
         False,
         tmp_path / "LocalAppData",

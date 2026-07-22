@@ -28,6 +28,10 @@ class AppPaths:
     icon_path: Path
     legacy_dirs: tuple[Path, ...]
 
+    @property
+    def disabled_icon_path(self) -> Path:
+        return self.icon_path.with_name("snipdo-translate-disabled.png")
+
 
 def resolve_app_paths(
     module_file: str | Path,
@@ -46,7 +50,7 @@ def resolve_app_paths(
     executable_dir = executable_path.parent
     legacy_dirs: list[Path] = [executable_dir if is_frozen else bundle_dir]
     project_parent = executable_dir.parent
-    if is_frozen and (project_parent / "gemini_translate.pyw").is_file():
+    if is_frozen and (project_parent / "snipdo_translate.pyw").is_file():
         legacy_dirs.append(project_parent)
     unique_legacy = tuple(dict.fromkeys(path.resolve() for path in legacy_dirs))
     data_dir = local_root / "SnipDoTranslate"
@@ -56,7 +60,7 @@ def resolve_app_paths(
         data_dir=data_dir,
         history_path=data_dir / HISTORY_FILE_NAME,
         log_dir=data_dir / "logs",
-        icon_path=bundle_dir / "snipdo_script_logo" / "gemini-color.png",
+        icon_path=bundle_dir / "snipdo_script_logo" / "snipdo-translate-enabled.png",
         legacy_dirs=unique_legacy,
     )
 

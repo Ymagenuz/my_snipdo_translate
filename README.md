@@ -1,4 +1,4 @@
-# SnipDoTranslate
+# SnipDo Translate
 
 SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OCR 工具。正式交付物是单文件 `SnipDoTranslate.exe`；目标电脑不需要安装 Python、PyQt6、OpenAI SDK 或项目依赖。
 
@@ -15,7 +15,7 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 
 单文件 EXE 第一次启动可能比后续启动稍慢。程序使用单实例模式；再次运行时，请求会转发给已经运行的实例。
 
-`start_gemini_translate.cmd` 是可选启动器。把它与 `SnipDoTranslate.exe` 放在同一目录即可使用，它会原样转发所有命令行参数，不包含源码运行回退。
+`start_snipdo_translate.cmd` 是可选启动器。把它与 `SnipDoTranslate.exe` 放在同一目录即可使用，它会原样转发所有命令行参数，不包含源码运行回退。
 
 ## Windows SmartScreen
 
@@ -26,6 +26,8 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 - 在主窗口输入或粘贴文本后翻译；可切换自动、翻译和查词模式。
 - 将图片复制到剪贴板后使用 OCR，或通过命令行传入图片文件。
 - 点击主窗口右上角显示当前快捷键的按钮，或使用托盘菜单中的“设置…”，可以启用/禁用全局划词翻译、录入新的翻译快捷键、选择 API 接口及更新对应的 API Key。默认快捷键为 `XButton1`。
+- 托盘图标使用带白色 `A`/`文` 的双向箭头，并以相同轮廓表达状态：蓝青色表示快捷键已启用并激活，灰色表示已禁用或未激活。
+- 托盘右键菜单中的“禁用”是可勾选项：勾选后立即禁用全局划词翻译，取消勾选后立即重新启用，无需打开设置窗口。
 - 鼠标快捷键会拦截对应的 XButton1/XButton2/中键原生动作，避免同时触发浏览器后退、前进或中键功能。低级鼠标回调运行在独立的 Win32 消息线程中，只投递翻译信号，不在回调内执行剪贴板、界面或网络工作。
 - 关闭主窗口通常只会隐藏到系统托盘；要完全退出，请使用托盘菜单中的退出命令。
 
@@ -63,7 +65,7 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 
 ## SnipDo 集成
 
-1. 打开 `snipdo_script_powershell_code\snipdo_gemini.txt`。
+1. 打开 `snipdo_script_powershell_code\snipdo_translate.txt`。
 2. 只修改脚本第一处 `$exePath`，使其指向你实际存放的 `SnipDoTranslate.exe`。路径可以包含空格。
 3. 将完整脚本复制到 SnipDo 的 PowerShell 动作中。
 4. 在任意应用中选中文本并触发该动作。
