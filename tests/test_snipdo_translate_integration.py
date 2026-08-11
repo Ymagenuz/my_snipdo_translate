@@ -86,6 +86,12 @@ class _CursorStub:
     def insertText(self, text, *_args):
         self.insertions.append(text)
 
+    def movePosition(self, *_args):
+        return None
+
+    def setBlockFormat(self, *_args):
+        return None
+
 
 class _TextEditStub(_WidgetStub):
     def __init__(self):
@@ -94,6 +100,12 @@ class _TextEditStub(_WidgetStub):
 
     def textCursor(self):
         return self.cursor
+
+    def setTextCursor(self, _cursor):
+        return None
+
+    def ensureCursorVisible(self):
+        return None
 
 
 def _bind(instance, owner, method_name):
@@ -127,6 +139,7 @@ def _translation_window(app):
     window = SimpleNamespace(
         ocr_thread=None,
         trans_thread=None,
+        translation_threads=set(),
         source_mode="snipdo",
         btn_copy=_WidgetStub(),
         txt_result=_TextEditStub(),
@@ -140,14 +153,14 @@ def _translation_window(app):
         populate_original_text=lambda: None,
         setup_result_format=lambda: None,
         hide=lambda: None,
-        show_translation_progress=lambda _mode: None,
-        hide_translation_progress=lambda: None,
         force_show_window=lambda: None,
         set_result_message=lambda _message: None,
         current_dictionary_languages=lambda: ("auto", "default"),
         append_translation_chunk=lambda _chunk: None,
         on_translation_finished=lambda *_args: None,
     )
+    _bind(window, app.TranslationWindow, "on_translation_worker_chunk")
+    _bind(window, app.TranslationWindow, "on_translation_worker_finished")
     _bind(window, app.TranslationWindow, "start_translation")
     _bind(window, app.TranslationWindow, "handle_new_request")
     return window
@@ -387,6 +400,136 @@ def test_handle_translation_rejects_when_thread_start_fails(app, monkeypatch):
     assert result.accepted is False
     assert result.reason is RejectionReason.STARTUP_FAILED
     assert window.trans_thread is None
+
+
+def test_snipdo_translation_shows_stream_window_before_worker_start(
+    app,
+    monkeypatch,
+):
+    window = _translation_window(app)
+    events = []
+    window.force_show_window = lambda: events.append("show")
+    window.hide = lambda: events.append("hide")
+
+    class TranslationThreadStub:
+        def __init__(self, *_args):
+            self.chunk_received = _SignalStub()
+            self.finished = _SignalStub()
+
+        @staticmethod
+        def start():
+            events.append("worker-start")
+
+    monkeypatch.setattr(app, "TranslationThread", TranslationThreadStub)
+
+    assert window.handle_new_request("A direct English sentence.") is True
+    assert events == ["show", "worker-start"]
+
+
+def test_stale_translation_worker_signals_cannot_overwrite_new_request(
+    app,
+    monkeypatch,
+):
+    workers = []
+
+    class TranslationThreadStub:
+        def __init__(self, *_args):
+            self.chunk_received = _SignalStub()
+            self.finished = _SignalStub()
+            workers.append(self)
+
+        @staticmethod
+        def start():
+            return None
+
+    monkeypatch.setattr(app, "TranslationThread", TranslationThreadStub)
+
+    chunks = []
+    finishes = []
+    window = _translation_window(app)
+    window.append_translation_chunk = chunks.append
+    window.on_translation_finished = (
+        lambda success, error: finishes.append((success, error))
+    )
+
+    assert window.start_translation("old", "en2zh") is True
+    old_worker = workers[-1]
+    assert window.start_translation("new", "en2zh") is True
+    new_worker = workers[-1]
+
+    for callback in old_worker.chunk_received.callbacks:
+        callback("stale")
+    for callback in old_worker.finished.callbacks:
+        callback(True, "")
+
+    for callback in new_worker.chunk_received.callbacks:
+        callback("fresh")
+    for callback in new_worker.finished.callbacks:
+        callback(True, "")
+
+    assert chunks == ["fresh"]
+    assert finishes == [(True, "")]
+    assert window.trans_thread is None
+    assert window.translation_threads == set()
+
+
+def test_first_chunk_is_rendered_immediately_without_auxiliary_logging(
+    app,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        app,
+        "record_event",
+        lambda _event: pytest.fail("first chunk must not perform disk event logging"),
+    )
+    window = SimpleNamespace(
+        full_translation="",
+        txt_result=_TextEditStub(),
+        result_block_fmt=object(),
+        result_char_fmt=object(),
+    )
+
+    app.TranslationWindow.append_translation_chunk(window, "# 译文")
+    app.TranslationWindow.append_translation_chunk(window, "\n\n- 项目")
+
+    assert window.full_translation == "# 译文\n\n- 项目"
+    assert window.txt_result.cursor.insertions == ["# 译文", "\n\n- 项目"]
+
+
+def test_completed_stream_is_reparsed_as_full_markdown(app, monkeypatch):
+    events = []
+    rendered = []
+    history = []
+    adjusted = []
+    monkeypatch.setattr(app, "record_event", events.append)
+    markdown = "# 译文\n\n- 第一项\n- 第二项"
+    window = SimpleNamespace(
+        full_translation=markdown,
+        txt_result=_TextEditStub(),
+        source_mode="snipdo",
+        btn_copy=_WidgetStub(),
+        result_char_fmt=object(),
+        active_translation_text="# Source\n\n- One\n- Two",
+        active_translation_mode="en2zh",
+        render_markdown_text=lambda widget, text, source: rendered.append(
+            (widget, text, source)
+        ),
+        add_history_entry=lambda *args: history.append(args),
+        adjust_window_height=lambda: adjusted.append(True),
+    )
+
+    app.TranslationWindow.on_translation_finished(window, True, "")
+
+    assert rendered == [(window.txt_result, markdown, "result")]
+    assert history == [
+        (
+            window.active_translation_text,
+            markdown,
+            "en2zh",
+        )
+    ]
+    assert adjusted == [True]
+    assert events == [app.AppEvent.TRANSLATION_COMPLETED]
 
 
 def test_settle_source_file_deletes_only_after_accepted_ownership(

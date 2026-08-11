@@ -63,8 +63,14 @@ def get_api_provider(provider_id: str) -> ApiProviderSpec:
         raise ValueError("unsupported API provider") from exc
 
 
-def chat_completion_options(provider: ApiProviderSpec) -> dict[str, object]:
+def chat_completion_options(
+    provider: ApiProviderSpec,
+    *,
+    streaming: bool = False,
+) -> dict[str, object]:
     options: dict[str, object] = {"model": provider.model}
+    if streaming:
+        options["extra_headers"] = {"Accept": "text/event-stream"}
     if provider.disable_thinking:
         options["extra_body"] = {"thinking": {"type": "disabled"}}
     return options

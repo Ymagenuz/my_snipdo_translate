@@ -15,7 +15,8 @@ from html import unescape
 from html.parser import HTMLParser
 from urllib.parse import unquote
 
-from openai import OpenAI
+from httpx import Limits
+from openai import DefaultHttpxClient, OpenAI
 
 from api_providers import (
     DEFAULT_API_PROVIDER,
@@ -75,7 +76,7 @@ from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTextEdit,
     QPushButton, QLabel, QFrame, QGraphicsDropShadowEffect,
     QHBoxLayout, QSystemTrayIcon, QMenu, QInputDialog, QLineEdit,
-    QComboBox, QProgressBar, QDialog, QCheckBox, QFormLayout,
+    QComboBox, QDialog, QCheckBox, QFormLayout,
     QDialogButtonBox, QMessageBox
 )
 from PyQt6.QtGui import (
@@ -93,6 +94,7 @@ warnings.filterwarnings("ignore")
 # ================= 配置区域 =================
 MODEL_NAME = get_api_provider(DEFAULT_API_PROVIDER).model
 REQUEST_TIMEOUT_SECONDS = 15.0
+HTTP_KEEPALIVE_SECONDS = 60.0
 MAX_HISTORY_ITEMS = 50
 APP_ID = "SnipDoTranslate"
 APP_DISPLAY_NAME = "SnipDo Translate"
@@ -155,14 +157,29 @@ def create_api_client(
     except ValueError:
         return None
 
+    http_client = None
     try:
+        http_client = DefaultHttpxClient(
+            timeout=REQUEST_TIMEOUT_SECONDS,
+            limits=Limits(
+                max_connections=1000,
+                max_keepalive_connections=100,
+                keepalive_expiry=HTTP_KEEPALIVE_SECONDS,
+            ),
+        )
         return OpenAI(
             api_key=api_key,
             base_url=provider.base_url,
             timeout=REQUEST_TIMEOUT_SECONDS,
-            max_retries=1,
+            max_retries=0,
+            http_client=http_client,
         )
     except Exception:
+        if http_client is not None:
+            try:
+                http_client.close()
+            except Exception:
+                pass
         return None
 
 
@@ -688,9 +705,13 @@ def normalize_input_text(raw_text: str):
     return original_paragraphs
 
 
-def is_dictionary_mode(text: str):
-    text_clean = re.sub(r'\s+', ' ', text.strip())
-    if not text_clean or "\n" in text.strip():
+def is_dictionary_mode(text: str) -> bool:
+    """Recognize short lookup terms locally without an extra API request."""
+    raw_text = (text or "").strip()
+    text_clean = re.sub(r'\s+', ' ', raw_text)
+    if not text_clean or "\n" in raw_text:
+        return False
+    if is_structured_text(raw_text):
         return False
 
     if re.search(r'[。！？；：.!?;:]', text_clean):
@@ -713,7 +734,51 @@ def is_dictionary_mode(text: str):
             return len(text_clean) <= 32
         return len(latin_words) <= 3 and len(text_clean) <= 28
 
-    return len(text_clean) <= 10
+    return len(text_clean) <= 10 and any(char.isalpha() for char in text_clean)
+
+
+def resolve_auto_translation_mode(
+    text: str,
+    source_lang: str = "auto",
+    target_lang: str = "default",
+) -> str:
+    """Resolve the translation direction locally without an LLM language pass."""
+    if target_lang == "en":
+        return "zh2en"
+    if target_lang == "zh":
+        return "en2zh"
+    if target_lang != "default":
+        return "auto"
+
+    if source_lang == "zh":
+        return "zh2en"
+    if source_lang != "auto":
+        return "en2zh"
+
+    text_clean = (text or "").strip()
+    if not text_clean:
+        return "en2zh"
+
+    han_count = len(re.findall(r'[\u4e00-\u9fff]', text_clean))
+    kana_or_hangul_count = len(
+        re.findall(r'[\u3040-\u30ff\uac00-\ud7af]', text_clean)
+    )
+    latin_letter_count = len(re.findall(r'[A-Za-z]', text_clean))
+    chinese_marker_count = len(re.findall(
+        r'[的了是在我你他她它们这那不有和与及为就都而也很请将把被让]',
+        text_clean,
+    ))
+
+    # Kana/Hangul normally means Japanese/Korean, but a small quoted term
+    # should not override a predominantly Chinese paragraph.
+    if kana_or_hangul_count and kana_or_hangul_count * 2 >= han_count:
+        return "en2zh"
+    if han_count and (
+        not latin_letter_count
+        or han_count * 4 + chinese_marker_count * 4 >= latin_letter_count
+    ):
+        return "zh2en"
+    return "en2zh"
 
 
 def target_label_for_mode(mode: str) -> str:
@@ -804,24 +869,44 @@ class TranslationThread(QThread):
             source_lang = dictionary_language_label(self.dictionary_source_lang)
             target_lang = dictionary_language_label(self.dictionary_target_lang, target=True)
             return f"""
-你是一个专业的多语言词典助手。请根据用户选择的语言设置，对下面的单词或短语进行释义和对应表达整理，不要使用 markdown 语法。
+你是一个专业的多语言词典助手。请根据用户选择的语言设置，对下面的单词或短语进行释义和对应表达整理。
 
 语言设置：
 1. 原文语言：{source_lang}。如果是 Auto，请先自动识别原文语言。
 2. 释义/对应表达语言：{target_lang}。如果是 默认，请按“中文词语优先给英文对应表达；非中文词语优先用简体中文释义”的默认中英查词习惯处理。
 
-请按以下结构输出：
-1. 语言：写出原文语言；如果用户指定了原文语言，请按指定语言理解
-2. 读音：给出常见读音、音标或罗马化（如果适用）
-3. 对应表达：给出 1-3 个目标语言中自然、常用、贴切的表达
-4. 释义：解释含义；如果目标语言不是 默认，请用所选目标语言解释
-5. 用法：说明常见搭配、语气或使用场景
-6. 例句：提供 1-2 个简短实用的双语例句
+必须输出结构清晰、可直接渲染的 Markdown，并严格使用下面的层级和顺序：
+
+# {{待查词条}}
+
+> **语言**：{{原文语言}}
+>
+> **读音**：{{常见读音、音标或罗马化；确实不适用时写“不适用”}}
+
+## 对应表达
+1. **{{表达一}}** — {{简短说明}}
+2. **{{表达二}}** — {{简短说明；没有第二项时省略}}
+
+## 释义
+- **{{词性或义项一}}**：{{解释}}
+- **{{词性或义项二}}**：{{解释；没有第二项时省略}}
+
+## 用法
+- **常见搭配**：{{常见搭配或固定用法}}
+- **语气与场景**：{{语气、正式程度和使用场景}}
+
+## 例句
+1. {{原文例句}}
+   - **译文**：{{目标语言译文}}
+2. {{第二个原文例句；没有时整项省略}}
+   - **译文**：{{目标语言译文}}
 
 要求：
-- 优先选择真实自然、常见的表达
+- 一级标题只写待查词条；固定使用“对应表达、释义、用法、例句”四个二级标题，不得改成普通段落或连续编号
+- 语言和读音必须放在标题后的引用块中；释义、用法必须使用列表；例句必须使用有序列表并把译文缩进到对应例句下
+- 对应表达给出 1-3 项，例句给出 1-2 项；优先选择真实自然、常见的表达
 - 如果是偏抽象概念，可给出意译而不是生硬直译
-- 直接输出结果，不要加前缀，不要解释你在做什么
+- 不要使用 Markdown 表格、代码块或额外的开场白、总结；直接从一级标题开始输出
 
 待查内容：
 {text_clean}
@@ -829,31 +914,22 @@ class TranslationThread(QThread):
 
         source_lang = dictionary_language_label(self.dictionary_source_lang)
         target_lang = dictionary_language_label(self.dictionary_target_lang, target=True)
-        uses_custom_language = self.dictionary_source_lang != "auto" or self.dictionary_target_lang != "default"
 
         actual_mode = self.mode
         if actual_mode == "auto":
-            if uses_custom_language:
-                return f"""
+            actual_mode = resolve_auto_translation_mode(
+                text_clean,
+                self.dictionary_source_lang,
+                self.dictionary_target_lang,
+            )
+
+        if actual_mode == "auto":
+            return f"""
 你是一个专业的多语言翻译引擎。请根据用户选择的语言设置翻译下方文本。
 
 语言设置：
-1. 原文语言：{source_lang}。如果是 Auto，请先自动识别原文语言。
-2. 目标语言：{target_lang}。如果是 默认，请按默认规则处理：中文译英文，英文或其他语言译简体中文。
-
-规则：
-1. 追求信达雅：根据目标语言的表达习惯自由调整句式、段落和语序，确保译文流畅、自然、专业。
-2. 直接输出译文，不要说明识别到的语言，不要添加前缀或解释。
-
-待翻译文本：
-{text_clean}
-"""
-
-            return f"""
-你是一个专业的多语言翻译引擎。请先自动识别下方原文的主要语言，再按默认规则翻译：
-1. 如果原文主要是中文（含简体或繁体），翻译成地道的英文。
-2. 如果原文主要是英文，翻译成地道的简体中文。
-3. 如果原文是其他语言，默认翻译成地道的简体中文；专有名词、代码、型号和品牌名按语境保留或自然处理。
+1. 原文语言：{source_lang}。
+2. 目标语言：{target_lang}。
 
 规则：
 1. 追求信达雅：根据目标语言的表达习惯自由调整句式、段落和语序，确保译文流畅、自然、专业。
@@ -866,7 +942,6 @@ class TranslationThread(QThread):
         if actual_mode == "zh2en":
             return f"""
 你是一个专业的多语言翻译引擎。请将下方文本翻译成地道的英文。
-原文语言设置：{source_lang}。如果是 Auto，请先自动识别原文语言。
 
 规则：
 1. 追求信达雅：根据英文母语者的表达习惯自由调整句式、段落和语序，确保译文流畅、自然、专业。
@@ -878,7 +953,6 @@ class TranslationThread(QThread):
         else:
             return f"""
 你是一个专业的多语言翻译引擎。请将下方文本翻译成地道的简体中文。
-原文语言设置：{source_lang}。如果是 Auto，请先自动识别原文语言。
 
 规则：
 1. 追求信达雅：根据中文表达习惯自由调整句式、段落和语序，确保译文流畅、自然、专业。
@@ -910,7 +984,7 @@ class TranslationThread(QThread):
                     {"role": "user", "content": prompt}
                 ],
                 stream=True,
-                **chat_completion_options(runtime.provider),
+                **chat_completion_options(runtime.provider, streaming=True),
             )
 
             for chunk in response:
@@ -1541,70 +1615,6 @@ class SettingsDialog(QDialog):
 
 # ================= 3. 单实例本地通信服务 =================
 # ================= 4. 主窗口逻辑 =================
-class TranslationProgressWindow(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(
-            parent,
-            Qt.WindowType.Tool
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.WindowDoesNotAcceptFocus,
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setWindowTitle("Translating")
-        self.setFixedSize(260, 74)
-        self.setStyleSheet("""
-            QWidget {
-                background-color: #FFFFFF;
-                border: 1px solid #DADDE3;
-                border-radius: 8px;
-            }
-            QLabel {
-                color: #303133;
-                border: none;
-                font-family: 'Segoe UI', 'Microsoft YaHei UI';
-                font-size: 13px;
-                font-weight: 600;
-            }
-            QProgressBar {
-                border: 1px solid #DADDE3;
-                border-radius: 4px;
-                background-color: #F5F7FA;
-                height: 8px;
-                text-align: center;
-            }
-            QProgressBar::chunk {
-                border-radius: 4px;
-                background-color: #8E44AD;
-            }
-        """)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(8)
-
-        self.label = QLabel("Translating...")
-        layout.addWidget(self.label)
-
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 0)
-        self.progress_bar.setTextVisible(False)
-        layout.addWidget(self.progress_bar)
-
-    def show_progress(self, mode: str):
-        self.label.setText("Looking up..." if mode == "dictionary" else "Translating...")
-
-        screen = QApplication.primaryScreen()
-        if screen:
-            available = screen.availableGeometry()
-            x = available.right() - self.width() - 24
-            y = available.bottom() - self.height() - 36
-            self.move(max(available.left(), x), max(available.top(), y))
-
-        self.show()
-        self.raise_()
-
-
 class _KeyboardHotkeyEventFilter(QAbstractNativeEventFilter):
     """Receive WM_HOTKEY without overriding the main QWidget nativeEvent."""
 
@@ -2027,7 +2037,7 @@ class TranslationWindow(QWidget):
         )
 
         self.source_mode = "manual"         # manual / snipdo
-        self.content_mode_override = "auto"  # auto / translate / dictionary
+        self.content_mode_override = "auto"  # auto / dictionary
         self.dictionary_source_lang = "auto"
         self.dictionary_target_lang = "default"
         self.pending_snipdo_text = ""
@@ -2035,6 +2045,7 @@ class TranslationWindow(QWidget):
         self.full_translation = ""
         self.force_quit = False
         self.trans_thread = None
+        self.translation_threads = set()
         self.align_thread = None
         self.ocr_thread = None
         self.ocr_result_source_mode = "manual"
@@ -2049,11 +2060,9 @@ class TranslationWindow(QWidget):
         self.shortcut_manager = None
         self.xbutton1_hook = None
         self.current_request_is_structured = False
-        self.defer_result_window_until_finished = False
         self.active_translation_text = ""
         self.active_translation_mode = ""
         self.translation_history = self.load_translation_history()
-        self.progress_window = TranslationProgressWindow()
 
         self.init_ui()
         self.setup_result_format()
@@ -2522,18 +2531,17 @@ class TranslationWindow(QWidget):
         self.force_quit = True
         self.cancel_current_ocr()
         self.cancel_current_translation()
-        self.hide_translation_progress()
         self.shutdown_translation_shortcut()
         self.tray_icon.hide()
         QApplication.quit()
 
     def cancel_current_translation(self):
-        self.defer_result_window_until_finished = False
-        self.hide_translation_progress()
-        if self.trans_thread and self.trans_thread.isRunning():
+        worker = self.trans_thread
+        self.trans_thread = None
+        if worker and worker.isRunning():
             log("[UI] cancel_current_translation")
-            self.trans_thread.request_stop()
-            self.trans_thread.wait(800)
+            worker.request_stop()
+            worker.wait(800)
 
     def cancel_current_alignment(self):
         if self.align_thread and self.align_thread.isRunning():
@@ -3235,7 +3243,6 @@ class TranslationWindow(QWidget):
         if not source_text and not result_text:
             return
 
-        self.hide_translation_progress()
         self.cancel_current_translation()
         self.source_mode = "manual"
         self.apply_manual_mode_ui(reset_content=True)
@@ -3247,13 +3254,6 @@ class TranslationWindow(QWidget):
             self.render_markdown_text(self.txt_result, result_text, "result")
             self.btn_copy.setEnabled(True)
         self.force_show_window()
-
-    def show_translation_progress(self, mode: str):
-        self.progress_window.show_progress(mode)
-
-    def hide_translation_progress(self):
-        if self.progress_window:
-            self.progress_window.hide()
 
     def ensure_api_key(self, *, allow_prompt: bool = True) -> bool:
         provider = get_api_provider(self.app_settings.api_provider)
@@ -3501,21 +3501,16 @@ class TranslationWindow(QWidget):
     def update_content_mode_button_text(self):
         if self.content_mode_override == "dictionary":
             self.btn_content_mode.setText("模式: 词典")
-        elif self.content_mode_override == "translate":
-            self.btn_content_mode.setText("模式: 翻译")
         else:
             self.btn_content_mode.setText("模式: Auto")
 
     def resolve_effective_mode(self, text: str) -> str:
-        direction_mode = self.selected_translation_mode()
-
         if self.content_mode_override == "dictionary":
             return "dictionary"
-        if self.content_mode_override == "translate":
-            return direction_mode
         if is_dictionary_mode(text):
             return "dictionary"
-        return direction_mode
+        source_lang, target_lang = self.current_dictionary_languages()
+        return resolve_auto_translation_mode(text, source_lang, target_lang)
 
     def rerun_snipdo_translation(self):
         if self.source_mode != "snipdo":
@@ -3528,7 +3523,6 @@ class TranslationWindow(QWidget):
 
         effective_mode = self.resolve_effective_mode(total_text)
         self.cancel_current_translation()
-        self.defer_result_window_until_finished = False
         self.full_translation = ""
         self.setup_result_format()
         self.btn_copy.setText("Looking up..." if effective_mode == "dictionary" else "Translating...")
@@ -3537,7 +3531,7 @@ class TranslationWindow(QWidget):
         self.start_translation(total_text, effective_mode)
 
     def toggle_content_mode(self):
-        order = ["auto", "translate", "dictionary"]
+        order = ["auto", "dictionary"]
         try:
             idx = order.index(self.content_mode_override)
         except ValueError:
@@ -3550,6 +3544,8 @@ class TranslationWindow(QWidget):
             self.rerun_snipdo_translation()
         else:
             self.apply_manual_mode_ui(reset_content=False)
+            if self.txt_origin.toPlainText().strip():
+                self.start_manual_translation()
 
     def on_dictionary_language_changed(self, *_args):
         self.current_dictionary_languages()
@@ -3558,6 +3554,8 @@ class TranslationWindow(QWidget):
             self.rerun_snipdo_translation()
         else:
             self.apply_manual_mode_ui(reset_content=False)
+            if self.txt_origin.toPlainText().strip():
+                self.start_manual_translation()
 
     # ---------- Selection alignment ----------
     def reset_alignment_ui(self, clear_highlights=True):
@@ -4218,9 +4216,7 @@ class TranslationWindow(QWidget):
             self.populate_original_text()
             self.setup_result_format()
 
-            self.defer_result_window_until_finished = True
-            self.hide()
-            self.show_translation_progress(effective_mode)
+            self.force_show_window()
 
             return self.start_translation(
                 total_text,
@@ -4302,9 +4298,6 @@ class TranslationWindow(QWidget):
         if self.source_mode != "manual":
             return
 
-        self.defer_result_window_until_finished = False
-        self.hide_translation_progress()
-
         text_to_translate = self.txt_origin.toPlainText().strip()
         if not text_to_translate:
             return
@@ -4365,31 +4358,42 @@ class TranslationWindow(QWidget):
 
             self.btn_copy.setText("Copy")
             self.btn_copy.setEnabled(False)
-            if self.defer_result_window_until_finished:
-                self.defer_result_window_until_finished = False
-                self.hide_translation_progress()
-                self.force_show_window()
+            self.force_show_window()
             return False
-
-        cursor = self.txt_result.textCursor()
-        cursor.insertText(" ▍", self.result_char_fmt)
 
         if dictionary_source_lang is None or dictionary_target_lang is None:
             dictionary_source_lang, dictionary_target_lang = self.current_dictionary_languages()
 
+        worker = None
         try:
-            self.trans_thread = TranslationThread(
+            worker = TranslationThread(
                 text,
                 mode,
                 dictionary_source_lang,
                 dictionary_target_lang,
             )
-            self.trans_thread.chunk_received.connect(self.append_translation_chunk)
-            self.trans_thread.finished.connect(self.on_translation_finished)
-            self.trans_thread.start()
+            self.trans_thread = worker
+            self.translation_threads.add(worker)
+            worker.chunk_received.connect(
+                lambda chunk, active_worker=worker: self.on_translation_worker_chunk(
+                    active_worker,
+                    chunk,
+                )
+            )
+            worker.finished.connect(
+                lambda success, error_msg, active_worker=worker:
+                    self.on_translation_worker_finished(
+                        active_worker,
+                        success,
+                        error_msg,
+                    )
+            )
+            worker.start()
         except Exception:
-            self.trans_thread = None
-            self.hide_translation_progress()
+            if worker is not None:
+                self.translation_threads.discard(worker)
+            if self.trans_thread is worker:
+                self.trans_thread = None
             self.force_show_window()
             self.set_result_message("[翻译出错: 无法启动]")
             record_event(AppEvent.TRANSLATION_FAILED)
@@ -4399,20 +4403,24 @@ class TranslationWindow(QWidget):
         return True
 
     # ---------- 结果输出 ----------
+    def on_translation_worker_chunk(self, worker, chunk):
+        if worker is self.trans_thread:
+            self.append_translation_chunk(chunk)
+
+    def on_translation_worker_finished(self, worker, success, error_msg):
+        self.translation_threads.discard(worker)
+        if worker is not self.trans_thread:
+            return
+        self.trans_thread = None
+        self.on_translation_finished(success, error_msg)
+
     def append_translation_chunk(self, chunk):
         self.full_translation += chunk
         cursor = self.txt_result.textCursor()
 
         cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.movePosition(QTextCursor.MoveOperation.Left, QTextCursor.MoveMode.KeepAnchor, 2)
-        if cursor.selectedText() == " ▍":
-            cursor.removeSelectedText()
-        else:
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-
         cursor.setBlockFormat(self.result_block_fmt)
         cursor.insertText(chunk, self.result_char_fmt)
-        cursor.insertText(" ▍", self.result_char_fmt)
 
         self.txt_result.setTextCursor(cursor)
         self.txt_result.ensureCursorVisible()
@@ -4421,9 +4429,6 @@ class TranslationWindow(QWidget):
         log(f"[UI] on_translation_finished success={success}, error={error_msg}")
         cursor = self.txt_result.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.movePosition(QTextCursor.MoveOperation.Left, QTextCursor.MoveMode.KeepAnchor, 2)
-        if cursor.selectedText() == " ▍":
-            cursor.removeSelectedText()
 
         if not success:
             if error_msg == "已取消":
@@ -4450,11 +4455,8 @@ class TranslationWindow(QWidget):
         self.btn_copy.setText("Copy")
         self.btn_copy.setEnabled(bool(self.full_translation.strip()))
 
-        if self.defer_result_window_until_finished:
-            self.defer_result_window_until_finished = False
-            self.hide_translation_progress()
+        if self.source_mode == "snipdo":
             self.adjust_window_height()
-            self.force_show_window()
 
     # ---------- 剪贴板 ----------
     def copy_to_clipboard(self):

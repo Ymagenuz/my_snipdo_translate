@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import json
 import sys
 from collections import deque
 from dataclasses import replace
@@ -9,6 +10,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import httpx
+from openai import OpenAI as SdkOpenAI
 
 from app_paths import AppPaths
 from api_providers import (
@@ -219,7 +222,6 @@ def test_default_main_settings_button_and_dialog_display_xbutton1(
         assert dialog.candidate_settings() == DEFAULT_SETTINGS
     finally:
         dialog.deleteLater()
-        window.progress_window.close()
         window.deleteLater()
         qapp.processEvents()
 
@@ -263,13 +265,27 @@ def test_create_api_client_uses_selected_provider_endpoint(
     app, monkeypatch
 ):
     calls = []
+    http_client_calls = []
+    limits_calls = []
     expected_client = object()
+    expected_http_client = object()
+    expected_limits = object()
 
     def fake_openai(**kwargs):
         calls.append(kwargs)
         return expected_client
 
+    def fake_http_client(**kwargs):
+        http_client_calls.append(kwargs)
+        return expected_http_client
+
+    def fake_limits(**kwargs):
+        limits_calls.append(kwargs)
+        return expected_limits
+
     monkeypatch.setattr(app, "OpenAI", fake_openai)
+    monkeypatch.setattr(app, "DefaultHttpxClient", fake_http_client)
+    monkeypatch.setattr(app, "Limits", fake_limits)
 
     result = app.create_api_client("deepseek-test-key", DEEPSEEK_API_PROVIDER)
 
@@ -279,13 +295,83 @@ def test_create_api_client_uses_selected_provider_endpoint(
             "api_key": "deepseek-test-key",
             "base_url": "https://api.deepseek.com",
             "timeout": app.REQUEST_TIMEOUT_SECONDS,
-            "max_retries": 1,
+            "max_retries": 0,
+            "http_client": expected_http_client,
+        }
+    ]
+    assert limits_calls == [
+        {
+            "max_connections": 1000,
+            "max_keepalive_connections": 100,
+            "keepalive_expiry": app.HTTP_KEEPALIVE_SECONDS,
+        }
+    ]
+    assert http_client_calls == [
+        {
+            "timeout": app.REQUEST_TIMEOUT_SECONDS,
+            "limits": expected_limits,
         }
     ]
     provider = get_api_provider(DEEPSEEK_API_PROVIDER)
     assert app.chat_completion_options(provider) == {
         "model": "deepseek-v4-flash",
         "extra_body": {"thinking": {"type": "disabled"}},
+    }
+
+
+def test_streaming_options_request_sse_without_redundant_reasoning(app):
+    provider = get_api_provider(DEFAULT_API_PROVIDER)
+
+    assert app.chat_completion_options(provider) == {
+        "model": "gpt-5.4-nano",
+    }
+    assert app.chat_completion_options(provider, streaming=True) == {
+        "model": "gpt-5.4-nano",
+        "extra_headers": {"Accept": "text/event-stream"},
+    }
+
+
+def test_streaming_options_reach_the_wire_as_mobile_compatible_sse(app):
+    captured = {}
+
+    def handler(request):
+        captured["url"] = str(request.url)
+        captured["accept"] = request.headers.get("accept")
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=b"data: [DONE]\n\n",
+        )
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    api_client = SdkOpenAI(
+        api_key="sk-wire-contract-test",
+        base_url="https://api.gptsapi.net/v1",
+        max_retries=0,
+        http_client=http_client,
+    )
+    try:
+        stream = api_client.chat.completions.create(
+            messages=[{"role": "user", "content": "hello"}],
+            stream=True,
+            **app.chat_completion_options(
+                get_api_provider(DEFAULT_API_PROVIDER),
+                streaming=True,
+            ),
+        )
+        list(stream)
+    finally:
+        api_client.close()
+
+    assert captured == {
+        "url": "https://api.gptsapi.net/v1/chat/completions",
+        "accept": "text/event-stream",
+        "body": {
+            "messages": [{"role": "user", "content": "hello"}],
+            "model": "gpt-5.4-nano",
+            "stream": True,
+        },
     }
 
 
@@ -371,8 +457,311 @@ def test_translation_thread_keeps_creation_time_api_runtime(
 
     assert len(old_calls) == 1
     assert old_calls[0]["model"] == "gpt-5.4-nano"
+    assert old_calls[0]["extra_headers"] == {"Accept": "text/event-stream"}
+    assert "reasoning_effort" not in old_calls[0]
     assert "extra_body" not in old_calls[0]
     assert new_calls == []
+
+
+@pytest.mark.parametrize(
+    ("text", "source_lang", "target_lang", "expected"),
+    [
+        ("A direct English sentence.", "auto", "default", "en2zh"),
+        ("这是一段直接的中文。", "auto", "default", "zh2en"),
+        ("これは日本語です。", "auto", "default", "en2zh"),
+        ("이것은 한국어입니다.", "auto", "default", "en2zh"),
+        ("Это русское предложение.", "auto", "default", "en2zh"),
+        (
+            "This English sentence explains 和 as a conjunction.",
+            "auto",
+            "default",
+            "en2zh",
+        ),
+        (
+            "这段中文提到カタカナ但主体仍是中文。",
+            "auto",
+            "default",
+            "zh2en",
+        ),
+        ("mixed text", "zh", "default", "zh2en"),
+        ("混合 text", "en", "default", "en2zh"),
+        ("任意文本", "auto", "en", "zh2en"),
+        ("any text", "auto", "zh", "en2zh"),
+        ("any text", "auto", "ja", "auto"),
+    ],
+)
+def test_auto_translation_direction_is_resolved_locally(
+    app,
+    text,
+    source_lang,
+    target_lang,
+    expected,
+):
+    assert app.resolve_auto_translation_mode(
+        text,
+        source_lang,
+        target_lang,
+    ) == expected
+
+
+def test_auto_prompt_uses_one_explicit_destination(app, qapp):
+    english_prompt = app.TranslationThread(
+        "A direct English sentence.",
+        "auto",
+    ).build_prompt()
+    chinese_prompt = app.TranslationThread(
+        "这是一段直接的中文。",
+        "auto",
+    ).build_prompt()
+
+    assert "翻译成地道的简体中文" in english_prompt
+    assert "翻译成地道的英文" in chinese_prompt
+    for prompt in (english_prompt, chinese_prompt):
+        assert "请先自动识别下方原文的主要语言" not in prompt
+        assert "如果原文主要是中文" not in prompt
+
+
+def test_dictionary_prompt_requires_clear_markdown_sections(app, qapp):
+    prompt = app.TranslationThread(
+        "serendipity",
+        "dictionary",
+        "en",
+        "zh",
+    ).build_prompt()
+
+    assert "不要使用 markdown 语法" not in prompt.lower()
+    assert "原文语言：English" in prompt
+    assert "释义/对应表达语言：中文" in prompt
+    assert "# {待查词条}" in prompt
+    assert "> **语言**：{原文语言}" in prompt
+    assert "> **读音**：" in prompt
+    assert "## 对应表达" in prompt
+    assert "## 释义" in prompt
+    assert "## 用法" in prompt
+    assert "## 例句" in prompt
+    assert "不要使用 Markdown 表格、代码块" in prompt
+    assert prompt.index("## 对应表达") < prompt.index("## 释义")
+    assert prompt.index("## 释义") < prompt.index("## 用法")
+    assert prompt.index("## 用法") < prompt.index("## 例句")
+
+
+def test_dictionary_markdown_renders_as_distinct_sections(app, qapp):
+    markdown = """# serendipity
+
+> **语言**：English
+>
+> **读音**：/ˌserənˈdɪpəti/
+
+## 对应表达
+1. **意外发现美好事物的能力** — 常用对应表达
+
+## 释义
+- **名词**：意外发现有价值或美好事物的机缘。
+
+## 用法
+- **常见搭配**：pure serendipity
+- **语气与场景**：中性，常用于积极语境。
+
+## 例句
+1. We met by serendipity.
+   - **译文**：我们因缘际会地相遇了。
+"""
+    widget = app.QTextEdit()
+    window = SimpleNamespace(
+        apply_markdown_document_style=lambda *_args: None,
+        compact_markdown_list_indents=lambda *_args: None,
+        apply_markdown_block_formats=lambda *_args: None,
+    )
+
+    assert app.TranslationWindow.render_markdown_text(
+        window,
+        widget,
+        markdown,
+        "result",
+    ) is True
+
+    headings = []
+    block = widget.document().firstBlock()
+    while block.isValid():
+        level = block.blockFormat().headingLevel()
+        if level:
+            headings.append((level, block.text()))
+        block = block.next()
+
+    assert headings == [
+        (1, "serendipity"),
+        (2, "对应表达"),
+        (2, "释义"),
+        (2, "用法"),
+        (2, "例句"),
+    ]
+    assert "语言：English" in widget.toPlainText()
+    assert "译文：我们因缘际会地相遇了。" in widget.toPlainText()
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "serendipity",
+        "machine learning",
+        "机器学习",
+    ),
+)
+def test_auto_mode_uses_dictionary_for_short_lookup_terms(app, text):
+    window = SimpleNamespace(
+        content_mode_override="auto",
+        current_dictionary_languages=lambda: ("auto", "default"),
+    )
+
+    assert app.TranslationWindow.resolve_effective_mode(
+        window,
+        text,
+    ) == "dictionary"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    (
+        ("A direct English sentence.", "en2zh"),
+        ("这是一段直接的中文。", "zh2en"),
+        ("first line\nsecond line", "en2zh"),
+        ("# Title", "en2zh"),
+        ("123", "en2zh"),
+    ),
+)
+def test_auto_mode_keeps_sentences_and_multiline_text_in_translation(
+    app,
+    text,
+    expected,
+):
+    window = SimpleNamespace(
+        content_mode_override="auto",
+        current_dictionary_languages=lambda: ("auto", "default"),
+    )
+
+    assert app.TranslationWindow.resolve_effective_mode(window, text) == expected
+
+
+def test_explicit_dictionary_mode_always_forces_lookup(app):
+    window = SimpleNamespace(
+        content_mode_override="dictionary",
+        current_dictionary_languages=lambda: ("auto", "default"),
+    )
+
+    window.content_mode_override = "dictionary"
+    assert app.TranslationWindow.resolve_effective_mode(
+        window,
+        "This is a complete sentence that would normally be translated.",
+    ) == "dictionary"
+
+
+def test_content_mode_toggle_has_only_auto_and_explicit_dictionary(app):
+    labels = []
+    refreshes = []
+    starts = []
+    window = SimpleNamespace(
+        content_mode_override="auto",
+        source_mode="manual",
+        txt_origin=SimpleNamespace(toPlainText=lambda: "serendipity"),
+        update_content_mode_button_text=lambda: labels.append(
+            window.content_mode_override
+        ),
+        apply_manual_mode_ui=lambda *, reset_content: refreshes.append(
+            reset_content
+        ),
+        start_manual_translation=lambda: starts.append(
+            window.content_mode_override
+        ),
+    )
+
+    app.TranslationWindow.toggle_content_mode(window)
+    app.TranslationWindow.toggle_content_mode(window)
+
+    assert labels == ["dictionary", "auto"]
+    assert refreshes == [False, False]
+    assert starts == ["dictionary", "auto"]
+
+
+def test_dictionary_language_change_reruns_nonempty_manual_text(app):
+    events = []
+    window = SimpleNamespace(
+        source_mode="manual",
+        txt_origin=SimpleNamespace(toPlainText=lambda: "serendipity"),
+        current_dictionary_languages=lambda: events.append("languages")
+        or ("en", "zh"),
+        apply_manual_mode_ui=lambda *, reset_content: events.append(
+            ("refresh", reset_content)
+        ),
+        start_manual_translation=lambda: events.append("start"),
+    )
+
+    app.TranslationWindow.on_dictionary_language_changed(window, 1)
+
+    assert events == ["languages", ("refresh", False), "start"]
+
+
+def test_manual_mode_changes_do_not_rerun_empty_text(app):
+    starts = []
+    window = SimpleNamespace(
+        content_mode_override="auto",
+        source_mode="manual",
+        txt_origin=SimpleNamespace(toPlainText=lambda: " \n "),
+        update_content_mode_button_text=lambda: None,
+        current_dictionary_languages=lambda: ("auto", "default"),
+        apply_manual_mode_ui=lambda *, reset_content: None,
+        start_manual_translation=lambda: starts.append(True),
+    )
+
+    app.TranslationWindow.toggle_content_mode(window)
+    app.TranslationWindow.on_dictionary_language_changed(window, 1)
+
+    assert starts == []
+
+
+def test_translation_thread_streams_markdown_over_explicit_sse(
+    app,
+    qapp,
+):
+    calls = []
+
+    class CompletionsStub:
+        @staticmethod
+        def create(**kwargs):
+            calls.append(kwargs)
+            return [
+                SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(delta=SimpleNamespace(content="# 译文"))
+                    ]
+                ),
+                SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(delta=SimpleNamespace(content="\n\n- 项目"))
+                    ]
+                ),
+            ]
+
+    api_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=CompletionsStub())
+    )
+    app.activate_api_runtime(DEFAULT_API_PROVIDER, api_client)
+    thread = app.TranslationThread("# Title\n\n- Item", "auto")
+    chunks = []
+    outcomes = []
+    thread.chunk_received.connect(chunks.append)
+    thread.finished.connect(lambda success, error: outcomes.append((success, error)))
+
+    thread.run()
+
+    assert chunks == ["# 译文", "\n\n- 项目"]
+    assert outcomes == [(True, "")]
+    assert len(calls) == 1
+    assert calls[0]["stream"] is True
+    assert calls[0]["extra_headers"] == {"Accept": "text/event-stream"}
+    assert "reasoning_effort" not in calls[0]
+    prompt = calls[0]["messages"][0]["content"]
+    assert "请保留标题层级、段落、列表、表格、链接和代码块结构" in prompt
+    assert "翻译成地道的简体中文" in prompt
 
 
 def test_cancelled_translation_thread_never_calls_api(app, qapp):
@@ -421,7 +810,6 @@ def test_tray_menu_hover_style_has_explicit_foreground_and_background(
         assert "color:#303133;" in selected_style
     finally:
         window.tray_icon.hide()
-        window.progress_window.close()
         window.deleteLater()
         qapp.processEvents()
 
@@ -698,7 +1086,6 @@ def test_quit_path_deactivates_shortcut_before_qapplication_quit(app, monkeypatc
         tray_icon=SimpleNamespace(hide=lambda: events.append("tray-hide")),
         cancel_current_ocr=lambda: events.append("cancel-ocr"),
         cancel_current_translation=lambda: events.append("cancel-translation"),
-        hide_translation_progress=lambda: events.append("hide-progress"),
     )
     window.shutdown_translation_shortcut = lambda: (
         app.TranslationWindow.shutdown_translation_shortcut(window)
