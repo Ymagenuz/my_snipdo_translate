@@ -10,6 +10,7 @@ from api_providers import DEFAULT_API_PROVIDER, DEEPSEEK_API_PROVIDER
 from app_settings import (
     AppSettings,
     DEFAULT_SETTINGS,
+    DEFAULT_SHOW_WINDOW_SHORTCUT,
     SettingsDataError,
     ShortcutBinding,
     keyboard_shortcut,
@@ -32,6 +33,11 @@ def test_missing_settings_returns_enabled_xbutton1_default(tmp_path: Path):
     assert settings.enabled is True
     assert settings.shortcut == mouse_shortcut("xbutton1")
     assert settings.shortcut.display == "XButton1"
+    assert settings.show_window_shortcut == keyboard_shortcut(
+        0x57,
+        ("ctrl", "alt"),
+        "Ctrl+Alt+W",
+    )
     assert not path.exists()
 
 
@@ -40,6 +46,11 @@ def test_missing_settings_returns_enabled_xbutton1_default(tmp_path: Path):
     [
         AppSettings(enabled=False, shortcut=mouse_shortcut("xbutton2")),
         AppSettings(enabled=True, shortcut=mouse_shortcut("middle")),
+        AppSettings(
+            enabled=True,
+            shortcut=mouse_shortcut("xbutton1"),
+            show_window_shortcut=mouse_shortcut("xbutton2"),
+        ),
         AppSettings(
             enabled=True,
             shortcut=keyboard_shortcut(
@@ -53,6 +64,11 @@ def test_missing_settings_returns_enabled_xbutton1_default(tmp_path: Path):
         AppSettings(
             enabled=True,
             shortcut=mouse_shortcut("xbutton1"),
+            show_window_shortcut=keyboard_shortcut(
+                0x52,
+                ("ctrl", "shift"),
+                "Ctrl+Shift+R",
+            ),
             api_provider=DEEPSEEK_API_PROVIDER,
         ),
     ],
@@ -66,9 +82,21 @@ def test_settings_round_trip_is_utf8_and_canonical(
 
     assert load_settings(path) == settings
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert set(payload) == {"enabled", "shortcut", "api_provider"}
+    assert set(payload) == {
+        "enabled",
+        "shortcut",
+        "show_window_shortcut",
+        "api_provider",
+    }
     assert payload["api_provider"] == settings.api_provider
     assert set(payload["shortcut"]) == {
+        "kind",
+        "mouse_button",
+        "virtual_key",
+        "modifiers",
+        "display",
+    }
+    assert set(payload["show_window_shortcut"]) == {
         "kind",
         "mouse_button",
         "virtual_key",
@@ -129,6 +157,7 @@ def test_mouse_factory_rejects_invalid_button(button: object):
     [
         lambda: AppSettings(enabled=1),
         lambda: AppSettings(shortcut="xbutton1"),
+        lambda: AppSettings(show_window_shortcut="Ctrl+Alt+W"),
         lambda: AppSettings(api_provider="unknown"),
         lambda: AppSettings(api_provider=1),
         lambda: ShortcutBinding("touch", None, None, (), "Touch"),
@@ -166,6 +195,25 @@ def test_load_migrates_legacy_payload_to_default_provider(tmp_path: Path):
 
     assert settings.api_provider == DEFAULT_API_PROVIDER
     assert settings.shortcut == mouse_shortcut("xbutton1")
+    assert settings.show_window_shortcut == DEFAULT_SHOW_WINDOW_SHORTCUT
+
+
+def test_load_migrates_provider_payload_to_default_show_shortcut(
+    tmp_path: Path,
+):
+    path = tmp_path / "settings.json"
+    _write_json(
+        path,
+        {
+            **_valid_mouse_payload(),
+            "api_provider": DEEPSEEK_API_PROVIDER,
+        },
+    )
+
+    settings = load_settings(path)
+
+    assert settings.api_provider == DEEPSEEK_API_PROVIDER
+    assert settings.show_window_shortcut == DEFAULT_SHOW_WINDOW_SHORTCUT
 
 
 @pytest.mark.parametrize("api_provider", ["unknown", "DeepSeek", 1, None, []])

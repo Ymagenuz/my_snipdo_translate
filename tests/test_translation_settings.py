@@ -62,6 +62,15 @@ class _Win32Harness:
         self.unregister_calls = []
         self.register_results = deque()
         self.unregister_results = deque()
+        self.foreground_window = 0x1111
+        self.window_threads = {0x1111: 11}
+        self.show_window_calls = []
+        self.attach_thread_calls = []
+        self.bring_to_top_calls = []
+        self.set_foreground_calls = []
+        self.set_active_calls = []
+        self.set_focus_calls = []
+        self.iconic_windows = set()
 
     def GetAsyncKeyState(self, virtual_key):
         self.async_key_calls.append(virtual_key)
@@ -78,6 +87,42 @@ class _Win32Harness:
             if self.unregister_results
             else True
         )
+
+    def IsIconic(self, hwnd):
+        return hwnd in self.iconic_windows
+
+    def ShowWindow(self, hwnd, command):
+        self.show_window_calls.append((hwnd, command))
+        return True
+
+    def GetForegroundWindow(self):
+        return self.foreground_window
+
+    def GetWindowThreadProcessId(self, hwnd, _process_id):
+        return self.window_threads.get(hwnd, 99)
+
+    def AttachThreadInput(self, source_thread, target_thread, attach):
+        self.attach_thread_calls.append(
+            (source_thread, target_thread, bool(attach))
+        )
+        return True
+
+    def BringWindowToTop(self, hwnd):
+        self.bring_to_top_calls.append(hwnd)
+        return True
+
+    def SetForegroundWindow(self, hwnd):
+        self.set_foreground_calls.append(hwnd)
+        self.foreground_window = hwnd
+        return True
+
+    def SetActiveWindow(self, hwnd):
+        self.set_active_calls.append(hwnd)
+        return hwnd
+
+    def SetFocus(self, hwnd):
+        self.set_focus_calls.append(hwnd)
+        return hwnd
 
 
 class _MouseHookBackend:
@@ -174,11 +219,13 @@ def _settings_window_stub(
     manager,
     *,
     credential_store=None,
+    show_window_manager=None,
 ):
     refreshes = []
     window = SimpleNamespace(
         app_settings=settings,
         shortcut_manager=manager,
+        show_window_shortcut_manager=show_window_manager,
         settings_path=settings_path,
         credential_store=credential_store,
         force_quit=False,
@@ -219,7 +266,15 @@ def test_default_main_settings_button_and_dialog_display_xbutton1(
         assert window.app_settings == DEFAULT_SETTINGS
         assert window.btn_settings.text() == "XButton1"
         assert dialog.shortcut_button.text() == "XButton1"
+        assert dialog.show_window_shortcut_button.text() == "Ctrl+Alt+W"
         assert dialog.candidate_settings() == DEFAULT_SETTINGS
+        dialog.show_window_shortcut_button.set_binding(
+            mouse_shortcut("xbutton2")
+        )
+        assert (
+            dialog.candidate_settings().show_window_shortcut
+            == mouse_shortcut("xbutton2")
+        )
     finally:
         dialog.deleteLater()
         window.deleteLater()
@@ -1164,6 +1219,132 @@ def test_keyboard_hotkey_uses_win32_flags_and_rolls_back_on_conflict(
     assert manager._native_filter_installed is False
 
 
+def test_show_window_hotkey_uses_an_independent_registration_id(
+    app, mocked_win32, qapp
+):
+    class HostWindow(app.QObject):
+        def winId(self):
+            return 0xCAFE
+
+    binding = keyboard_shortcut(0x57, ("ctrl", "alt"), "Ctrl+Alt+W")
+    manager = app.TranslationShortcutManager(
+        HostWindow(),
+        binding,
+        hotkey_id=app.SHOW_WINDOW_HOTKEY_ID,
+        log_name="show-window",
+    )
+
+    assert manager.configure(binding, True) is True
+    assert mocked_win32.register_calls == [
+        (
+            0xCAFE,
+            app.SHOW_WINDOW_HOTKEY_ID,
+            app.MOD_NOREPEAT | app.MOD_CONTROL | app.MOD_ALT,
+            0x57,
+        )
+    ]
+    assert manager.uninstall() is True
+
+
+def test_show_window_shortcut_manager_supports_mouse_buttons(
+    app, mocked_mouse_hook, qapp
+):
+    binding = mouse_shortcut("xbutton2")
+    manager = app.TranslationShortcutManager(
+        binding=binding,
+        hotkey_id=app.SHOW_WINDOW_HOTKEY_ID,
+        log_name="show-window",
+    )
+
+    assert manager.configure(binding, True) is True
+    assert manager.is_installed() is True
+    assert mocked_mouse_hook.instances[-1].button == "xbutton2"
+    assert manager.uninstall() is True
+
+
+def test_show_window_shortcut_restores_without_resetting_content(app):
+    calls = []
+    window = SimpleNamespace(force_show_window=lambda: calls.append("show"))
+
+    app.TranslationWindow.on_show_window_shortcut_triggered(window)
+
+    assert calls == ["show"]
+
+
+def test_win32_foreground_activation_attaches_to_the_focused_thread(
+    app, mocked_win32
+):
+    target_hwnd = 0xCAFE
+    mocked_win32.window_threads[target_hwnd] = 22
+
+    assert app.win32_force_foreground(target_hwnd) is True
+
+    assert mocked_win32.show_window_calls == [(target_hwnd, app.SW_SHOW)]
+    assert mocked_win32.attach_thread_calls == [
+        (22, 11, True),
+        (22, 11, False),
+    ]
+    assert mocked_win32.bring_to_top_calls == [target_hwnd]
+    assert mocked_win32.set_foreground_calls == [target_hwnd]
+    assert mocked_win32.set_active_calls == [target_hwnd]
+    assert mocked_win32.set_focus_calls == [target_hwnd]
+
+
+def test_force_show_keeps_an_already_visible_window_state_while_focusing(
+    app, monkeypatch
+):
+    events = []
+    scheduled = []
+    window = SimpleNamespace(
+        isVisible=lambda: True,
+        isMinimized=lambda: False,
+        width=lambda: 560,
+        height=lambda: 680,
+        move=lambda *_args: events.append("move"),
+        showNormal=lambda: events.append("show-normal"),
+        show=lambda: events.append("show"),
+        setHidden=lambda hidden: events.append(("hidden", hidden)),
+        raise_=lambda: events.append("raise"),
+        activateWindow=lambda: events.append("activate"),
+        winId=lambda: 0xCAFE,
+        x=lambda: 10,
+        y=lambda: 20,
+        _force_activate_only=lambda: None,
+    )
+    monkeypatch.setattr(
+        app,
+        "QApplication",
+        SimpleNamespace(primaryScreen=lambda: None),
+    )
+    monkeypatch.setattr(
+        app,
+        "QTimer",
+        SimpleNamespace(
+            singleShot=lambda delay, callback: scheduled.append(
+                (delay, callback)
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        app,
+        "win32_force_foreground",
+        lambda hwnd: events.append(("foreground", hwnd)) or True,
+    )
+
+    app.TranslationWindow.force_show_window(window)
+
+    assert "move" not in events
+    assert "show-normal" not in events
+    assert events == [
+        "show",
+        ("hidden", False),
+        "raise",
+        "activate",
+        ("foreground", 0xCAFE),
+    ]
+    assert scheduled == [(120, window._force_activate_only)]
+
+
 def test_apply_settings_persists_successful_configuration(
     app, tmp_path: Path
 ):
@@ -1171,18 +1352,28 @@ def test_apply_settings_persists_successful_configuration(
     candidate = AppSettings(
         enabled=False,
         shortcut=mouse_shortcut("middle"),
+        show_window_shortcut=keyboard_shortcut(
+            0x52,
+            ("ctrl", "shift"),
+            "Ctrl+Shift+R",
+        ),
     )
     manager = _ShortcutManagerStub()
+    show_window_manager = _ShortcutManagerStub()
     settings_path = tmp_path / "settings.json"
     window, refreshes = _settings_window_stub(
         settings_path,
         previous,
         manager,
+        show_window_manager=show_window_manager,
     )
 
     assert app.TranslationWindow.apply_settings(window, candidate) is True
 
     assert manager.calls == [(candidate.shortcut, candidate.enabled)]
+    assert show_window_manager.calls == [
+        (candidate.show_window_shortcut, True)
+    ]
     assert load_settings(settings_path) == candidate
     assert window.app_settings == candidate
     assert refreshes == [settings_path]
@@ -1197,11 +1388,13 @@ def test_apply_settings_rolls_shortcut_back_when_save_fails(
         shortcut=mouse_shortcut("xbutton2"),
     )
     manager = _ShortcutManagerStub()
+    show_window_manager = _ShortcutManagerStub()
     settings_path = tmp_path / "settings.json"
     window, refreshes = _settings_window_stub(
         settings_path,
         previous,
         manager,
+        show_window_manager=show_window_manager,
     )
     warnings = []
 
@@ -1221,10 +1414,83 @@ def test_apply_settings_rolls_shortcut_back_when_save_fails(
         (candidate.shortcut, candidate.enabled),
         (previous.shortcut, previous.enabled),
     ]
+    assert show_window_manager.calls == [
+        (candidate.show_window_shortcut, True),
+        (previous.show_window_shortcut, True),
+    ]
     assert window.app_settings == previous
     assert not settings_path.exists()
     assert refreshes == [settings_path]
     assert warnings and warnings[-1][1] == "设置保存失败"
+
+
+def test_apply_settings_rolls_translation_back_when_show_hotkey_is_unavailable(
+    app, monkeypatch, tmp_path: Path
+):
+    previous = DEFAULT_SETTINGS
+    candidate = replace(
+        previous,
+        shortcut=mouse_shortcut("middle"),
+        show_window_shortcut=keyboard_shortcut(
+            0x52,
+            ("ctrl", "shift"),
+            "Ctrl+Shift+R",
+        ),
+    )
+    manager = _ShortcutManagerStub()
+    show_window_manager = _ShortcutManagerStub(False)
+    window, refreshes = _settings_window_stub(
+        tmp_path / "settings.json",
+        previous,
+        manager,
+        show_window_manager=show_window_manager,
+    )
+    warnings = []
+    monkeypatch.setattr(
+        app,
+        "QMessageBox",
+        SimpleNamespace(warning=lambda *args: warnings.append(args)),
+    )
+
+    assert app.TranslationWindow.apply_settings(window, candidate) is False
+
+    assert manager.calls == [
+        (candidate.shortcut, candidate.enabled),
+        (previous.shortcut, previous.enabled),
+    ]
+    assert show_window_manager.calls == [
+        (candidate.show_window_shortcut, True)
+    ]
+    assert refreshes == [window.settings_path]
+    assert warnings and warnings[-1][1] == "显示窗口快捷键不可用"
+
+
+def test_apply_settings_rejects_duplicate_shortcuts_before_registration(
+    app, monkeypatch, tmp_path: Path
+):
+    duplicate = DEFAULT_SETTINGS.show_window_shortcut
+    candidate = replace(DEFAULT_SETTINGS, shortcut=duplicate)
+    manager = _ShortcutManagerStub()
+    show_window_manager = _ShortcutManagerStub()
+    window, refreshes = _settings_window_stub(
+        tmp_path / "settings.json",
+        DEFAULT_SETTINGS,
+        manager,
+        show_window_manager=show_window_manager,
+    )
+    warnings = []
+    monkeypatch.setattr(
+        app,
+        "QMessageBox",
+        SimpleNamespace(warning=lambda *args: warnings.append(args)),
+    )
+
+    assert app.TranslationWindow.apply_settings(window, candidate) is False
+
+    assert manager.calls == []
+    assert show_window_manager.calls == []
+    assert refreshes == []
+    assert warnings and warnings[-1][1] == "快捷键冲突"
 
 
 @pytest.mark.parametrize(

@@ -26,7 +26,10 @@ _MOUSE_DISPLAY = {
     "middle": "Middle Mouse",
 }
 _LEGACY_ROOT_FIELDS = frozenset({"enabled", "shortcut"})
-_ROOT_FIELDS = frozenset({"enabled", "shortcut", "api_provider"})
+_PROVIDER_ROOT_FIELDS = frozenset({"enabled", "shortcut", "api_provider"})
+_ROOT_FIELDS = frozenset(
+    {"enabled", "shortcut", "show_window_shortcut", "api_provider"}
+)
 _SHORTCUT_FIELDS = frozenset(
     {"kind", "mouse_button", "virtual_key", "modifiers", "display"}
 )
@@ -152,12 +155,20 @@ def keyboard_shortcut(
 
 
 DEFAULT_SHORTCUT = mouse_shortcut("xbutton1")
+DEFAULT_SHOW_WINDOW_SHORTCUT = keyboard_shortcut(
+    0x57,
+    ("ctrl", "alt"),
+    "Ctrl+Alt+W",
+)
 
 
 @dataclass(frozen=True)
 class AppSettings:
     enabled: bool = True
     shortcut: ShortcutBinding = field(default_factory=lambda: DEFAULT_SHORTCUT)
+    show_window_shortcut: ShortcutBinding = field(
+        default_factory=lambda: DEFAULT_SHOW_WINDOW_SHORTCUT
+    )
     api_provider: str = DEFAULT_API_PROVIDER
 
     def __post_init__(self) -> None:
@@ -165,6 +176,10 @@ class AppSettings:
             raise SettingsDataError("enabled must be a boolean")
         if not isinstance(self.shortcut, ShortcutBinding):
             raise SettingsDataError("shortcut must be a ShortcutBinding")
+        if not isinstance(self.show_window_shortcut, ShortcutBinding):
+            raise SettingsDataError(
+                "show_window_shortcut must be a ShortcutBinding"
+            )
         if (
             not isinstance(self.api_provider, str)
             or self.api_provider not in API_PROVIDER_IDS
@@ -228,8 +243,13 @@ def _decode_settings(value: object) -> AppSettings:
     fields = frozenset(value)
     if fields == _LEGACY_ROOT_FIELDS:
         api_provider = DEFAULT_API_PROVIDER
+        show_window_shortcut = DEFAULT_SHOW_WINDOW_SHORTCUT
+    elif fields == _PROVIDER_ROOT_FIELDS:
+        api_provider = value["api_provider"]
+        show_window_shortcut = DEFAULT_SHOW_WINDOW_SHORTCUT
     elif fields == _ROOT_FIELDS:
         api_provider = value["api_provider"]
+        show_window_shortcut = _decode_shortcut(value["show_window_shortcut"])
     else:
         raise SettingsDataError("settings fields do not match the supported schema")
     if not isinstance(value["enabled"], bool):
@@ -237,6 +257,7 @@ def _decode_settings(value: object) -> AppSettings:
     return AppSettings(
         enabled=value["enabled"],
         shortcut=_decode_shortcut(value["shortcut"]),
+        show_window_shortcut=show_window_shortcut,
         api_provider=api_provider,
     )
 
@@ -259,6 +280,7 @@ def _encode_settings(settings: AppSettings) -> dict[str, object]:
     if not isinstance(settings, AppSettings):
         raise SettingsDataError("settings must be an AppSettings instance")
     shortcut = settings.shortcut
+    show_window_shortcut = settings.show_window_shortcut
     return {
         "enabled": settings.enabled,
         "api_provider": settings.api_provider,
@@ -268,6 +290,13 @@ def _encode_settings(settings: AppSettings) -> dict[str, object]:
             "virtual_key": shortcut.virtual_key,
             "modifiers": list(shortcut.modifiers),
             "display": shortcut.display,
+        },
+        "show_window_shortcut": {
+            "kind": show_window_shortcut.kind,
+            "mouse_button": show_window_shortcut.mouse_button,
+            "virtual_key": show_window_shortcut.virtual_key,
+            "modifiers": list(show_window_shortcut.modifiers),
+            "display": show_window_shortcut.display,
         },
     }
 
@@ -298,6 +327,7 @@ __all__ = [
     "AppSettings",
     "DEFAULT_API_PROVIDER",
     "DEFAULT_SETTINGS",
+    "DEFAULT_SHOW_WINDOW_SHORTCUT",
     "DEFAULT_SHORTCUT",
     "MOUSE_BUTTONS",
     "MODIFIERS",

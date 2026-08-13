@@ -297,6 +297,7 @@ MOD_SHIFT = 0x0004
 MOD_WIN = 0x0008
 MOD_NOREPEAT = 0x4000
 TRANSLATION_HOTKEY_ID = 0x5344
+SHOW_WINDOW_HOTKEY_ID = 0x5345
 VK_CONTROL = 0x11
 VK_C = 0x43
 KEYEVENTF_KEYUP = 0x0002
@@ -311,6 +312,29 @@ user32.RegisterHotKey.restype = wintypes.BOOL
 user32.UnregisterHotKey.argtypes = [ctypes.c_void_p, ctypes.c_int]
 user32.UnregisterHotKey.restype = wintypes.BOOL
 user32.GetClipboardSequenceNumber.restype = ctypes.c_ulong
+user32.GetForegroundWindow.argtypes = []
+user32.GetForegroundWindow.restype = wintypes.HWND
+user32.IsIconic.argtypes = [wintypes.HWND]
+user32.IsIconic.restype = wintypes.BOOL
+user32.GetWindowThreadProcessId.argtypes = [
+    wintypes.HWND,
+    ctypes.POINTER(wintypes.DWORD),
+]
+user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+user32.AttachThreadInput.argtypes = [
+    wintypes.DWORD,
+    wintypes.DWORD,
+    wintypes.BOOL,
+]
+user32.AttachThreadInput.restype = wintypes.BOOL
+user32.BringWindowToTop.argtypes = [wintypes.HWND]
+user32.BringWindowToTop.restype = wintypes.BOOL
+user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+user32.SetForegroundWindow.restype = wintypes.BOOL
+user32.SetActiveWindow.argtypes = [wintypes.HWND]
+user32.SetActiveWindow.restype = wintypes.HWND
+user32.SetFocus.argtypes = [wintypes.HWND]
+user32.SetFocus.restype = wintypes.HWND
 
 
 def get_clipboard_sequence_number() -> int:
@@ -330,11 +354,48 @@ def win32_force_foreground(hwnd: int) -> bool:
         if not hwnd:
             return False
 
-        user32.ShowWindow(hwnd, SW_RESTORE)
-        user32.ShowWindow(hwnd, SW_SHOW)
-        user32.BringWindowToTop(hwnd)
-        user32.SetForegroundWindow(hwnd)
-        return True
+        user32.ShowWindow(
+            hwnd,
+            SW_RESTORE if user32.IsIconic(hwnd) else SW_SHOW,
+        )
+
+        foreground_hwnd = int(user32.GetForegroundWindow() or 0)
+        target_thread_id = int(user32.GetWindowThreadProcessId(hwnd, None))
+        foreground_thread_id = (
+            int(user32.GetWindowThreadProcessId(foreground_hwnd, None))
+            if foreground_hwnd
+            else 0
+        )
+        attached = False
+        if (
+            foreground_thread_id
+            and target_thread_id
+            and foreground_thread_id != target_thread_id
+        ):
+            attached = bool(
+                user32.AttachThreadInput(
+                    target_thread_id,
+                    foreground_thread_id,
+                    True,
+                )
+            )
+
+        try:
+            user32.BringWindowToTop(hwnd)
+            foregrounded = bool(user32.SetForegroundWindow(hwnd))
+            user32.SetActiveWindow(hwnd)
+            user32.SetFocus(hwnd)
+        finally:
+            if attached:
+                user32.AttachThreadInput(
+                    target_thread_id,
+                    foreground_thread_id,
+                    False,
+                )
+
+        return bool(
+            foregrounded or int(user32.GetForegroundWindow() or 0) == hwnd
+        )
     except Exception as e:
         log(f"[Win32] force foreground error: {e}")
         return False
@@ -1323,6 +1384,20 @@ def keyboard_shortcut_display(qt_key: int, modifiers: tuple[str, ...]) -> str:
     return "+".join([*(modifier_labels[name] for name in modifiers), key_name])
 
 
+def shortcuts_conflict(
+    first: ShortcutBinding,
+    second: ShortcutBinding,
+) -> bool:
+    if first.kind != second.kind:
+        return False
+    if first.kind == "mouse":
+        return first.mouse_button == second.mouse_button
+    return (
+        first.virtual_key == second.virtual_key
+        and first.modifiers == second.modifiers
+    )
+
+
 class ShortcutCaptureButton(QPushButton):
     capture_error = pyqtSignal(str)
 
@@ -1504,6 +1579,7 @@ class SettingsDialog(QDialog):
 
         description = QLabel(
             "启用状态控制全局划词翻译；主窗口和 SnipDo 调用仍可继续使用。"
+            "显示窗口快捷键始终有效。"
             "鼠标快捷键采用安全的非拦截检测，因此原生后退、前进或中键动作仍会执行。"
         )
         description.setWordWrap(True)
@@ -1523,6 +1599,14 @@ class SettingsDialog(QDialog):
         self.shortcut_button = ShortcutCaptureButton(settings.shortcut)
         self.shortcut_button.capture_error.connect(self._show_capture_error)
         form.addRow("翻译快捷键", self.shortcut_button)
+
+        self.show_window_shortcut_button = ShortcutCaptureButton(
+            settings.show_window_shortcut
+        )
+        self.show_window_shortcut_button.capture_error.connect(
+            self._show_capture_error
+        )
+        form.addRow("显示窗口快捷键", self.show_window_shortcut_button)
 
         self.api_provider_combo = NoWheelComboBox()
         for provider in api_provider_options():
@@ -1602,6 +1686,7 @@ class SettingsDialog(QDialog):
         return AppSettings(
             enabled=self.chk_enabled.isChecked(),
             shortcut=self.shortcut_button.binding,
+            show_window_shortcut=self.show_window_shortcut_button.binding,
             api_provider=self.selected_api_provider(),
         )
 
@@ -1610,6 +1695,7 @@ class SettingsDialog(QDialog):
 
     def done(self, result: int) -> None:
         self.shortcut_button.cancel_capture()
+        self.show_window_shortcut_button.cancel_capture()
         super().done(result)
 
 
@@ -1645,10 +1731,15 @@ class TranslationShortcutManager(QObject):
         self,
         host_window=None,
         binding: ShortcutBinding | None = None,
+        *,
+        hotkey_id: int = TRANSLATION_HOTKEY_ID,
+        log_name: str = "translation",
     ):
         super().__init__(host_window)
         self._host_window = host_window
         self._binding = binding or DEFAULT_SETTINGS.shortcut
+        self._hotkey_id = int(hotkey_id)
+        self._log_name = str(log_name)
         self._enabled = False
         self._suspend_depth = 0
         self._mouse_hook = None
@@ -1744,7 +1835,7 @@ class TranslationShortcutManager(QObject):
 
         if (
             native_message.message == WM_HOTKEY
-            and int(native_message.wParam) == TRANSLATION_HOTKEY_ID
+            and int(native_message.wParam) == self._hotkey_id
         ):
             QTimer.singleShot(0, self._emit_if_active)
             return True
@@ -1808,7 +1899,7 @@ class TranslationShortcutManager(QObject):
             hwnd = int(self._host_window.winId())
             registered = user32.RegisterHotKey(
                 hwnd,
-                TRANSLATION_HOTKEY_ID,
+                self._hotkey_id,
                 modifiers,
                 self._binding.virtual_key,
             )
@@ -1817,14 +1908,17 @@ class TranslationShortcutManager(QObject):
 
         if registered and not self._install_native_event_filter():
             try:
-                user32.UnregisterHotKey(hwnd, TRANSLATION_HOTKEY_ID)
+                user32.UnregisterHotKey(hwnd, self._hotkey_id)
             except Exception:
                 pass
             registered = False
 
         self._keyboard_registered = bool(registered)
         if not registered:
-            log("[Shortcut] keyboard hotkey registration failed")
+            log(
+                f"[Shortcut] {self._log_name} keyboard hotkey "
+                "registration failed"
+            )
         return bool(registered)
 
     def _install_native_event_filter(self) -> bool:
@@ -1877,7 +1971,7 @@ class TranslationShortcutManager(QObject):
             removed = bool(
                 user32.UnregisterHotKey(
                     int(self._host_window.winId()),
-                    TRANSLATION_HOTKEY_ID,
+                    self._hotkey_id,
                 )
             )
         except Exception:
@@ -1887,7 +1981,7 @@ class TranslationShortcutManager(QObject):
 
         self._keyboard_registered = False
         self._remove_native_event_filter()
-        log("[Shortcut] keyboard hotkey unregistered")
+        log(f"[Shortcut] {self._log_name} keyboard hotkey unregistered")
         return True
 
     def _emit_if_active(self) -> None:
@@ -2058,6 +2152,7 @@ class TranslationWindow(QWidget):
         self.alignment_selection_is_sentence = False
         self.selection_capture_busy = False
         self.shortcut_manager = None
+        self.show_window_shortcut_manager = None
         self.xbutton1_hook = None
         self.current_request_is_structured = False
         self.active_translation_text = ""
@@ -2141,9 +2236,9 @@ class TranslationWindow(QWidget):
             }
         """)
 
-        show_action = QAction("显示主窗口", self)
-        show_action.triggered.connect(self.show_manual_window)
-        tray_menu.addAction(show_action)
+        self.show_window_action = QAction("显示主窗口", self)
+        self.show_window_action.triggered.connect(self.show_manual_window)
+        tray_menu.addAction(self.show_window_action)
 
         self.toggle_translation_action = QAction("禁用", self)
         self.toggle_translation_action.setCheckable(True)
@@ -2193,6 +2288,26 @@ class TranslationWindow(QWidget):
                 QSystemTrayIcon.MessageIcon.Warning,
                 1800,
             )
+
+        self.show_window_shortcut_manager = TranslationShortcutManager(
+            self,
+            self.app_settings.show_window_shortcut,
+            hotkey_id=SHOW_WINDOW_HOTKEY_ID,
+            log_name="show-window",
+        )
+        self.show_window_shortcut_manager.triggered.connect(
+            self.on_show_window_shortcut_triggered
+        )
+        if not self.show_window_shortcut_manager.configure(
+            self.app_settings.show_window_shortcut,
+            True,
+        ):
+            self.tray_icon.showMessage(
+                APP_DISPLAY_NAME,
+                "显示窗口快捷键注册失败；请在设置中选择其他快捷键。",
+                QSystemTrayIcon.MessageIcon.Warning,
+                1800,
+            )
         self.refresh_shortcut_status()
 
     def setup_xbutton1_hook(self):
@@ -2200,9 +2315,13 @@ class TranslationWindow(QWidget):
         self.setup_translation_shortcut()
 
     def shutdown_translation_shortcut(self):
-        manager = getattr(self, "shortcut_manager", None)
-        if manager:
-            manager.uninstall()
+        for attribute_name in (
+            "shortcut_manager",
+            "show_window_shortcut_manager",
+        ):
+            manager = getattr(self, attribute_name, None)
+            if manager:
+                manager.uninstall()
 
     def refresh_shortcut_status(self):
         shortcut_active = bool(
@@ -2216,6 +2335,16 @@ class TranslationWindow(QWidget):
             tooltip = f"{APP_DISPLAY_NAME} · {self.app_settings.shortcut.display}"
         else:
             tooltip = f"{APP_DISPLAY_NAME} · 快捷键未激活"
+        show_shortcut_active = bool(
+            getattr(self, "show_window_shortcut_manager", None)
+            and self.show_window_shortcut_manager.is_installed()
+        )
+        show_shortcut_status = (
+            self.app_settings.show_window_shortcut.display
+            if show_shortcut_active
+            else "未激活"
+        )
+        tooltip += f" · 显示窗口 {show_shortcut_status}"
         icon = (
             self.enabled_app_icon
             if shortcut_active
@@ -2231,6 +2360,11 @@ class TranslationWindow(QWidget):
         if hasattr(self, "btn_settings"):
             self.btn_settings.setText(self.app_settings.shortcut.display)
             self.btn_settings.setToolTip(tooltip + "；点击打开设置")
+        if hasattr(self, "show_window_action"):
+            self.show_window_action.setText(
+                "显示主窗口（"
+                f"{self.app_settings.show_window_shortcut.display}）"
+            )
 
     def refresh_api_status(self):
         if not hasattr(self, "lbl_model_name"):
@@ -2351,6 +2485,10 @@ class TranslationWindow(QWidget):
         ):
             self.show_manual_window()
 
+    def on_show_window_shortcut_triggered(self):
+        log("[Shortcut] show window triggered")
+        self.force_show_window()
+
     def show_settings(self):
         self.force_show_window()
         provider = get_api_provider(self.app_settings.api_provider)
@@ -2365,14 +2503,22 @@ class TranslationWindow(QWidget):
             ),
             parent=self,
         )
-        if self.shortcut_manager:
-            self.shortcut_manager.suspend()
+        shortcut_managers = [
+            manager
+            for manager in (
+                getattr(self, "shortcut_manager", None),
+                getattr(self, "show_window_shortcut_manager", None),
+            )
+            if manager is not None
+        ]
+        for manager in shortcut_managers:
+            manager.suspend()
         try:
             result = dialog.exec()
         finally:
-            if self.shortcut_manager:
-                self.shortcut_manager.resume()
-                self.refresh_shortcut_status()
+            for manager in shortcut_managers:
+                manager.resume()
+            self.refresh_shortcut_status()
 
         if result != QDialog.DialogCode.Accepted:
             return
@@ -2387,6 +2533,17 @@ class TranslationWindow(QWidget):
 
     def apply_settings(self, candidate: AppSettings, api_key: str = "") -> bool:
         previous = self.app_settings
+        if shortcuts_conflict(
+            candidate.shortcut,
+            candidate.show_window_shortcut,
+        ):
+            QMessageBox.warning(
+                self,
+                "快捷键冲突",
+                "翻译快捷键和显示窗口快捷键不能相同。",
+            )
+            return False
+
         provider_changed = candidate.api_provider != previous.api_provider
         target_store = credential_store_for_window(
             self,
@@ -2447,7 +2604,13 @@ class TranslationWindow(QWidget):
                 )
                 return False
 
-        if self.shortcut_manager and not self.shortcut_manager.configure(
+        translation_manager = getattr(self, "shortcut_manager", None)
+        show_window_manager = getattr(
+            self,
+            "show_window_shortcut_manager",
+            None,
+        )
+        if translation_manager and not translation_manager.configure(
             candidate.shortcut,
             candidate.enabled,
         ):
@@ -2459,13 +2622,35 @@ class TranslationWindow(QWidget):
             self.refresh_shortcut_status()
             return False
 
+        if show_window_manager and not show_window_manager.configure(
+            candidate.show_window_shortcut,
+            True,
+        ):
+            if translation_manager:
+                translation_manager.configure(
+                    previous.shortcut,
+                    previous.enabled,
+                )
+            QMessageBox.warning(
+                self,
+                "显示窗口快捷键不可用",
+                "该快捷键可能已被其他程序占用。原快捷键仍保持激活。",
+            )
+            self.refresh_shortcut_status()
+            return False
+
         try:
             save_settings_atomic(self.settings_path, candidate)
         except (OSError, SettingsDataError):
-            if self.shortcut_manager:
-                self.shortcut_manager.configure(
+            if translation_manager:
+                translation_manager.configure(
                     previous.shortcut,
                     previous.enabled,
+                )
+            if show_window_manager:
+                show_window_manager.configure(
+                    previous.show_window_shortcut,
+                    True,
                 )
             QMessageBox.warning(
                 self,
@@ -2563,15 +2748,23 @@ class TranslationWindow(QWidget):
         log("[UI] force_show_window called")
 
         try:
-            screen = QApplication.primaryScreen()
-            if screen:
-                available = screen.availableGeometry()
-                x = available.x() + max(40, (available.width() - self.width()) // 2)
-                y = available.y() + max(40, (available.height() - self.height()) // 2)
-                self.move(x, y)
+            was_visible = self.isVisible()
+            if not was_visible:
+                screen = QApplication.primaryScreen()
+                if screen:
+                    available = screen.availableGeometry()
+                    x = available.x() + max(
+                        40,
+                        (available.width() - self.width()) // 2,
+                    )
+                    y = available.y() + max(
+                        40,
+                        (available.height() - self.height()) // 2,
+                    )
+                    self.move(x, y)
 
-            self.showNormal()
-            self.setWindowState(Qt.WindowState.WindowNoState)
+            if self.isMinimized():
+                self.showNormal()
             self.show()
             self.setHidden(False)
             self.raise_()
@@ -2589,8 +2782,8 @@ class TranslationWindow(QWidget):
 
     def _force_activate_only(self):
         try:
-            self.showNormal()
-            self.setWindowState(Qt.WindowState.WindowNoState)
+            if self.isMinimized():
+                self.showNormal()
             self.show()
             self.raise_()
             self.activateWindow()
