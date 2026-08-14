@@ -535,6 +535,26 @@ def test_completed_stream_is_reparsed_as_full_markdown(app, monkeypatch):
     assert events == [app.AppEvent.TRANSLATION_COMPLETED]
 
 
+def test_completed_result_renders_latex_formulas_as_images(app, qapp):
+    window = SimpleNamespace(source_mode="manual")
+    for method_name in (
+        "apply_markdown_document_style",
+        "compact_markdown_list_indents",
+        "apply_markdown_block_formats",
+        "render_markdown_text",
+    ):
+        _bind(window, app.TranslationWindow, method_name)
+
+    widget = app.InteractiveTextEdit()
+    widget.resize(500, 300)
+    source = "# 结果\n\n能量为 $E=mc^2$。\n\n" + r"\[x^2+y^2=z^2\]"
+
+    assert window.render_markdown_text(widget, source, "result") is True
+    assert widget.toHtml().count("<img") == 2
+    assert widget.toPlainText().count("\ufffc") == 2
+    assert "SNIPDOMATHPLACEHOLDER" not in widget.toPlainText()
+
+
 def test_large_window_size_is_fixed_unless_maximized(app):
     resizes = []
     window = SimpleNamespace(

@@ -904,7 +904,10 @@ def test_latex_streaming_restores_formula_before_emitting(app, qapp):
     assert len(calls) == 1
 
 
-def test_latex_rendering_preserves_raw_source(app, qapp):
+def test_latex_rendering_formats_math_and_retains_source_as_image_alt_text(
+    app,
+    qapp,
+):
     latex = r"""\section{Energy}
 The relation is $E_i = m_i c^2$.
 \[F = ma\]
@@ -924,7 +927,26 @@ The relation is $E_i = m_i c^2$.
         latex,
         "result",
     ) is True
-    assert widget.toPlainText() == latex
+    assert widget.toHtml().count("<img") == 2
+    assert widget.toPlainText().count("\ufffc") == 2
+    assert r"\section{Energy}" in widget.toPlainText()
+
+    image_alt_texts = []
+    block = widget.document().firstBlock()
+    while block.isValid():
+        iterator = block.begin()
+        while not iterator.atEnd():
+            fragment = iterator.fragment()
+            if fragment.isValid() and fragment.charFormat().isImageFormat():
+                image_alt_texts.append(
+                    fragment.charFormat().property(
+                        app.QTextFormat.Property.ImageAltText
+                    )
+                )
+            iterator += 1
+        block = block.next()
+
+    assert image_alt_texts == [r"$E_i = m_i c^2$", r"\[F = ma\]"]
 
 
 def test_cancelled_translation_thread_never_calls_api(app, qapp):

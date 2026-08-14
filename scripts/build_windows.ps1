@@ -14,6 +14,7 @@ $spec = Join-Path $root "SnipDoTranslate.spec"
 $checkArtifact = Join-Path $root "scripts\check_artifact.ps1"
 
 $buildRoot = Join-Path $root "build\pyinstaller"
+$pytestTemp = Join-Path $buildRoot "pytest"
 $onedirWork = Join-Path $buildRoot "onedir"
 $onefileWork = Join-Path $buildRoot "onefile"
 $distRoot = Join-Path $root "dist"
@@ -81,7 +82,9 @@ Push-Location $root
 $previousBuildMode = [System.Environment]::GetEnvironmentVariable("SNIPDO_BUILD_MODE", "Process")
 try {
     # Source tests are intentionally the first executable build gate. They are offline.
-    Invoke-NativeCommand -FilePath $python -Arguments @("-m", "pytest", "-q")
+    Invoke-NativeCommand -FilePath $python -Arguments @(
+        "-m", "pytest", "-q", "--basetemp", $pytestTemp
+    )
     Invoke-NativeCommand -FilePath $python -Arguments @(
         "-c",
         "import struct, sys; sys.exit(0 if struct.calcsize('P') == 8 else 'The .venv Python must be x64')"

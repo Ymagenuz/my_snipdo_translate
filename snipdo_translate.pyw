@@ -77,6 +77,11 @@ from latex_support import (
     latex_prose_for_language_detection,
     protect_latex_fragments,
 )
+from latex_renderer import (
+    prepare_latex_math_for_document,
+    render_latex_fragment_png,
+    render_math_fragments_in_document,
+)
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTextEdit,
@@ -3476,11 +3481,34 @@ class TranslationWindow(QWidget):
 
         try:
             self.apply_markdown_document_style(widget, source_name)
-            if is_latex_text(markdown_text):
-                widget.setPlainText(markdown_text)
+            document_text = markdown_text
+            formula_fragments = []
+            if source_name == "result":
+                document_text, formula_fragments = (
+                    prepare_latex_math_for_document(markdown_text)
+                )
+
+            if (
+                is_latex_text(markdown_text)
+                and not is_markdown_structured_text(markdown_text)
+            ):
+                widget.setPlainText(document_text)
             else:
-                widget.setMarkdown(markdown_text)
+                widget.setMarkdown(document_text)
                 self.compact_markdown_list_indents(widget)
+
+            if formula_fragments:
+                formula_stats = render_math_fragments_in_document(
+                    widget,
+                    formula_fragments,
+                    font_pixel_size=15,
+                    color="#2c3e50",
+                )
+                if formula_stats.fallback:
+                    log(
+                        "[LaTeX] formula render fallback "
+                        f"count={formula_stats.fallback}"
+                    )
             self.apply_markdown_block_formats(widget, source_name)
             widget.moveCursor(QTextCursor.MoveOperation.Start)
             return True
@@ -4864,6 +4892,16 @@ def run_offline_self_test(paths: AppPaths) -> int:
         restored = validate_request_dict(decode_json_payload(frame[4:]))
         if restored != request:
             raise RuntimeError("protocol round trip failed")
+
+        prepared_math, math_fragments = prepare_latex_math_for_document(
+            r"\[\frac{-b \pm \sqrt{b^2-4ac}}{2a}\]"
+        )
+        if len(math_fragments) != 1 or math_fragments[0].placeholder not in prepared_math:
+            raise RuntimeError("formula parsing failed")
+        rendered_formula = render_latex_fragment_png(math_fragments[0])
+        rendered_image = QImage.fromData(rendered_formula.png, "PNG")
+        if rendered_image.isNull() or rendered_image.width() <= 1:
+            raise RuntimeError("formula rendering failed")
 
         # A successful fixed-event write also verifies the per-user data/log
         # directory without exposing its path in output.

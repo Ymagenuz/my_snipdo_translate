@@ -1,3 +1,4 @@
 PyQt6
 openai
 httpx
+matplotlib>=3.10,<4
