@@ -71,6 +71,12 @@ from windows_ipc import (
     validate_request_dict,
 )
 from windows_mouse_hook import WindowsMouseShortcutHook
+from latex_support import (
+    LatexStreamRestorer,
+    is_latex_text,
+    latex_prose_for_language_detection,
+    protect_latex_fragments,
+)
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTextEdit,
@@ -82,11 +88,12 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import (
     QColor, QScreen, QTextCursor, QTextCharFormat,
     QTextBlockFormat, QTextFormat, QFont, QAction, QIcon, QImage,
-    QKeySequence
+    QKeySequence, QPainter, QPen
 )
 from PyQt6.QtCore import (
     Qt, pyqtSignal, QThread, QObject, QTimer, QByteArray, QBuffer,
-    QIODevice, QMimeData, QKeyCombination, QAbstractNativeEventFilter
+    QIODevice, QMimeData, QKeyCombination, QAbstractNativeEventFilter,
+    QEvent, QRectF
 )
 
 warnings.filterwarnings("ignore")
@@ -99,6 +106,8 @@ MAX_HISTORY_ITEMS = 50
 APP_ID = "SnipDoTranslate"
 APP_DISPLAY_NAME = "SnipDo Translate"
 IPC_UI_TIMEOUT_SECONDS = 4.0
+NORMAL_WINDOW_WIDTH = 560
+NORMAL_WINDOW_HEIGHT = 700
 
 APP_PATHS: AppPaths | None = None
 CREDENTIAL_STORE: WindowsCredentialStore | None = None
@@ -401,6 +410,43 @@ def win32_force_foreground(hwnd: int) -> bool:
         return False
 
 
+def create_unread_badge_icon(base_icon: QIcon) -> QIcon:
+    """Return a multi-resolution copy with a Windows-style unread dot."""
+    if base_icon.isNull():
+        return base_icon
+
+    badged_icon = QIcon()
+    for size in (16, 20, 24, 32, 40, 48, 64, 128, 256):
+        pixmap = base_icon.pixmap(size, size)
+        if pixmap.isNull():
+            continue
+
+        device_pixel_ratio = max(1.0, float(pixmap.devicePixelRatio()))
+        width = float(pixmap.width()) / device_pixel_ratio
+        height = float(pixmap.height()) / device_pixel_ratio
+        diameter = max(5.0, min(width, height) * 0.36)
+        margin = max(0.5, min(width, height) * 0.025)
+        badge_rect = QRectF(
+            width - diameter - margin,
+            margin,
+            diameter,
+            diameter,
+        )
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        border_pen = QPen(QColor("#FFFFFF"))
+        border_pen.setWidthF(max(1.0, diameter * 0.14))
+        painter.setPen(border_pen)
+        painter.setBrush(QColor("#E5484D"))
+        painter.drawEllipse(badge_rect)
+        painter.end()
+
+        badged_icon.addPixmap(pixmap)
+
+    return badged_icon if not badged_icon.isNull() else base_icon
+
+
 # ================= 工具函数 =================
 def normalize_newlines(text: str):
     return text.replace("\r\n", "\n").replace("\r", "\n")
@@ -699,7 +745,7 @@ def html_to_markdown(html_text: str) -> str:
         return ""
 
 
-def is_structured_text(text: str) -> bool:
+def is_markdown_structured_text(text: str) -> bool:
     if not text:
         return False
 
@@ -709,17 +755,32 @@ def is_structured_text(text: str) -> bool:
     ))
 
 
+def is_structured_text(text: str) -> bool:
+    return is_markdown_structured_text(text) or is_latex_text(text)
+
+
 def markdown_format_instruction(text: str) -> str:
-    if not is_structured_text(text):
+    has_markdown = is_markdown_structured_text(text)
+    has_latex = is_latex_text(text)
+    if not has_markdown and not has_latex:
         return ""
 
-    return """
-格式要求：
-- 输入文本包含 Markdown/结构化格式；请保留标题层级、段落、列表、表格、链接和代码块结构。
-- 只翻译自然语言内容，不要翻译 Markdown 标记、URL、代码块、行内代码、变量名、函数名、文件路径和 HTML/XML 标签名。
-- 如果输入是表格，请保持相同的列数和行数；只翻译单元格里的自然语言。
-- 直接输出保留格式后的译文，不要解释你做了什么。
-""".strip()
+    requirements = ["格式要求："]
+    if has_markdown:
+        requirements.extend((
+            "- 输入文本包含 Markdown/结构化格式；请保留标题层级、段落、列表、表格、链接和代码块结构。",
+            "- 只翻译自然语言内容，不要翻译 Markdown 标记、URL、代码块、行内代码、变量名、函数名、文件路径和 HTML/XML 标签名。",
+            "- 如果输入是表格，请保持相同的列数和行数；只翻译单元格里的自然语言。",
+        ))
+    if has_latex:
+        requirements.extend((
+            "- 输入文本包含 LaTeX；保持命令名、环境、花括号、换行及整体文档结构不变。",
+            "- 只翻译正文、标题、图表标题以及文本命令参数中的自然语言；不要翻译公式、注释、引用键、标签、URL、文件路径或宏名称。",
+            "- [[SNIPDO_LATEX_0000]] 这类标记是受保护的 LaTeX 片段占位符；必须逐字原样输出，每个标记恰好保留一次，不得改写、翻译或添加空格。",
+            "- 直接输出原始 LaTeX，不要添加 Markdown 代码围栏。",
+        ))
+    requirements.append("- 直接输出保留格式后的译文，不要解释你做了什么。")
+    return "\n".join(requirements)
 
 
 def clipboard_mime_to_formatted_text(mime_data, sentinel: str = "") -> str:
@@ -728,6 +789,9 @@ def clipboard_mime_to_formatted_text(mime_data, sentinel: str = "") -> str:
 
     plain_text = mime_data.text().strip() if mime_data.hasText() else ""
     html_text = mime_data.html() if mime_data.hasHtml() else ""
+
+    if plain_text and plain_text != sentinel and is_latex_text(plain_text):
+        return plain_text
 
     if html_text:
         markdown_text = html_to_markdown(html_text)
@@ -749,7 +813,11 @@ def normalize_input_text(raw_text: str):
         return []
 
     clean_text = raw_text.replace("-URLENCODED_ALT_TEXT", "").strip()
-    text_to_translate = unquote(clean_text)
+    text_to_translate = (
+        clean_text
+        if is_latex_text(clean_text)
+        else unquote(clean_text)
+    )
     text_to_translate = normalize_newlines(text_to_translate)
 
     if is_structured_text(text_to_translate):
@@ -817,6 +885,9 @@ def resolve_auto_translation_mode(
         return "en2zh"
 
     text_clean = (text or "").strip()
+    if not text_clean:
+        return "en2zh"
+    text_clean = latex_prose_for_language_detection(text_clean)
     if not text_clean:
         return "en2zh"
 
@@ -919,12 +990,16 @@ class TranslationThread(QThread):
         self.dictionary_target_lang = dictionary_target_lang
         self._stop_requested = False
         self.runtime = api_runtime
+        self.latex_placeholders = {}
 
     def request_stop(self):
         self._stop_requested = True
 
     def build_prompt(self) -> str:
-        text_clean = self.text.strip()
+        raw_text_clean = self.text.strip()
+        text_clean, self.latex_placeholders = protect_latex_fragments(
+            raw_text_clean
+        )
 
         if self.mode == "dictionary":
             source_lang = dictionary_language_label(self.dictionary_source_lang)
@@ -979,7 +1054,7 @@ class TranslationThread(QThread):
         actual_mode = self.mode
         if actual_mode == "auto":
             actual_mode = resolve_auto_translation_mode(
-                text_clean,
+                raw_text_clean,
                 self.dictionary_source_lang,
                 self.dictionary_target_lang,
             )
@@ -1047,6 +1122,9 @@ class TranslationThread(QThread):
                 stream=True,
                 **chat_completion_options(runtime.provider, streaming=True),
             )
+            stream_restorer = LatexStreamRestorer(
+                self.latex_placeholders
+            )
 
             for chunk in response:
                 if self._stop_requested:
@@ -1058,9 +1136,15 @@ class TranslationThread(QThread):
                     delta = chunk.choices[0].delta
                     content = getattr(delta, "content", None)
                     if content:
-                        self.chunk_received.emit(content)
+                        restored_content = stream_restorer.feed(content)
+                        if restored_content:
+                            self.chunk_received.emit(restored_content)
                 except Exception:
                     continue
+
+            remaining_content = stream_restorer.finish()
+            if remaining_content:
+                self.chunk_received.emit(remaining_content)
 
             log("[TranslateThread] finished success")
             self.finished.emit(True, "")
@@ -2119,6 +2203,10 @@ class TranslationWindow(QWidget):
     ):
         super().__init__()
 
+        self.translation_unread = False
+        self._base_app_icon = QIcon()
+        self._base_tray_tooltip = APP_DISPLAY_NAME
+
         self.app_paths = paths or APP_PATHS
         if self.app_paths is None:
             raise RuntimeError("application paths are not initialized")
@@ -2199,9 +2287,9 @@ class TranslationWindow(QWidget):
             else self.disabled_app_icon
         )
 
-        self.tray_icon.setIcon(icon)
-        self.setWindowIcon(icon)
-        self.tray_icon.setToolTip(APP_DISPLAY_NAME)
+        self._base_app_icon = icon
+        self._base_tray_tooltip = APP_DISPLAY_NAME
+        self.refresh_notification_visuals()
 
         # QSystemTrayIcon does not own its context menu.  Keep both a Python
         # reference and a QObject parent so the native tray integration never
@@ -2264,7 +2352,64 @@ class TranslationWindow(QWidget):
 
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.activated.connect(self.on_tray_activated)
+        self.tray_icon.messageClicked.connect(self.on_tray_message_clicked)
         self.tray_icon.show()
+
+    def refresh_notification_visuals(self):
+        if self._base_app_icon.isNull() or not hasattr(self, "tray_icon"):
+            return
+
+        icon = (
+            create_unread_badge_icon(self._base_app_icon)
+            if self.translation_unread
+            else self._base_app_icon
+        )
+        self.tray_icon.setIcon(icon)
+        self.setWindowIcon(icon)
+        app = QApplication.instance()
+        if app is not None:
+            app.setWindowIcon(icon)
+
+        tooltip = self._base_tray_tooltip
+        if self.translation_unread:
+            tooltip += " · 有未读译文"
+        self.tray_icon.setToolTip(tooltip)
+
+    def set_translation_unread(self, unread: bool):
+        unread = bool(unread)
+        if self.translation_unread == unread:
+            return
+        self.translation_unread = unread
+        self.refresh_notification_visuals()
+
+    def clear_translation_unread(self):
+        self.set_translation_unread(False)
+
+    def is_translation_window_focused(self) -> bool:
+        return bool(
+            self.isVisible()
+            and not self.isMinimized()
+            and self.isActiveWindow()
+        )
+
+    def notify_translation_completed(self) -> bool:
+        """Notify only when the completed translation is not being viewed."""
+        if self.is_translation_window_focused():
+            self.clear_translation_unread()
+            return False
+
+        self.set_translation_unread(True)
+        try:
+            self.tray_icon.showMessage(
+                "翻译完成",
+                self.full_translation.strip(),
+                QSystemTrayIcon.MessageIcon.Information,
+                5000,
+            )
+            log("[Notification] translation completion shown")
+        except Exception as e:
+            log(f"[Notification] show completion error: {e}")
+        return True
 
     def setup_translation_shortcut(self):
         self.shortcut_manager = TranslationShortcutManager(
@@ -2350,9 +2495,9 @@ class TranslationWindow(QWidget):
             if shortcut_active
             else self.disabled_app_icon
         )
-        self.tray_icon.setIcon(icon)
-        self.setWindowIcon(icon)
-        self.tray_icon.setToolTip(tooltip)
+        self._base_app_icon = icon
+        self._base_tray_tooltip = tooltip
+        self.refresh_notification_visuals()
         if hasattr(self, "toggle_translation_action"):
             self.toggle_translation_action.setChecked(
                 not self.app_settings.enabled
@@ -2483,7 +2628,16 @@ class TranslationWindow(QWidget):
             QSystemTrayIcon.ActivationReason.Trigger,
             QSystemTrayIcon.ActivationReason.DoubleClick
         ):
-            self.show_manual_window()
+            if self.translation_unread:
+                self.force_show_window()
+                self.clear_translation_unread()
+            else:
+                self.show_manual_window()
+
+    def on_tray_message_clicked(self):
+        log("[Notification] translation completion clicked")
+        self.force_show_window()
+        self.clear_translation_unread()
 
     def on_show_window_shortcut_triggered(self):
         log("[Shortcut] show window triggered")
@@ -2798,7 +2952,8 @@ class TranslationWindow(QWidget):
     # ---------- UI ----------
     def init_ui(self):
         self.setWindowTitle(APP_DISPLAY_NAME)
-        self.resize(560, 680)
+        self.setMinimumSize(NORMAL_WINDOW_WIDTH, NORMAL_WINDOW_HEIGHT)
+        self.resize(NORMAL_WINDOW_WIDTH, NORMAL_WINDOW_HEIGHT)
         self.setStyleSheet("background-color: #F5F7FA;")
 
         screen = QApplication.primaryScreen()
@@ -3321,8 +3476,11 @@ class TranslationWindow(QWidget):
 
         try:
             self.apply_markdown_document_style(widget, source_name)
-            widget.setMarkdown(markdown_text)
-            self.compact_markdown_list_indents(widget)
+            if is_latex_text(markdown_text):
+                widget.setPlainText(markdown_text)
+            else:
+                widget.setMarkdown(markdown_text)
+                self.compact_markdown_list_indents(widget)
             self.apply_markdown_block_formats(widget, source_name)
             widget.moveCursor(QTextCursor.MoveOperation.Start)
             return True
@@ -3599,7 +3757,7 @@ class TranslationWindow(QWidget):
 
         cursor = self.txt_result.textCursor()
         cursor.insertText("正在识别图片文字...", self.result_char_fmt)
-        self.resize(560, 520)
+        self.ensure_large_window_size()
         self.force_show_window()
 
         try:
@@ -4357,23 +4515,9 @@ class TranslationWindow(QWidget):
 
         self.txt_origin.moveCursor(QTextCursor.MoveOperation.Start)
 
-    def adjust_window_height(self):
-        total_text = "\n".join(self.original_paragraphs).strip()
-        text_len = len(total_text)
-        dict_mode = self.resolve_effective_mode(total_text) == "dictionary"
-
-        base_width = 560
-
-        if dict_mode:
-            base_height = 700
-        elif text_len < 50:
-            base_height = 380
-        elif text_len < 200:
-            base_height = 520
-        else:
-            base_height = 700
-
-        self.resize(base_width, base_height)
+    def ensure_large_window_size(self):
+        if not self.isMaximized():
+            self.resize(NORMAL_WINDOW_WIDTH, NORMAL_WINDOW_HEIGHT)
 
     # ---------- 请求入口 ----------
     def handle_new_request(self, raw_text, *, allow_key_prompt: bool = True):
@@ -4405,7 +4549,7 @@ class TranslationWindow(QWidget):
             log(f"[UI] effective_mode={effective_mode}, total_text={repr(total_text[:300])}")
 
             self.apply_snipdo_mode_ui()
-            self.adjust_window_height()
+            self.ensure_large_window_size()
             self.populate_original_text()
             self.setup_result_format()
 
@@ -4504,7 +4648,7 @@ class TranslationWindow(QWidget):
         self.original_paragraphs = [p.strip() for p in re.split(r'\n+', normalize_newlines(text_to_translate)) if p.strip()]
         self.full_translation = ""
         self.setup_result_format()
-        self.adjust_window_height()
+        self.ensure_large_window_size()
 
         if effective_mode == "dictionary":
             self.set_dictionary_language_controls_visible(True)
@@ -4638,6 +4782,7 @@ class TranslationWindow(QWidget):
                 self.full_translation,
                 self.active_translation_mode,
             )
+            self.notify_translation_completed()
         else:
             record_event(AppEvent.TRANSLATION_FAILED)
 
@@ -4649,7 +4794,7 @@ class TranslationWindow(QWidget):
         self.btn_copy.setEnabled(bool(self.full_translation.strip()))
 
         if self.source_mode == "snipdo":
-            self.adjust_window_height()
+            self.ensure_large_window_size()
 
     # ---------- 剪贴板 ----------
     def copy_to_clipboard(self):
@@ -4661,6 +4806,14 @@ class TranslationWindow(QWidget):
             log("[Clipboard] copied translation")
 
     # ---------- 关闭行为 ----------
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if (
+            event.type() == QEvent.Type.ActivationChange
+            and self.isActiveWindow()
+        ):
+            self.clear_translation_unread()
+
     def closeEvent(self, event):
         if self.force_quit:
             log("[UI] closeEvent force quit")

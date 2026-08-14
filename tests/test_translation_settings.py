@@ -819,6 +819,114 @@ def test_translation_thread_streams_markdown_over_explicit_sse(
     assert "翻译成地道的简体中文" in prompt
 
 
+def test_latex_input_preserves_source_and_builds_protection_prompt(app):
+    source = r"""\section{Energy}
+The relation is $E = mc^2$; see \ref{eq:mass}.
+%20 must remain a literal LaTeX comment.
+""".strip()
+
+    assert app.is_structured_text(source) is True
+    assert app.is_dictionary_mode(source) is False
+    assert app.normalize_input_text(source) == [source]
+
+    instruction = app.markdown_format_instruction(source)
+    assert "输入文本包含 LaTeX" in instruction
+    assert "不要翻译公式、注释、引用键、标签" in instruction
+    assert "[[SNIPDO_LATEX_0000]]" in instruction
+
+    thread = app.TranslationThread(source, "auto")
+    prompt = thread.build_prompt()
+    assert r"\section{Energy}" in prompt
+    assert "$E = mc^2$" not in prompt
+    assert r"\ref{eq:mass}" not in prompt
+    assert "[[SNIPDO_LATEX_" in prompt
+
+    chinese_source = r"""\documentclass{article}
+\usepackage{amsmath}
+\section{实验说明}
+\begin{equation}
+abcdefghijklmnopqrstuvwxyz = E + mc^2
+\end{equation}
+这是用于验证语言方向的中文正文。
+"""
+    assert app.resolve_auto_translation_mode(chinese_source) == "zh2en"
+
+
+def test_clipboard_prefers_exact_latex_plain_text_over_html(app, qapp):
+    source = r"\section{Energy}\nThe relation is $E = mc^2$."
+    mime_data = app.QMimeData()
+    mime_data.setText(source)
+    mime_data.setHtml("<p>Browser-rendered fallback without TeX source</p>")
+
+    assert app.clipboard_mime_to_formatted_text(mime_data) == source
+
+
+def test_latex_streaming_restores_formula_before_emitting(app, qapp):
+    calls = []
+    source = r"Energy is $E = mc^2$."
+
+    class CompletionsStub:
+        @staticmethod
+        def create(**kwargs):
+            calls.append(kwargs)
+            prompt = kwargs["messages"][0]["content"]
+            token_start = prompt.index("[[SNIPDO_LATEX_")
+            token_end = prompt.index("]]", token_start) + 2
+            token = prompt[token_start:token_end]
+            pieces = ["能量关系为 ", token[:8], token[8:], "。"]
+            return [
+                SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(content=piece)
+                        )
+                    ]
+                )
+                for piece in pieces
+            ]
+
+    api_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=CompletionsStub())
+    )
+    app.activate_api_runtime(DEFAULT_API_PROVIDER, api_client)
+    thread = app.TranslationThread(source, "auto")
+    chunks = []
+    outcomes = []
+    thread.chunk_received.connect(chunks.append)
+    thread.finished.connect(
+        lambda success, error: outcomes.append((success, error))
+    )
+
+    thread.run()
+
+    assert "".join(chunks) == r"能量关系为 $E = mc^2$。"
+    assert outcomes == [(True, "")]
+    assert len(calls) == 1
+
+
+def test_latex_rendering_preserves_raw_source(app, qapp):
+    latex = r"""\section{Energy}
+The relation is $E_i = m_i c^2$.
+\[F = ma\]
+""".strip()
+    widget = app.QTextEdit()
+    window = SimpleNamespace(
+        apply_markdown_document_style=lambda *_args: None,
+        compact_markdown_list_indents=lambda *_args: pytest.fail(
+            "LaTeX must not pass through Markdown parsing"
+        ),
+        apply_markdown_block_formats=lambda *_args: None,
+    )
+
+    assert app.TranslationWindow.render_markdown_text(
+        window,
+        widget,
+        latex,
+        "result",
+    ) is True
+    assert widget.toPlainText() == latex
+
+
 def test_cancelled_translation_thread_never_calls_api(app, qapp):
     calls = []
 
@@ -897,6 +1005,11 @@ def test_tray_icon_tracks_actual_shortcut_state(
             setChecked=lambda checked: disabled_checks.append(checked)
         ),
         setWindowIcon=lambda icon: window_icons.append(icon),
+    )
+    window.refresh_notification_visuals = lambda: (
+        window.tray_icon.setIcon(window._base_app_icon),
+        window.setWindowIcon(window._base_app_icon),
+        window.tray_icon.setToolTip(window._base_tray_tooltip),
     )
 
     app.TranslationWindow.refresh_shortcut_status(window)

@@ -125,8 +125,8 @@ def _ocr_window(app):
         ensure_api_key=lambda *, allow_prompt=True: True,
         cancel_current_translation=lambda: None,
         setup_result_format=lambda: None,
+        ensure_large_window_size=lambda: None,
         force_show_window=lambda: None,
-        resize=lambda *_args: None,
         set_result_message=lambda _message: None,
         on_ocr_finished=lambda *_args: None,
     )
@@ -149,7 +149,7 @@ def _translation_window(app):
         cancel_current_translation=lambda: None,
         resolve_effective_mode=lambda _text: "auto",
         apply_snipdo_mode_ui=lambda: None,
-        adjust_window_height=lambda: None,
+        ensure_large_window_size=lambda: None,
         populate_original_text=lambda: None,
         setup_result_format=lambda: None,
         hide=lambda: None,
@@ -500,7 +500,8 @@ def test_completed_stream_is_reparsed_as_full_markdown(app, monkeypatch):
     events = []
     rendered = []
     history = []
-    adjusted = []
+    size_requests = []
+    notifications = []
     monkeypatch.setattr(app, "record_event", events.append)
     markdown = "# 译文\n\n- 第一项\n- 第二项"
     window = SimpleNamespace(
@@ -515,7 +516,8 @@ def test_completed_stream_is_reparsed_as_full_markdown(app, monkeypatch):
             (widget, text, source)
         ),
         add_history_entry=lambda *args: history.append(args),
-        adjust_window_height=lambda: adjusted.append(True),
+        notify_translation_completed=lambda: notifications.append(True),
+        ensure_large_window_size=lambda: size_requests.append(True),
     )
 
     app.TranslationWindow.on_translation_finished(window, True, "")
@@ -528,8 +530,97 @@ def test_completed_stream_is_reparsed_as_full_markdown(app, monkeypatch):
             "en2zh",
         )
     ]
-    assert adjusted == [True]
+    assert size_requests == [True]
+    assert notifications == [True]
     assert events == [app.AppEvent.TRANSLATION_COMPLETED]
+
+
+def test_large_window_size_is_fixed_unless_maximized(app):
+    resizes = []
+    window = SimpleNamespace(
+        isMaximized=lambda: False,
+        resize=lambda width, height: resizes.append((width, height)),
+    )
+
+    app.TranslationWindow.ensure_large_window_size(window)
+    assert resizes == [(app.NORMAL_WINDOW_WIDTH, app.NORMAL_WINDOW_HEIGHT)]
+
+    window.isMaximized = lambda: True
+    app.TranslationWindow.ensure_large_window_size(window)
+    assert resizes == [(app.NORMAL_WINDOW_WIDTH, app.NORMAL_WINDOW_HEIGHT)]
+
+
+def test_translation_completion_notification_requires_unfocused_window(app):
+    shown_messages = []
+    unread_states = []
+
+    class TrayStub:
+        @staticmethod
+        def showMessage(*args):
+            shown_messages.append(args)
+
+    window = SimpleNamespace(
+        tray_icon=TrayStub(),
+        full_translation="这是通知中显示的译文。",
+        isVisible=lambda: True,
+        isMinimized=lambda: False,
+        isActiveWindow=lambda: True,
+        clear_translation_unread=lambda: unread_states.append(False),
+        set_translation_unread=lambda unread: unread_states.append(unread),
+    )
+    _bind(window, app.TranslationWindow, "is_translation_window_focused")
+    _bind(window, app.TranslationWindow, "notify_translation_completed")
+
+    assert window.notify_translation_completed() is False
+    assert unread_states == [False]
+    assert shown_messages == []
+
+    window.isActiveWindow = lambda: False
+    assert window.notify_translation_completed() is True
+    assert unread_states == [False, True]
+    assert len(shown_messages) == 1
+    assert shown_messages[0][0:2] == (
+        "翻译完成",
+        window.full_translation,
+    )
+
+
+def test_unread_badge_is_rendered_in_icon_top_right(app, qapp):
+    icon_path = (
+        Path(app.__file__).resolve().parent
+        / "snipdo_script_logo"
+        / "snipdo-translate-enabled.png"
+    )
+    badged_icon = app.create_unread_badge_icon(app.QIcon(str(icon_path)))
+    image = badged_icon.pixmap(64, 64).toImage()
+
+    red_pixels = []
+    for y in range(image.height()):
+        for x in range(image.width()):
+            color = image.pixelColor(x, y)
+            if (
+                color.alpha() > 180
+                and color.red() > 180
+                and color.green() < 120
+                and color.blue() < 140
+            ):
+                red_pixels.append((x, y))
+
+    assert len(red_pixels) > 20
+    assert min(x for x, _y in red_pixels) > image.width() // 2
+    assert max(y for _x, y in red_pixels) < image.height() // 2
+
+
+def test_completion_notification_click_reopens_current_result(app):
+    actions = []
+    window = SimpleNamespace(
+        force_show_window=lambda: actions.append("show"),
+        clear_translation_unread=lambda: actions.append("clear"),
+    )
+
+    app.TranslationWindow.on_tray_message_clicked(window)
+
+    assert actions == ["show", "clear"]
 
 
 def test_settle_source_file_deletes_only_after_accepted_ownership(
