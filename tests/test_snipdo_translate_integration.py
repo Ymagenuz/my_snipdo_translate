@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import importlib.machinery
 import importlib.util
+import json
 import queue
 import socket
 import sys
@@ -11,11 +12,18 @@ from pathlib import Path
 from types import MethodType, SimpleNamespace
 
 import pytest
+import httpx
+from openai import OpenAI as SdkOpenAI
 
 from app_cli import AppRequest, PreparedRequest
 from app_paths import AppPaths
 from app_settings import AppSettings
-from api_providers import DEEPSEEK_API_PROVIDER
+from api_providers import (
+    DEFAULT_API_PROVIDER,
+    DEEPSEEK_API_PROVIDER,
+    OPENROUTER_API_PROVIDER,
+    get_api_provider,
+)
 from windows_ipc import RejectionReason
 
 
@@ -322,13 +330,15 @@ def test_handle_ocr_rejects_when_thread_start_fails_and_retains_source(
     assert window.ocr_thread is None
 
 
+@pytest.mark.parametrize("provider_id", [DEFAULT_API_PROVIDER, OPENROUTER_API_PROVIDER])
 def test_ocr_accepts_only_after_in_memory_ownership_and_leaves_source_to_caller(
-    app, monkeypatch, tmp_path: Path
+    app, monkeypatch, tmp_path: Path, provider_id
 ):
     image_bytes = b"synthetic-offline-image-content"
     source = tmp_path / "owned-before-ack.png"
     source.write_bytes(image_bytes)
     window = _ocr_window(app)
+    window.app_settings = AppSettings(api_provider=provider_id)
     created_threads = []
 
     class OwningOcrThread:
@@ -361,6 +371,91 @@ def test_ocr_accepts_only_after_in_memory_ownership_and_leaves_source_to_caller(
     assert prefix == "data:image/png;base64"
     assert base64.b64decode(encoded) == image_bytes
     assert str(source) not in thread.image_data_url
+
+
+@pytest.mark.parametrize("worker_kind", ["translation", "alignment", "ocr"])
+def test_openrouter_workers_use_selected_endpoint_and_model(
+    app, monkeypatch, qapp, worker_kind
+):
+    requests = []
+    outputs = {
+        "translation": "Translated text",
+        "alignment": '{"text":"对应文字"}',
+        "ocr": "Recognized text",
+    }
+
+    def handler(request):
+        payload = json.loads(request.content)
+        requests.append((str(request.url), payload))
+        response = {
+            "id": "offline-openrouter-response",
+            "created": 0,
+            "model": "openai/gpt-5.6-luna",
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": "stop",
+                    "message": {
+                        "role": "assistant",
+                        "content": outputs[worker_kind],
+                    },
+                }
+            ],
+        }
+        if payload["stream"]:
+            response["object"] = "chat.completion.chunk"
+            response["choices"][0]["delta"] = response["choices"][0].pop("message")
+            data = "data: " + json.dumps(response) + "\n\ndata: [DONE]\n\n"
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=data.encode("utf-8"),
+            )
+        response["object"] = "chat.completion"
+        return httpx.Response(200, json=response)
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(app, "DefaultHttpxClient", lambda **_kwargs: http_client)
+    monkeypatch.setattr(app, "OpenAI", SdkOpenAI)
+    api_client = app.create_api_client("offline-openrouter-key", OPENROUTER_API_PROVIDER)
+    assert api_client is not None
+    monkeypatch.setattr(
+        app,
+        "api_runtime",
+        app.ApiRuntime(get_api_provider(OPENROUTER_API_PROVIDER), api_client),
+    )
+    image_url = "data:image/png;base64,b2ZmbGluZQ=="
+    if worker_kind == "translation":
+        worker = app.TranslationThread("A source sentence.")
+    elif worker_kind == "alignment":
+        worker = app.AlignmentThread("source", "对应文字", "source")
+    else:
+        worker = app.OcrThread(image_url)
+    outcomes = []
+    worker.finished.connect(lambda *result: outcomes.append(result))
+    try:
+        worker.run()
+    finally:
+        api_client.close()
+
+    assert len(requests) == 1
+    url, payload = requests[0]
+    assert url == "https://openrouter.ai/api/v1/chat/completions"
+    assert payload["model"] == "openai/gpt-5.6-luna"
+    assert payload["stream"] is (worker_kind == "translation")
+    assert "thinking" not in payload
+    assert "reasoning_effort" not in payload
+    assert len(outcomes) == 1
+    assert outcomes[0][0] is True
+    assert outcomes[0][-1] == ""
+    if worker_kind == "ocr":
+        assert payload["messages"][0]["content"][1] == {
+            "type": "image_url",
+            "image_url": {"url": image_url},
+        }
+        assert outcomes[0][1] == outputs[worker_kind]
+    elif worker_kind == "alignment":
+        assert outcomes[0][1]["text"] == "对应文字"
 
 
 def test_handle_translation_rejects_missing_key_without_starting_client(app):

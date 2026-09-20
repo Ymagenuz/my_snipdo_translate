@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 import app_settings
-from api_providers import DEFAULT_API_PROVIDER, DEEPSEEK_API_PROVIDER
+from api_providers import (
+    DEFAULT_API_PROVIDER,
+    DEEPSEEK_API_PROVIDER,
+    OPENROUTER_API_PROVIDER,
+)
 from app_settings import (
     AppSettings,
     DEFAULT_SETTINGS,
@@ -61,6 +65,7 @@ def test_missing_settings_returns_enabled_xbutton1_default(tmp_path: Path):
         ),
         AppSettings(enabled=False, shortcut=keyboard_shortcut(0x70, (), "F1")),
         AppSettings(enabled=True, shortcut=keyboard_shortcut(0x87, (), "F24")),
+        AppSettings(api_provider=OPENROUTER_API_PROVIDER),
         AppSettings(
             enabled=True,
             shortcut=mouse_shortcut("xbutton1"),
@@ -198,21 +203,22 @@ def test_load_migrates_legacy_payload_to_default_provider(tmp_path: Path):
     assert settings.show_window_shortcut == DEFAULT_SHOW_WINDOW_SHORTCUT
 
 
+@pytest.mark.parametrize("provider_id", [DEEPSEEK_API_PROVIDER, OPENROUTER_API_PROVIDER])
 def test_load_migrates_provider_payload_to_default_show_shortcut(
-    tmp_path: Path,
+    tmp_path: Path, provider_id: str,
 ):
     path = tmp_path / "settings.json"
     _write_json(
         path,
         {
             **_valid_mouse_payload(),
-            "api_provider": DEEPSEEK_API_PROVIDER,
+            "api_provider": provider_id,
         },
     )
 
     settings = load_settings(path)
 
-    assert settings.api_provider == DEEPSEEK_API_PROVIDER
+    assert settings.api_provider == provider_id
     assert settings.show_window_shortcut == DEFAULT_SHOW_WINDOW_SHORTCUT
 
 

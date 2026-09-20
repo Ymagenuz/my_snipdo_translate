@@ -4,7 +4,7 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 
 ## 版本与更新提醒
 
-- 应用版本统一定义在 `app_version.py`，当前从 `12.0.0` 开始。主窗口标题、设置标题、托盘“关于”菜单及打包 EXE 的 Windows 文件属性均显示版本。
+- 应用版本统一定义在 `app_version.py`，版本号从 `12.0.0` 开始；当前版本 `12.1.0` 新增 OpenRouter 接口。主窗口标题、设置标题、托盘“关于”菜单及打包 EXE 的 Windows 文件属性均显示版本。
 - 正常启动主实例 5 秒后，程序会在后台检查本项目的 [GitHub Releases](https://github.com/Ymagenuz/my_snipdo_translate/releases)。自动检查每台设备最多每天一次；保持运行时也会每天检查。托盘菜单中的“检查更新…”可随时手动检查。
 - 只有正式版版本号更高、且已上传有效的 `SnipDoTranslate.exe` 附件时才会提示。草稿、预发布版本、只有源码的 Release 和旧版本均不会提示。
 - 提醒提供“打开下载页面”“稍后”和“跳过此版本”。“稍后”在本次运行期间不重复提醒同一版本；“跳过此版本”会在本机保存，手动检查仍可查看被跳过的版本。
@@ -14,9 +14,9 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 
 发布新版本时：
 
-1. 修改 `app_version.py` 中的 `APP_VERSION`，采用 `主版本.次版本.修订版本` 格式，例如 `12.0.1`，每段为 `0`–`65535` 的整数。
+1. 修改 `app_version.py` 中的 `APP_VERSION`，采用 `主版本.次版本.修订版本` 格式，例如 `12.1.1`，每段为 `0`–`65535` 的整数。
 2. 运行下方 Windows 构建流程，得到已校验的 `dist\SnipDoTranslate.exe` 和 SHA-256 文件；构建检查会验证 EXE 中的版本资源与源码一致。
-3. 在本项目 GitHub Releases 中创建对应标签（例如 `v12.0.1`）的正式 Release，上传 `SnipDoTranslate.exe` 和 `SnipDoTranslate.exe.sha256`，填写更新说明，再发布并标记为最新版本。只推送代码或创建 Git 标签不会触发更新提醒。
+3. 在本项目 GitHub Releases 中创建对应标签（例如 `v12.1.1`）的正式 Release，上传 `SnipDoTranslate.exe` 和 `SnipDoTranslate.exe.sha256`，填写更新说明，再发布并标记为最新版本。只推送代码或创建 Git 标签不会触发更新提醒。
 
 所有设备共用这个公开的发布源，无需搭建推送服务器或在设备间直接连接。EXE 内置固定的本项目检查地址；无需 GitHub Token。
 
@@ -61,8 +61,11 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 
 - `OpenAI 兼容（GPTSAPI）`：保持原有行为，使用 `https://api.gptsapi.net/v1` 和 `gpt-5.4-nano`；可选环境变量为 `GPTSAPI_API_KEY`，凭据目标为 `SnipDoTranslate/GPTSAPI`。
 - `DeepSeek 官方接口`：使用 `https://api.deepseek.com` 和 `deepseek-v4-flash`；可选环境变量为 `DEEPSEEK_API_KEY`，凭据目标为 `SnipDoTranslate/DeepSeek`。该接口当前用于文本翻译、查词和文本对齐，不支持本程序的图片 OCR；执行 OCR 前程序会明确拒绝并保留传入的源文件。
+- `OpenRouter`：使用 `https://openrouter.ai/api/v1`，模型暂定为 [GPT-5.6 Luna](https://openrouter.ai/openai/gpt-5.6-luna)（`openai/gpt-5.6-luna`）；支持文本翻译、查词、文本对齐和图片 OCR。可选环境变量为 `OPENROUTER_API_KEY`，凭据目标为 `SnipDoTranslate/OpenRouter`。
 
-两种接口都通过 OpenAI Chat Completions 兼容格式调用，但服务地址、模型和凭据相互独立。切换接口时，API Key 输入框留空会尝试使用目标接口已有的环境变量或 Windows 凭据；不存在时会在下一次请求前提示输入。
+三种接口都通过 OpenAI Chat Completions 兼容格式调用，但服务地址、模型和凭据相互独立。切换接口时，API Key 输入框留空会尝试使用目标接口已有的环境变量或 Windows 凭据；不存在时会在下一次请求前提示输入。
+
+使用 OpenRouter 时，在“设置 → API 接口”选择 `OpenRouter`，填入 OpenRouter API Key 后保存即可。原有接口及已保存的 Key 会保留；新安装默认仍使用 GPTSAPI。OpenRouter 的暂定模型集中定义在 `api_providers.py`，以后更换模型时同时核对其图片输入能力并重新打包。接口格式参考 [OpenRouter 官方接入说明](https://openrouter.ai/docs/quickstart)。
 
 常用命令行入口：
 

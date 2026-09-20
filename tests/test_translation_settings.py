@@ -17,6 +17,7 @@ from app_paths import AppPaths
 from api_providers import (
     DEFAULT_API_PROVIDER,
     DEEPSEEK_API_PROVIDER,
+    OPENROUTER_API_PROVIDER,
     get_api_provider,
 )
 from app_settings import (
@@ -281,8 +282,9 @@ def test_default_main_settings_button_and_dialog_display_xbutton1(
         qapp.processEvents()
 
 
+@pytest.mark.parametrize("provider_id", [DEEPSEEK_API_PROVIDER, OPENROUTER_API_PROVIDER])
 def test_settings_dialog_lists_api_providers_and_returns_stable_id(
-    app, qapp
+    app, qapp, provider_id
 ):
     dialog = app.SettingsDialog(
         DEFAULT_SETTINGS,
@@ -297,27 +299,47 @@ def test_settings_dialog_lists_api_providers_and_returns_stable_id(
         assert provider_ids == [
             DEFAULT_API_PROVIDER,
             DEEPSEEK_API_PROVIDER,
+            OPENROUTER_API_PROVIDER,
         ]
         assert dialog.selected_api_provider() == DEFAULT_API_PROVIDER
 
-        deepseek_index = dialog.api_provider_combo.findData(
-            DEEPSEEK_API_PROVIDER
-        )
-        dialog.api_provider_combo.setCurrentIndex(deepseek_index)
+        provider_index = dialog.api_provider_combo.findData(provider_id)
+        dialog.api_provider_combo.setCurrentIndex(provider_index)
 
         assert (
             dialog.candidate_settings().api_provider
-            == DEEPSEEK_API_PROVIDER
+            == provider_id
         )
-        assert "不支持图片 OCR" in dialog.status_label.text()
-        assert "DEEPSEEK_API_KEY" in dialog.status_label.text()
+        provider = get_api_provider(provider_id)
+        assert ("不支持图片 OCR" in dialog.status_label.text()) is (
+            not provider.supports_vision
+        )
+        assert provider.environment_variable in dialog.status_label.text()
     finally:
         dialog.deleteLater()
         qapp.processEvents()
 
 
+@pytest.mark.parametrize(
+    ("provider_id", "base_url", "options"),
+    [
+        (
+            DEEPSEEK_API_PROVIDER,
+            "https://api.deepseek.com",
+            {
+                "model": "deepseek-v4-flash",
+                "extra_body": {"thinking": {"type": "disabled"}},
+            },
+        ),
+        (
+            OPENROUTER_API_PROVIDER,
+            "https://openrouter.ai/api/v1",
+            {"model": "openai/gpt-5.6-luna"},
+        ),
+    ],
+)
 def test_create_api_client_uses_selected_provider_endpoint(
-    app, monkeypatch
+    app, monkeypatch, provider_id, base_url, options
 ):
     calls = []
     http_client_calls = []
@@ -342,13 +364,13 @@ def test_create_api_client_uses_selected_provider_endpoint(
     monkeypatch.setattr(app, "DefaultHttpxClient", fake_http_client)
     monkeypatch.setattr(app, "Limits", fake_limits)
 
-    result = app.create_api_client("deepseek-test-key", DEEPSEEK_API_PROVIDER)
+    result = app.create_api_client("provider-test-key", provider_id)
 
     assert result is expected_client
     assert calls == [
         {
-            "api_key": "deepseek-test-key",
-            "base_url": "https://api.deepseek.com",
+            "api_key": "provider-test-key",
+            "base_url": base_url,
             "timeout": app.REQUEST_TIMEOUT_SECONDS,
             "max_retries": 0,
             "http_client": expected_http_client,
@@ -367,27 +389,35 @@ def test_create_api_client_uses_selected_provider_endpoint(
             "limits": expected_limits,
         }
     ]
-    provider = get_api_provider(DEEPSEEK_API_PROVIDER)
+    provider = get_api_provider(provider_id)
+    assert app.chat_completion_options(provider) == options
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "model"),
+    [
+        (DEFAULT_API_PROVIDER, "gpt-5.4-nano"),
+        (OPENROUTER_API_PROVIDER, "openai/gpt-5.6-luna"),
+    ],
+)
+def test_streaming_options_request_sse_without_redundant_reasoning(
+    app, provider_id, model
+):
+    provider = get_api_provider(provider_id)
+
     assert app.chat_completion_options(provider) == {
-        "model": "deepseek-v4-flash",
-        "extra_body": {"thinking": {"type": "disabled"}},
-    }
-
-
-def test_streaming_options_request_sse_without_redundant_reasoning(app):
-    provider = get_api_provider(DEFAULT_API_PROVIDER)
-
-    assert app.chat_completion_options(provider) == {
-        "model": "gpt-5.4-nano",
+        "model": model,
     }
     assert app.chat_completion_options(provider, streaming=True) == {
-        "model": "gpt-5.4-nano",
+        "model": model,
         "extra_headers": {"Accept": "text/event-stream"},
     }
 
 
-def test_streaming_options_reach_the_wire_as_mobile_compatible_sse(app):
+@pytest.mark.parametrize("provider_id", [DEFAULT_API_PROVIDER, OPENROUTER_API_PROVIDER])
+def test_streaming_options_reach_the_wire_as_mobile_compatible_sse(app, provider_id):
     captured = {}
+    provider = get_api_provider(provider_id)
 
     def handler(request):
         captured["url"] = str(request.url)
@@ -402,7 +432,7 @@ def test_streaming_options_reach_the_wire_as_mobile_compatible_sse(app):
     http_client = httpx.Client(transport=httpx.MockTransport(handler))
     api_client = SdkOpenAI(
         api_key="sk-wire-contract-test",
-        base_url="https://api.gptsapi.net/v1",
+        base_url=provider.base_url,
         max_retries=0,
         http_client=http_client,
     )
@@ -411,7 +441,7 @@ def test_streaming_options_reach_the_wire_as_mobile_compatible_sse(app):
             messages=[{"role": "user", "content": "hello"}],
             stream=True,
             **app.chat_completion_options(
-                get_api_provider(DEFAULT_API_PROVIDER),
+                provider,
                 streaming=True,
             ),
         )
@@ -420,32 +450,45 @@ def test_streaming_options_reach_the_wire_as_mobile_compatible_sse(app):
         api_client.close()
 
     assert captured == {
-        "url": "https://api.gptsapi.net/v1/chat/completions",
+        "url": provider.base_url + "/chat/completions",
         "accept": "text/event-stream",
         "body": {
             "messages": [{"role": "user", "content": "hello"}],
-            "model": "gpt-5.4-nano",
+            "model": provider.model,
             "stream": True,
         },
     }
 
 
-def test_initialize_deepseek_credentials_uses_separate_sources(
+@pytest.mark.parametrize(
+    ("provider_id", "environment_variable", "credential_target"),
+    [
+        (DEEPSEEK_API_PROVIDER, "DEEPSEEK_API_KEY", "SnipDoTranslate/DeepSeek"),
+        (OPENROUTER_API_PROVIDER, "OPENROUTER_API_KEY", "SnipDoTranslate/OpenRouter"),
+    ],
+)
+def test_initialize_provider_credentials_uses_separate_sources(
     app,
     monkeypatch,
     tmp_path: Path,
+    provider_id,
+    environment_variable,
+    credential_target,
 ):
     store = object()
     resolutions = []
     configurations = []
     events = []
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-env-key")
+    monkeypatch.setenv("GPTSAPI_API_KEY", "wrong-default-provider-key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "wrong-other-provider-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "wrong-other-provider-key")
+    monkeypatch.setenv(environment_variable, "selected-provider-env-key")
     monkeypatch.setattr(
         app,
         "create_credential_store",
         lambda provider: (
             store
-            if provider == DEEPSEEK_API_PROVIDER
+            if provider == provider_id
             else pytest.fail("unexpected provider")
         ),
     )
@@ -453,7 +496,7 @@ def test_initialize_deepseek_credentials_uses_separate_sources(
     def fake_resolve(environment_key, selected_store, legacy_dirs):
         resolutions.append((environment_key, selected_store, legacy_dirs))
         return SimpleNamespace(
-            key="deepseek-env-key",
+            key="selected-provider-env-key",
             source="environment",
             persisted=False,
             migrated=False,
@@ -469,23 +512,23 @@ def test_initialize_deepseek_credentials_uses_separate_sources(
 
     result = app.initialize_credentials(
         _app_paths(tmp_path),
-        DEEPSEEK_API_PROVIDER,
+        provider_id,
     )
 
     assert result is store
-    assert resolutions == [("deepseek-env-key", store, ())]
+    assert resolutions == [("selected-provider-env-key", store, ())]
     assert configurations == [
-        ("deepseek-env-key", DEEPSEEK_API_PROVIDER)
+        ("selected-provider-env-key", provider_id)
     ]
     assert events == [app.AppEvent.CREDENTIAL_AVAILABLE]
-    assert get_api_provider(DEEPSEEK_API_PROVIDER).credential_target == (
-        "SnipDoTranslate/DeepSeek"
-    )
+    assert get_api_provider(provider_id).credential_target == credential_target
 
 
+@pytest.mark.parametrize("provider_id", [DEFAULT_API_PROVIDER, OPENROUTER_API_PROVIDER])
 def test_translation_thread_keeps_creation_time_api_runtime(
     app,
     qapp,
+    provider_id,
 ):
     old_calls = []
     new_calls = []
@@ -504,14 +547,14 @@ def test_translation_thread_keeps_creation_time_api_runtime(
     new_client = SimpleNamespace(
         chat=SimpleNamespace(completions=CompletionsStub(new_calls))
     )
-    app.activate_api_runtime(DEFAULT_API_PROVIDER, old_client)
+    app.activate_api_runtime(provider_id, old_client)
     thread = app.TranslationThread("runtime snapshot")
     app.activate_api_runtime(DEEPSEEK_API_PROVIDER, new_client)
 
     thread.run()
 
     assert len(old_calls) == 1
-    assert old_calls[0]["model"] == "gpt-5.4-nano"
+    assert old_calls[0]["model"] == get_api_provider(provider_id).model
     assert old_calls[0]["extra_headers"] == {"Accept": "text/event-stream"}
     assert "reasoning_effort" not in old_calls[0]
     assert "extra_body" not in old_calls[0]
@@ -773,9 +816,11 @@ def test_manual_mode_changes_do_not_rerun_empty_text(app):
     assert starts == []
 
 
+@pytest.mark.parametrize("provider_id", [DEFAULT_API_PROVIDER, OPENROUTER_API_PROVIDER])
 def test_translation_thread_streams_markdown_over_explicit_sse(
     app,
     qapp,
+    provider_id,
 ):
     calls = []
 
@@ -799,7 +844,7 @@ def test_translation_thread_streams_markdown_over_explicit_sse(
     api_client = SimpleNamespace(
         chat=SimpleNamespace(completions=CompletionsStub())
     )
-    app.activate_api_runtime(DEFAULT_API_PROVIDER, api_client)
+    app.activate_api_runtime(provider_id, api_client)
     thread = app.TranslationThread("# Title\n\n- Item", "auto")
     chunks = []
     outcomes = []
@@ -812,8 +857,10 @@ def test_translation_thread_streams_markdown_over_explicit_sse(
     assert outcomes == [(True, "")]
     assert len(calls) == 1
     assert calls[0]["stream"] is True
+    assert calls[0]["model"] == get_api_provider(provider_id).model
     assert calls[0]["extra_headers"] == {"Accept": "text/event-stream"}
     assert "reasoning_effort" not in calls[0]
+    assert "extra_body" not in calls[0]
     prompt = calls[0]["messages"][0]["content"]
     assert "请保留标题层级、段落、列表、表格、链接和代码块结构" in prompt
     assert "翻译成地道的简体中文" in prompt
@@ -1630,28 +1677,30 @@ def test_apply_settings_rejects_duplicate_shortcuts_before_registration(
 
 @pytest.mark.parametrize(
     ("stored_key", "expects_client"),
-    [("deepseek-key", True), ("", False)],
+    [("selected-provider-key", True), ("", False)],
 )
+@pytest.mark.parametrize("provider_id", [DEEPSEEK_API_PROVIDER, OPENROUTER_API_PROVIDER])
 def test_switching_provider_uses_only_the_target_provider_credential(
     app,
     monkeypatch,
     tmp_path: Path,
     stored_key: str,
     expects_client: bool,
+    provider_id: str,
 ):
     old_client = object()
-    deepseek_client = object()
+    selected_client = object()
     requested_clients = []
     events = []
 
-    class DeepSeekStoreStub:
+    class SelectedStoreStub:
         def read(self):
             return stored_key
 
-    target_store = DeepSeekStoreStub()
+    target_store = SelectedStoreStub()
     candidate = AppSettings(
         shortcut=mouse_shortcut("xbutton1"),
-        api_provider=DEEPSEEK_API_PROVIDER,
+        api_provider=provider_id,
     )
     manager = _ShortcutManagerStub()
     window, _refreshes = _settings_window_stub(
@@ -1661,19 +1710,20 @@ def test_switching_provider_uses_only_the_target_provider_credential(
         credential_store=object(),
     )
     app.activate_api_runtime(DEFAULT_API_PROVIDER, old_client)
+    monkeypatch.setenv("GPTSAPI_API_KEY", "wrong-default-provider-key")
     monkeypatch.setattr(
         app,
         "create_credential_store",
         lambda provider: (
             target_store
-            if provider == DEEPSEEK_API_PROVIDER
+            if provider == provider_id
             else pytest.fail("unexpected provider")
         ),
     )
 
     def fake_create_client(key, provider):
         requested_clients.append((key, provider))
-        return deepseek_client
+        return selected_client
 
     monkeypatch.setattr(app, "create_api_client", fake_create_client)
     monkeypatch.setattr(app, "record_event", events.append)
@@ -1682,11 +1732,12 @@ def test_switching_provider_uses_only_the_target_provider_credential(
 
     assert result is True
     assert window.app_settings == candidate
+    assert load_settings(window.settings_path) == candidate
     assert window.credential_store is target_store
-    assert app.api_runtime.provider.provider_id == DEEPSEEK_API_PROVIDER
-    assert app.client is (deepseek_client if expects_client else None)
+    assert app.api_runtime.provider.provider_id == provider_id
+    assert app.client is (selected_client if expects_client else None)
     assert requested_clients == (
-        [("deepseek-key", DEEPSEEK_API_PROVIDER)]
+        [("selected-provider-key", provider_id)]
         if expects_client
         else []
     )
@@ -1742,11 +1793,14 @@ def test_provider_switch_is_deferred_while_cancelled_thread_is_still_running(
     assert warnings and warnings[-1][1] == "接口暂未切换"
 
 
-def test_mismatched_credential_target_is_not_reused(app, monkeypatch):
+@pytest.mark.parametrize("provider_id", [DEEPSEEK_API_PROVIDER, OPENROUTER_API_PROVIDER])
+def test_mismatched_credential_target_is_not_reused(app, monkeypatch, provider_id):
     wrong_store = SimpleNamespace(target_name="SnipDoTranslate/GPTSAPI")
-    correct_store = SimpleNamespace(target_name="SnipDoTranslate/DeepSeek")
+    correct_store = SimpleNamespace(
+        target_name=get_api_provider(provider_id).credential_target
+    )
     window = SimpleNamespace(
-        app_settings=AppSettings(api_provider=DEEPSEEK_API_PROVIDER),
+        app_settings=AppSettings(api_provider=provider_id),
         credential_store=wrong_store,
     )
     monkeypatch.setattr(
@@ -1754,14 +1808,14 @@ def test_mismatched_credential_target_is_not_reused(app, monkeypatch):
         "create_credential_store",
         lambda provider: (
             correct_store
-            if provider == DEEPSEEK_API_PROVIDER
+            if provider == provider_id
             else pytest.fail("unexpected provider")
         ),
     )
 
     selected = app.credential_store_for_window(
         window,
-        DEEPSEEK_API_PROVIDER,
+        provider_id,
     )
 
     assert selected is correct_store

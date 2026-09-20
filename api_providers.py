@@ -7,6 +7,7 @@ from typing import Mapping
 
 DEFAULT_API_PROVIDER = "gptsapi"
 DEEPSEEK_API_PROVIDER = "deepseek"
+OPENROUTER_API_PROVIDER = "openrouter"
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,16 @@ _PROVIDER_SPECS = (
         credential_target="SnipDoTranslate/DeepSeek",
         supports_vision=False,
         disable_thinking=True,
+    ),
+    ApiProviderSpec(
+        provider_id=OPENROUTER_API_PROVIDER,
+        display_name="OpenRouter",
+        short_name="OpenRouter",
+        base_url="https://openrouter.ai/api/v1",
+        model="openai/gpt-5.6-luna",
+        environment_variable="OPENROUTER_API_KEY",
+        credential_target="SnipDoTranslate/OpenRouter",
+        supports_vision=True,
     ),
 )
 
@@ -81,6 +92,7 @@ __all__ = [
     "API_PROVIDER_IDS",
     "DEFAULT_API_PROVIDER",
     "DEEPSEEK_API_PROVIDER",
+    "OPENROUTER_API_PROVIDER",
     "ApiProviderSpec",
     "api_provider_options",
     "chat_completion_options",
