@@ -262,7 +262,7 @@ def test_default_main_settings_button_and_dialog_display_xbutton1(
     )
     try:
         assert app.APP_DISPLAY_NAME == "SnipDo Translate"
-        assert window.windowTitle() == app.APP_DISPLAY_NAME
+        assert window.windowTitle() == f"{app.APP_DISPLAY_NAME} {app.APP_VERSION}"
         assert window.app_settings == DEFAULT_SETTINGS
         assert window.btn_settings.text() == "XButton1"
         assert dialog.shortcut_button.text() == "XButton1"

@@ -1,13 +1,119 @@
 from __future__ import annotations
 
+import os
 import shutil
 import struct
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PyQt6.QtGui import QImage
+
+from app_version import APP_VERSION, WINDOWS_VERSION
+
+
+def _spec_version_resource(project_root, monkeypatch, build_mode):
+    if sys.platform != "win32":
+        pytest.skip("Windows version resources require Windows")
+    hooks = pytest.importorskip("PyInstaller.utils.hooks")
+    monkeypatch.setattr(hooks, "collect_submodules", lambda _package: [])
+    monkeypatch.setenv("SNIPDO_BUILD_MODE", build_mode)
+    # Executing the spec adjusts dependency-search PATH for its build process.
+    # Keep that change scoped to this test process's monkeypatch lifetime.
+    monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
+    executable_arguments = []
+    namespace = {
+        "SPECPATH": str(project_root),
+        "Analysis": lambda *_args, **_kwargs: SimpleNamespace(
+            pure=[], scripts=[], binaries=[], datas=[]
+        ),
+        "PYZ": lambda *_args: None,
+        "EXE": lambda *_args, **kwargs: executable_arguments.append(kwargs),
+        "COLLECT": lambda *_args, **_kwargs: None,
+    }
+    spec = (project_root / "SnipDoTranslate.spec").read_text(encoding="utf-8")
+    exec(compile(spec, "SnipDoTranslate.spec", "exec"), namespace)
+    assert len(executable_arguments) == 1
+    return executable_arguments[0]["version"]
+
+
+def test_spec_resolves_windows_libraries_before_unrelated_path_dlls(
+    project_root, monkeypatch
+):
+    original_path = os.environ.get("PATH", "")
+    _spec_version_resource(project_root, monkeypatch, "onedir")
+    assert os.environ["PATH"].split(os.pathsep)[0] == str(
+        Path(os.environ["SystemRoot"]) / "System32"
+    )
+    assert os.environ["PATH"].endswith(os.pathsep + original_path)
+
+
+@pytest.mark.parametrize("build_mode", ["onedir", "onefile"])
+def test_spec_serializes_current_version_for_each_build_mode(
+    project_root, monkeypatch, build_mode
+):
+    resource = _spec_version_resource(project_root, monkeypatch, build_mode)
+    from PyInstaller.utils.win32.versioninfo import VSVersionInfo
+
+    decoded = VSVersionInfo()
+    decoded.fromRaw(resource.toRaw())
+    major, minor, patch, revision = WINDOWS_VERSION
+    for prefix in ("file", "product"):
+        assert getattr(decoded.ffi, prefix + "VersionMS") == (major << 16) | minor
+        assert getattr(decoded.ffi, prefix + "VersionLS") == (patch << 16) | revision
+    strings = {item.name: item.val for item in decoded.kids[0].kids[0].kids}
+    assert strings["FileVersion"] == APP_VERSION
+    assert strings["ProductVersion"] == APP_VERSION
+    assert strings["OriginalFilename"] == "SnipDoTranslate.exe"
+    assert strings["ProductName"] == "SnipDo Translate"
+
+
+@pytest.mark.parametrize("mismatch", ["FileVersion", "ProductVersion", "fixed_file", "fixed_product"])
+def test_artifact_checker_rejects_stale_version_metadata(
+    project_root, monkeypatch, tmp_path, mismatch
+):
+    resource = _spec_version_resource(project_root, monkeypatch, "onefile")
+    import PyInstaller
+    from PyInstaller.utils.win32.versioninfo import write_version_info_to_executable
+
+    powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("PowerShell is required to run the artifact checker")
+    if not (project_root / ".venv" / "Scripts" / "python.exe").is_file():
+        pytest.skip("Artifact checker requires the build virtual environment")
+    if mismatch.startswith("fixed_"):
+        field = "fileVersionLS" if mismatch == "fixed_file" else "productVersionLS"
+        setattr(resource.ffi, field, getattr(resource.ffi, field) + 1)
+        expected_error = "Executable fixed file and product versions must both be"
+    else:
+        for item in resource.kids[0].kids[0].kids:
+            if item.name == mismatch:
+                item.val = "0.0.0"
+        expected_error = "Executable FileVersion and ProductVersion must both be"
+    bootloader = Path(PyInstaller.PACKAGEPATH) / "bootloader" / PyInstaller.PLATFORM / "runw.exe"
+    artifact = tmp_path / "stale.exe"
+    shutil.copyfile(bootloader, artifact)
+    write_version_info_to_executable(str(artifact), resource)
+
+    result = subprocess.run(
+        [
+            powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", str(project_root / "scripts" / "check_artifact.ps1"),
+            "-ExePath", str(artifact),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert expected_error in result.stdout + result.stderr
+    assert not artifact.with_suffix(".exe.sha256").exists()
 
 
 def test_spec_supports_windowed_onedir_and_onefile(project_root: Path):

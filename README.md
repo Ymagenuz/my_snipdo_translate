@@ -2,6 +2,24 @@
 
 SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OCR 工具。正式交付物是单文件 `SnipDoTranslate.exe`；目标电脑不需要安装 Python、PyQt6、OpenAI SDK 或项目依赖。
 
+## 版本与更新提醒
+
+- 应用版本统一定义在 `app_version.py`，当前从 `12.0.0` 开始。主窗口标题、设置标题、托盘“关于”菜单及打包 EXE 的 Windows 文件属性均显示版本。
+- 正常启动主实例 5 秒后，程序会在后台检查本项目的 [GitHub Releases](https://github.com/Ymagenuz/my_snipdo_translate/releases)。自动检查每台设备最多每天一次；保持运行时也会每天检查。托盘菜单中的“检查更新…”可随时手动检查。
+- 只有正式版版本号更高、且已上传有效的 `SnipDoTranslate.exe` 附件时才会提示。草稿、预发布版本、只有源码的 Release 和旧版本均不会提示。
+- 提醒提供“打开下载页面”“稍后”和“跳过此版本”。“稍后”在本次运行期间不重复提醒同一版本；“跳过此版本”会在本机保存，手动检查仍可查看被跳过的版本。
+- 更新时，在下载页面下载新版 EXE，从托盘菜单彻底退出当前程序，再替换旧 EXE。用户数据与凭据保存在独立的用户目录和 Windows 凭据管理器中，替换 EXE 会保留这些数据。程序只提醒并打开下载页面，不会自动下载、替换或运行新程序。
+- 检查失败或设备离线时，后台检查保持安静；手动检查会显示失败提示。网络检查异步执行且有超时，不阻塞翻译。检查只向 GitHub 请求公开的发行信息，不发送原文、译文、历史记录或 API Key；请求的 User-Agent 包含应用版本。
+- 没有更新检查功能的旧 EXE 无法收到这些提醒，需要先手动安装一次包含此功能的版本。此后，在其他设备上运行该版本即可收到未来发布的更新提醒。
+
+发布新版本时：
+
+1. 修改 `app_version.py` 中的 `APP_VERSION`，采用 `主版本.次版本.修订版本` 格式，例如 `12.0.1`，每段为 `0`–`65535` 的整数。
+2. 运行下方 Windows 构建流程，得到已校验的 `dist\SnipDoTranslate.exe` 和 SHA-256 文件；构建检查会验证 EXE 中的版本资源与源码一致。
+3. 在本项目 GitHub Releases 中创建对应标签（例如 `v12.0.1`）的正式 Release，上传 `SnipDoTranslate.exe` 和 `SnipDoTranslate.exe.sha256`，填写更新说明，再发布并标记为最新版本。只推送代码或创建 Git 标签不会触发更新提醒。
+
+所有设备共用这个公开的发布源，无需搭建推送服务器或在设备间直接连接。EXE 内置固定的本项目检查地址；无需 GitHub Token。
+
 ## 安装与首次启动
 
 1. 将 `SnipDoTranslate.exe` 复制到一个固定目录，例如 `C:\Tools\SnipDoTranslate\`。
@@ -88,6 +106,7 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 %LOCALAPPDATA%\SnipDoTranslate\
   settings.json
   translation_history.json
+  update_state.json
   logs\
     SnipDoTranslate.log
     SnipDoTranslate.log.1 ... .3
@@ -95,6 +114,7 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 
 - `translation_history.json` 保存最多 50 条历史记录，可能包含原文和译文，请按敏感用户数据对待。
 - `settings.json` 只保存工具启用状态、翻译快捷键、显示窗口快捷键和所选 API 接口，不保存 API Key；旧版配置会自动补入默认显示窗口快捷键。
+- `update_state.json` 只保存上次检查更新的时间和用户选择跳过的版本；删除后会恢复默认检查行为。
 - 公式排版库可能创建只含字体索引的缓存，不包含原文或译文；单文件 EXE 使用退出时清理的隔离临时目录，源码模式可能使用 `%LOCALAPPDATA%\SnipDoTranslate\matplotlib-cache\`。
 - 日志是固定事件组成的 UTF-8 JSON 行，不记录原文、译文、OCR 内容、API Key、完整路径或异常正文。
 - 日志单文件最多 512 KiB，并保留 3 个轮转备份，总上限约 2 MiB。

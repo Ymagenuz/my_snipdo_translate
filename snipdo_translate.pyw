@@ -35,6 +35,8 @@ from app_cli import (
     prepare_request,
 )
 from app_logging import AppEvent, PrivacyEventLogger, configure_app_logging
+from app_update_ui import UpdateNotifications
+from app_version import APP_VERSION
 from app_settings import (
     DEFAULT_SETTINGS,
     SETTINGS_FILE_NAME,
@@ -1662,7 +1664,7 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(22, 20, 22, 18)
         layout.setSpacing(14)
 
-        title = QLabel("翻译工具设置")
+        title = QLabel(f"翻译工具设置 · v{APP_VERSION}")
         title.setStyleSheet("color: #303133; font-size: 18px; font-weight: 700;")
         layout.addWidget(title)
 
@@ -2254,6 +2256,7 @@ class TranslationWindow(QWidget):
 
         self.init_ui()
         self.setup_result_format()
+        self.update_notifications = UpdateNotifications(self)
         self.setup_tray_icon()
         self.setup_translation_shortcut()
         self.apply_manual_mode_ui()
@@ -2351,6 +2354,17 @@ class TranslationWindow(QWidget):
 
         tray_menu.addSeparator()
 
+        self.check_updates_action = QAction("检查更新…", self)
+        self.check_updates_action.triggered.connect(
+            lambda _checked=False: self.update_notifications.check_manually()
+        )
+        tray_menu.addAction(self.check_updates_action)
+
+        about_action = QAction(f"关于 SnipDo Translate（{APP_VERSION}）", self)
+        about_action.triggered.connect(self.show_about)
+        tray_menu.addAction(about_action)
+        tray_menu.addSeparator()
+
         quit_action = QAction("彻底退出", self)
         quit_action.triggered.connect(self.quit_app)
         tray_menu.addAction(quit_action)
@@ -2359,6 +2373,14 @@ class TranslationWindow(QWidget):
         self.tray_icon.activated.connect(self.on_tray_activated)
         self.tray_icon.messageClicked.connect(self.on_tray_message_clicked)
         self.tray_icon.show()
+
+    def show_about(self):
+        QMessageBox.about(
+            self,
+            f"关于 {APP_DISPLAY_NAME}",
+            f"{APP_DISPLAY_NAME}\n版本 {APP_VERSION}\n\n"
+            "自动检查新版本，也可从托盘菜单选择“检查更新”。",
+        )
 
     def refresh_notification_visuals(self):
         if self._base_app_icon.isNull() or not hasattr(self, "tray_icon"):
@@ -2956,7 +2978,7 @@ class TranslationWindow(QWidget):
 
     # ---------- UI ----------
     def init_ui(self):
-        self.setWindowTitle(APP_DISPLAY_NAME)
+        self.setWindowTitle(f"{APP_DISPLAY_NAME} {APP_VERSION}")
         self.setMinimumSize(NORMAL_WINDOW_WIDTH, NORMAL_WINDOW_HEIGHT)
         self.resize(NORMAL_WINDOW_WIDTH, NORMAL_WINDOW_HEIGHT)
         self.setStyleSheet("background-color: #F5F7FA;")
@@ -5023,7 +5045,9 @@ def main(argv: list[str] | None = None) -> int:
             store,
             initial_settings=startup_settings,
         )
+        app.setApplicationVersion(APP_VERSION)
         app.aboutToQuit.connect(window.shutdown_translation_shortcut)
+        app.aboutToQuit.connect(window.update_notifications.stop)
         if server.failed or not server.running:
             raise RuntimeError("IPC server stopped during startup")
         bridge.bind(window)
@@ -5044,6 +5068,7 @@ def main(argv: list[str] | None = None) -> int:
         allow_key_prompt=True,
     )
     settle_source_file(prepared, accepted=initial_result.accepted)
+    window.update_notifications.start()
 
     exit_code = 1
     try:

@@ -81,6 +81,10 @@ if (![System.Environment]::Is64BitProcess) {
 Push-Location $root
 $previousBuildMode = [System.Environment]::GetEnvironmentVariable("SNIPDO_BUILD_MODE", "Process")
 try {
+    # pytest creates its basetemp directory, but requires its parent to exist.
+    Assert-GeneratedPath -Path $buildRoot
+    Assert-GeneratedPath -Path $pytestTemp
+    [void](New-Item -ItemType Directory -Path $buildRoot -Force)
     # Source tests are intentionally the first executable build gate. They are offline.
     Invoke-NativeCommand -FilePath $python -Arguments @(
         "-m", "pytest", "-q", "--basetemp", $pytestTemp

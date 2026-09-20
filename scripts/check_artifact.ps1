@@ -83,6 +83,27 @@ try {
     $stream.Dispose()
 }
 
+$root = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
+$python = Join-Path $root ".venv\Scripts\python.exe"
+$versionSource = Join-Path $root "app_version.py"
+if (!(Test-Path -LiteralPath $python -PathType Leaf)) {
+    throw "The worktree virtual-environment Python was not found: $python"
+}
+$expectedVersion = & $python -I -c "import runpy, sys; print(runpy.run_path(sys.argv[1])['APP_VERSION'])" $versionSource
+if ($LASTEXITCODE -ne 0 -or $expectedVersion -notmatch '^\d+\.\d+\.\d+$') {
+    throw "Could not read the release version from app_version.py"
+}
+$versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($resolvedExe)
+if ($versionInfo.FileVersion -ne $expectedVersion -or $versionInfo.ProductVersion -ne $expectedVersion) {
+    throw "Executable FileVersion and ProductVersion must both be $expectedVersion (found '$($versionInfo.FileVersion)' and '$($versionInfo.ProductVersion)')"
+}
+$expectedWindowsVersion = "$expectedVersion.0"
+$fileVersion = "{0}.{1}.{2}.{3}" -f $versionInfo.FileMajorPart, $versionInfo.FileMinorPart, $versionInfo.FileBuildPart, $versionInfo.FilePrivatePart
+$productVersion = "{0}.{1}.{2}.{3}" -f $versionInfo.ProductMajorPart, $versionInfo.ProductMinorPart, $versionInfo.ProductBuildPart, $versionInfo.ProductPrivatePart
+if ($fileVersion -ne $expectedWindowsVersion -or $productVersion -ne $expectedWindowsVersion) {
+    throw "Executable fixed file and product versions must both be $expectedWindowsVersion (found '$fileVersion' and '$productVersion')"
+}
+
 $signature = Get-AuthenticodeSignature -LiteralPath $resolvedExe
 if ($signature.Status.ToString() -ne "NotSigned") {
     throw "Expected an unsigned executable, but Authenticode status is $($signature.Status)"
@@ -141,6 +162,8 @@ $hashLine = "$hash  $artifactName$([System.Environment]::NewLine)"
     Bytes = (Get-Item -LiteralPath $resolvedExe).Length
     Format = "PE32+"
     Machine = "AMD64"
+    FileVersion = $versionInfo.FileVersion
+    ProductVersion = $versionInfo.ProductVersion
     Signature = "NotSigned"
     SelfTest = "offline:passed"
     SHA256 = $hash
