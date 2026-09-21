@@ -146,7 +146,12 @@ class UpdateChecker(QObject):
         if reply is not self._reply:
             return
         remaining = MAX_RESPONSE_BYTES - len(self._body)
-        self._body.extend(bytes(reply.read(remaining + 1)))
+        chunk = reply.read(remaining + 1)
+        # PyQt can return None once readyRead has drained the response and
+        # finished asks us to collect any final bytes. An exception escaping
+        # this Qt signal callback would terminate the application.
+        if chunk:
+            self._body.extend(bytes(chunk))
         if len(self._body) > MAX_RESPONSE_BYTES:
             self._fail(reply)
 

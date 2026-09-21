@@ -1,5 +1,11 @@
 import copy
+import gzip
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import subprocess
+import sys
+import textwrap
+import threading
 
 import pytest
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -119,6 +125,10 @@ class FakeReply(QObject):
         self.read_buffer_size = value
 
     def read(self, amount):
+        # PyQt6 QNetworkReply.read() returns None at EOF, not an empty bytes
+        # object. Keep the fake faithful to the native binding's contract.
+        if not self.pending:
+            return None
         chunk = self.pending[:amount]
         del self.pending[:amount]
         return bytes(chunk)
@@ -226,6 +236,95 @@ def test_streamed_response_is_assembled(checker):
         reply.readyRead.emit()
     reply.finished.emit()
     assert checker.results[0].version == "13.0.0"
+
+
+def test_finished_after_ready_read_has_already_drained_body(checker):
+    checker.check()
+    reply = checker._reply
+    reply.pending.extend(json.dumps(release_payload()).encode())
+    reply.readyRead.emit()
+    assert reply.read(1) is None
+    assert checker.results == []
+    reply.finished.emit()
+    assert checker.results == [ReleaseInfo(
+        "13.0.0", f"{app_updates.REPOSITORY_URL}/releases/tag/v13.0.0"
+    )]
+    assert checker.failures == []
+    assert not checker.is_checking
+
+
+def test_empty_success_response_fails_cleanly_at_eof(checker):
+    checker.check()
+    reply = checker._reply
+    assert reply.read(1) is None
+    reply.readyRead.emit()
+    reply.finished.emit()
+    assert checker.results == []
+    assert checker.failures == [app_updates.CHECK_FAILED_MESSAGE]
+    assert not checker.is_checking
+
+
+def test_real_qt_reply_finishes_after_ready_read_without_crashing(project_root):
+    """Isolate fatal Qt slot errors while exercising the real reply binding."""
+    # GitHub compresses responses. Qt's decompression reader returns None
+    # after readyRead drains this body; uncompressed HTTP may instead return b"".
+    body = gzip.compress(json.dumps(release_payload("v99.0.0")).encode())
+
+    class ReleaseHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    script = textwrap.dedent("""
+        import json
+        import sys
+        from PyQt6.QtCore import QCoreApplication, QTimer
+        from PyQt6.QtNetwork import QNetworkProxy
+        import app_updates
+
+        app = QCoreApplication([])
+        app_updates.LATEST_RELEASE_API = sys.argv[1]
+        checker = app_updates.UpdateChecker()
+        checker._manager.setProxy(QNetworkProxy(QNetworkProxy.ProxyType.NoProxy))
+        results, failures, drained_reads = [], [], []
+        checker.completed.connect(lambda value: (results.append(value), app.quit()))
+        checker.failed.connect(lambda value: (failures.append(value), app.quit()))
+        assert checker.check()
+        reply = checker._reply
+        reply.readyRead.connect(lambda: drained_reads.append(reply.bytesAvailable()))
+        QTimer.singleShot(5000, lambda: app.exit(2))
+        exit_code = app.exec()
+        checker.stop()
+        assert exit_code == 0, 'Update check timed out'
+        assert not failures, failures
+        assert len(results) == 1 and results[0].version == '99.0.0', results
+        assert drained_reads and all(size == 0 for size in drained_reads), drained_reads
+        print(json.dumps({'version': results[0].version, 'drained': True}))
+    """)
+    with ThreadingHTTPServer(("127.0.0.1", 0), ReleaseHandler) as server:
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", script,
+                 f"http://127.0.0.1:{server.server_port}/latest"],
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        finally:
+            server.shutdown()
+            server_thread.join(timeout=2)
+    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+    assert json.loads(result.stdout) == {"version": "99.0.0", "drained": True}
 
 
 def test_404_without_any_releases_is_not_an_error(checker):
