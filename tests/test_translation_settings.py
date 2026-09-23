@@ -18,6 +18,8 @@ from api_providers import (
     DEFAULT_API_PROVIDER,
     DEEPSEEK_API_PROVIDER,
     OPENROUTER_API_PROVIDER,
+    OPENAI_COMPATIBLE_API_PROVIDER,
+    ApiProviderConfig,
     get_api_provider,
 )
 from app_settings import (
@@ -235,7 +237,7 @@ def _settings_window_stub(
     return window, refreshes
 
 
-def test_default_main_settings_button_and_dialog_display_xbutton1(
+def test_main_settings_gear_and_dialog_display_shortcuts(
     app, monkeypatch, qapp, tmp_path: Path
 ):
     class TrayStub:
@@ -265,7 +267,10 @@ def test_default_main_settings_button_and_dialog_display_xbutton1(
         assert app.APP_DISPLAY_NAME == "SnipDo Translate"
         assert window.windowTitle() == f"{app.APP_DISPLAY_NAME} {app.APP_VERSION}"
         assert window.app_settings == DEFAULT_SETTINGS
-        assert window.btn_settings.text() == "XButton1"
+        assert window.btn_settings.text() == ""
+        assert not window.btn_settings.icon().isNull()
+        assert window.btn_settings.accessibleName() == "设置"
+        assert "XButton1" in window.btn_settings.toolTip()
         assert dialog.shortcut_button.text() == "XButton1"
         assert dialog.show_window_shortcut_button.text() == "Ctrl+Alt+W"
         assert dialog.candidate_settings() == DEFAULT_SETTINGS
@@ -300,6 +305,7 @@ def test_settings_dialog_lists_api_providers_and_returns_stable_id(
             DEFAULT_API_PROVIDER,
             DEEPSEEK_API_PROVIDER,
             OPENROUTER_API_PROVIDER,
+            OPENAI_COMPATIBLE_API_PROVIDER,
         ]
         assert dialog.selected_api_provider() == DEFAULT_API_PROVIDER
 
@@ -1559,6 +1565,70 @@ def test_apply_settings_persists_successful_configuration(
     assert load_settings(settings_path) == candidate
     assert window.app_settings == candidate
     assert refreshes == [settings_path]
+
+
+def test_changing_model_reuses_client_and_updates_worker_snapshot(
+    app, monkeypatch, tmp_path, qapp,
+):
+    old_client = object()
+    app.activate_api_runtime(DEFAULT_API_PROVIDER, old_client)
+    old_worker = app.TranslationThread("Existing request")
+    config = ApiProviderConfig(
+        get_api_provider(DEFAULT_API_PROVIDER).base_url,
+        "my-selected-model", False, True,
+    )
+    candidate = replace(DEFAULT_SETTINGS, api_configs={DEFAULT_API_PROVIDER: config})
+    window, _ = _settings_window_stub(
+        tmp_path / "settings.json", DEFAULT_SETTINGS, _ShortcutManagerStub(),
+    )
+    monkeypatch.setattr(app, "create_credential_store", lambda _provider: None)
+    monkeypatch.setattr(app, "create_api_client", lambda *_a, **_kw: pytest.fail("model changes do not need a new client"))
+
+    assert app.TranslationWindow.apply_settings(window, candidate)
+
+    new_worker = app.TranslationThread("Next request")
+    assert app.client is old_client
+    assert old_worker.runtime.provider.model == get_api_provider(DEFAULT_API_PROVIDER).model
+    assert new_worker.runtime.provider == candidate.resolved_provider()
+    assert app.api_provider_for_window(window).supports_vision is False
+    assert load_settings(window.settings_path) == candidate
+
+
+def test_changing_endpoint_rebuilds_client_with_saved_config(
+    app, monkeypatch, tmp_path,
+):
+    old_client, new_client = object(), object()
+    app.activate_api_runtime(DEFAULT_API_PROVIDER, old_client)
+    config = ApiProviderConfig("https://other.example/v1", "other-model", True)
+    candidate = replace(DEFAULT_SETTINGS, api_configs={DEFAULT_API_PROVIDER: config})
+    store = SimpleNamespace(target_name="SnipDoTranslate/GPTSAPI", read=lambda: "stored-key")
+    window, _ = _settings_window_stub(
+        tmp_path / "settings.json", DEFAULT_SETTINGS, _ShortcutManagerStub(),
+        credential_store=store,
+    )
+    calls = []
+    monkeypatch.setattr(app, "create_api_client", lambda *args, **kwargs: calls.append((args, kwargs)) or new_client)
+
+    assert app.TranslationWindow.apply_settings(window, candidate)
+
+    assert calls == [(("stored-key", DEFAULT_API_PROVIDER), {"config": config})]
+    assert app.api_runtime == app.ApiRuntime(candidate.resolved_provider(), new_client)
+    assert load_settings(window.settings_path).resolved_provider().base_url == config.base_url
+
+
+def test_startup_credentials_restore_configured_endpoint_and_model(
+    app, monkeypatch, tmp_path,
+):
+    config = ApiProviderConfig("https://private.example/v1", "private-model", False)
+    calls = []
+    monkeypatch.setattr(app, "create_credential_store", lambda _provider: object())
+    monkeypatch.setattr(app, "resolve_api_key", lambda *_args: SimpleNamespace(key="private-key", migrated=False))
+    monkeypatch.setattr(app, "create_api_client", lambda *args, **kwargs: calls.append((args, kwargs)) or object())
+
+    app.initialize_credentials(_app_paths(tmp_path), OPENAI_COMPATIBLE_API_PROVIDER, config)
+
+    assert calls == [(("private-key", OPENAI_COMPATIBLE_API_PROVIDER), {"config": config})]
+    assert app.api_runtime.provider == get_api_provider(OPENAI_COMPATIBLE_API_PROVIDER, config)
 
 
 def test_apply_settings_rolls_shortcut_back_when_save_fails(

@@ -4,7 +4,7 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 
 ## 版本与更新提醒
 
-- 应用版本统一定义在 `app_version.py`，版本号从 `12.0.0` 开始；`12.1.0` 新增 OpenRouter 接口，当前版本 `12.1.1` 修复检查更新时程序异常退出的问题。主窗口标题、设置标题、托盘“关于”菜单及打包 EXE 的 Windows 文件属性均显示版本。
+- 应用版本统一定义在 `app_version.py`，当前版本为 `12.2.0`：新增独立的 OpenAI 兼容接口配置、自定义服务地址与模型、模型列表获取与搜索，以及浅灰色齿轮设置按钮。保留 `12.1.1` 的更新检查修复。主窗口标题、设置标题、托盘“关于”菜单及打包 EXE 的 Windows 文件属性均显示版本。
 - 正常启动主实例 5 秒后，程序会在后台检查本项目的 [GitHub Releases](https://github.com/Ymagenuz/my_snipdo_translate/releases)。自动检查每台设备最多每天一次；保持运行时也会每天检查。托盘菜单中的“检查更新…”可随时手动检查。
 - 只有正式版版本号更高、且已上传有效的 `SnipDoTranslate.exe` 附件时才会提示。草稿、预发布版本、只有源码的 Release 和旧版本均不会提示。
 - 提醒提供“打开下载页面”“稍后”和“跳过此版本”。“稍后”在本次运行期间不重复提醒同一版本；“跳过此版本”会在本机保存，手动检查仍可查看被跳过的版本。
@@ -15,9 +15,9 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 
 发布新版本时：
 
-1. 修改 `app_version.py` 中的 `APP_VERSION`，采用 `主版本.次版本.修订版本` 格式，例如 `12.1.1`，每段为 `0`–`65535` 的整数。
+1. 修改 `app_version.py` 中的 `APP_VERSION`，采用 `主版本.次版本.修订版本` 格式，例如 `12.2.0`，每段为 `0`–`65535` 的整数。
 2. 运行下方 Windows 构建流程，得到已校验的 `dist\SnipDoTranslate.exe` 和 SHA-256 文件；构建检查会验证 EXE 中的版本资源与源码一致。
-3. 在本项目 GitHub Releases 中创建对应标签（例如 `v12.1.1`）的正式 Release，上传 `SnipDoTranslate.exe` 和 `SnipDoTranslate.exe.sha256`，填写更新说明，再发布并标记为最新版本。只推送代码或创建 Git 标签不会触发更新提醒。
+3. 在本项目 GitHub Releases 中创建对应标签（例如 `v12.2.0`）的正式 Release，上传 `SnipDoTranslate.exe` 和 `SnipDoTranslate.exe.sha256`，填写更新说明，再发布并标记为最新版本。只推送代码或创建 Git 标签不会触发更新提醒。
 
 所有设备共用这个公开的发布源，无需搭建推送服务器或在设备间直接连接。EXE 内置固定的本项目检查地址；无需 GitHub Token。
 
@@ -50,7 +50,7 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 - 主窗口不再根据文本长度或模式自适应高度；非最大化状态固定使用 `560 × 700` 的大窗口，最大化状态不会被强制缩放。
 - 翻译完成时，如果主窗口已失去焦点，Windows 会弹出正文为译文内容的完成通知，托盘及窗口/任务栏图标右上角会显示红色未读标志；点击通知、点击带未读标志的托盘图标或重新聚焦窗口后会自动清除。
 - 将图片复制到剪贴板后使用 OCR，或通过命令行传入图片文件。
-- 点击主窗口右上角显示当前快捷键的按钮，或使用托盘菜单中的“设置…”，可以启用/禁用全局划词翻译、录入新的翻译快捷键和显示窗口快捷键、选择 API 接口及更新对应的 API Key。默认翻译快捷键为 `XButton1`，默认显示窗口快捷键为 `Ctrl+Alt+W`。
+- 点击主窗口右上角的齿轮按钮，或使用托盘菜单中的“设置…”，可以启用/禁用全局划词翻译、录入新的翻译快捷键和显示窗口快捷键，以及配置 API 接口、服务地址、模型和对应的 API Key。悬停齿轮按钮可查看当前翻译快捷键。默认翻译快捷键为 `XButton1`，默认显示窗口快捷键为 `Ctrl+Alt+W`。
 - 翻译快捷键和显示窗口快捷键都支持键盘组合键、`XButton1`、`XButton2` 与中键，但两者不能设置为同一个按键。
 - 即使全局划词翻译已禁用，显示窗口快捷键仍然有效；窗口隐藏或最小化时会恢复窗口，窗口已经显示但失焦时会将它置前并切换为焦点窗口，不会清空当前内容、改变最大化状态或取消正在进行的任务。
 - 托盘图标使用带白色 `A`/`文` 的双向箭头，并以相同轮廓表达状态：蓝青色表示快捷键已启用并激活，灰色表示已禁用或未激活。
@@ -58,15 +58,26 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 - 鼠标快捷键会拦截对应的 XButton1/XButton2/中键原生动作，避免同时触发浏览器后退、前进或中键功能。低级鼠标回调运行在独立的 Win32 消息线程中，只投递翻译信号，不在回调内执行剪贴板、界面或网络工作。
 - 关闭主窗口通常只会隐藏到系统托盘；要完全退出，请使用托盘菜单中的退出命令。
 
-设置中的“API 接口”目前提供：
+设置中的“API 接口”提供四个独立配置。所有配置都使用 OpenAI Chat Completions 兼容格式，并允许编辑服务地址（Base URL）和模型：
 
-- `OpenAI 兼容（GPTSAPI）`：保持原有行为，使用 `https://api.gptsapi.net/v1` 和 `gpt-5.4-nano`；可选环境变量为 `GPTSAPI_API_KEY`，凭据目标为 `SnipDoTranslate/GPTSAPI`。
-- `DeepSeek 官方接口`：使用 `https://api.deepseek.com` 和 `deepseek-v4-flash`；可选环境变量为 `DEEPSEEK_API_KEY`，凭据目标为 `SnipDoTranslate/DeepSeek`。该接口当前用于文本翻译、查词和文本对齐，不支持本程序的图片 OCR；执行 OCR 前程序会明确拒绝并保留传入的源文件。
-- `OpenRouter`：使用 `https://openrouter.ai/api/v1`，模型暂定为 [GPT-5.6 Luna](https://openrouter.ai/openai/gpt-5.6-luna)（`openai/gpt-5.6-luna`）；支持文本翻译、查词、文本对齐和图片 OCR。可选环境变量为 `OPENROUTER_API_KEY`，凭据目标为 `SnipDoTranslate/OpenRouter`。
+| 接口 | 初始 Base URL | 预设模型 | 可选环境变量 | Windows 凭据目标 |
+| --- | --- | --- | --- | --- |
+| GPTSAPI | `https://api.gptsapi.net/v1` | `gpt-5.4-nano` | `GPTSAPI_API_KEY` | `SnipDoTranslate/GPTSAPI` |
+| OpenAI 兼容 | `https://api.openai.com/v1` | 留空，由用户选择或输入 | `OPENAI_API_KEY` | `SnipDoTranslate/OpenAICompatible` |
+| DeepSeek 官方接口 | `https://api.deepseek.com` | `deepseek-v4-flash` | `DEEPSEEK_API_KEY` | `SnipDoTranslate/DeepSeek` |
+| OpenRouter | `https://openrouter.ai/api/v1` | `openai/gpt-5.6-luna` | `OPENROUTER_API_KEY` | `SnipDoTranslate/OpenRouter` |
 
-三种接口都通过 OpenAI Chat Completions 兼容格式调用，但服务地址、模型和凭据相互独立。切换接口时，API Key 输入框留空会尝试使用目标接口已有的环境变量或 Windows 凭据；不存在时会在下一次请求前提示输入。
+`OpenAI 兼容` 是独立配置，可以填写 OpenAI 或其他兼容服务的地址和模型。GPTSAPI 保留原有默认配置与凭据，新安装默认仍选择 GPTSAPI。表中的模型 ID 只是应用预设；实际可用模型取决于所选服务及账号权限。
 
-使用 OpenRouter 时，在“设置 → API 接口”选择 `OpenRouter`，填入 OpenRouter API Key 后保存即可。原有接口及已保存的 Key 会保留；新安装默认仍使用 GPTSAPI。OpenRouter 的暂定模型集中定义在 `api_providers.py`，以后更换模型时同时核对其图片输入能力并重新打包。接口格式参考 [OpenRouter 官方接入说明](https://openrouter.ai/docs/quickstart)。
+配置或切换模型：
+
+1. 打开设置并选择接口，填写该服务的 Base URL 和 API Key。Base URL 应为服务提供的 API 根地址，不包含 `/chat/completions` 或 `/models`。
+2. 点击“获取模型”，程序会在后台请求当前填写地址的 `/models`，优先使用当前输入的 Key；留空时使用所选接口已有的环境变量或 Windows 凭据。
+3. 获取模型后，可在模型下拉框中输入关键词搜索，按模型 ID 包含的文字匹配且不区分大小写；也可以直接选择模型或输入完整模型 ID。服务不支持模型列表或获取失败时，仍可手动输入并保存。
+4. 根据所选模型配置图片输入/OCR 能力。只有服务和模型实际支持图片输入时才启用；关闭时，程序会在执行 OCR 前拒绝请求并保留传入的源文件。DeepSeek 预设关闭图片输入。
+5. 按需设置“禁用思考”，然后保存。该选项会在请求中加入 `thinking: {"type": "disabled"}` 扩展，仅适用于支持此参数的兼容服务；DeepSeek 预设启用，其他服务应按其接口要求选择。
+
+各接口分别保留服务地址、模型和能力选项，切换接口及重启后仍使用已保存的配置；更换模型无需重新打包程序。API Key 也按接口独立保存，输入框留空不会清除已有凭据；未提供 Key 且没有可用凭据时，程序会在需要请求时提示输入。获取模型只读取列表，不会自动保存当前输入的 Key。
 
 常用命令行入口：
 
@@ -117,7 +128,7 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 ```
 
 - `translation_history.json` 保存最多 50 条历史记录，可能包含原文和译文，请按敏感用户数据对待。
-- `settings.json` 只保存工具启用状态、翻译快捷键、显示窗口快捷键和所选 API 接口，不保存 API Key；旧版配置会自动补入默认显示窗口快捷键。
+- `settings.json` 保存工具启用状态、翻译快捷键、显示窗口快捷键、所选 API 接口，以及各接口的服务地址、模型和能力选项，不保存 API Key；旧版配置会自动补入缺失的默认设置，并保留原有接口选择。
 - `update_state.json` 只保存上次检查更新的时间和用户选择跳过的版本；删除后会恢复默认检查行为。
 - 公式排版库可能创建只含字体索引的缓存，不包含原文或译文；单文件 EXE 使用退出时清理的隔离临时目录，源码模式可能使用 `%LOCALAPPDATA%\SnipDoTranslate\matplotlib-cache\`。
 - 日志是固定事件组成的 UTF-8 JSON 行，不记录原文、译文、OCR 内容、API Key、完整路径或异常正文。

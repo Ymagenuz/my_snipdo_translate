@@ -9,7 +9,11 @@ import app_settings
 from api_providers import (
     DEFAULT_API_PROVIDER,
     DEEPSEEK_API_PROVIDER,
+    OPENAI_COMPATIBLE_API_PROVIDER,
     OPENROUTER_API_PROVIDER,
+    ApiProviderConfig,
+    get_api_provider,
+    provider_default_config,
 )
 from app_settings import (
     AppSettings,
@@ -66,6 +70,18 @@ def test_missing_settings_returns_enabled_xbutton1_default(tmp_path: Path):
         AppSettings(enabled=False, shortcut=keyboard_shortcut(0x70, (), "F1")),
         AppSettings(enabled=True, shortcut=keyboard_shortcut(0x87, (), "F24")),
         AppSettings(api_provider=OPENROUTER_API_PROVIDER),
+        AppSettings(api_provider=OPENAI_COMPATIBLE_API_PROVIDER),
+        AppSettings(
+            api_provider=OPENAI_COMPATIBLE_API_PROVIDER,
+            api_configs={
+                OPENAI_COMPATIBLE_API_PROVIDER: ApiProviderConfig(
+                    "http://localhost:1234/v1", "local-model", False,
+                ),
+                DEFAULT_API_PROVIDER: ApiProviderConfig(
+                    "https://example.org/v1", "chosen-model", True,
+                ),
+            },
+        ),
         AppSettings(
             enabled=True,
             shortcut=mouse_shortcut("xbutton1"),
@@ -92,8 +108,10 @@ def test_settings_round_trip_is_utf8_and_canonical(
         "shortcut",
         "show_window_shortcut",
         "api_provider",
+        "api_configs",
     }
     assert payload["api_provider"] == settings.api_provider
+    assert set(payload["api_configs"]) == set(settings.api_configs)
     assert set(payload["shortcut"]) == {
         "kind",
         "mouse_button",
@@ -201,6 +219,7 @@ def test_load_migrates_legacy_payload_to_default_provider(tmp_path: Path):
     assert settings.api_provider == DEFAULT_API_PROVIDER
     assert settings.shortcut == mouse_shortcut("xbutton1")
     assert settings.show_window_shortcut == DEFAULT_SHOW_WINDOW_SHORTCUT
+    assert not settings.api_configs
 
 
 @pytest.mark.parametrize("provider_id", [DEEPSEEK_API_PROVIDER, OPENROUTER_API_PROVIDER])
@@ -220,6 +239,7 @@ def test_load_migrates_provider_payload_to_default_show_shortcut(
 
     assert settings.api_provider == provider_id
     assert settings.show_window_shortcut == DEFAULT_SHOW_WINDOW_SHORTCUT
+    assert not settings.api_configs
 
 
 @pytest.mark.parametrize("api_provider", ["unknown", "DeepSeek", 1, None, []])
@@ -347,3 +367,119 @@ def test_save_rejects_non_settings_without_creating_file(tmp_path: Path):
         save_settings_atomic(path, {"api_key": "secret"})  # type: ignore[arg-type]
 
     assert not path.exists()
+
+
+def test_settings_defensively_copy_provider_configurations():
+    config = ApiProviderConfig("https://example.org/v1", "custom-model", True)
+    supplied = {DEFAULT_API_PROVIDER: config}
+
+    settings = AppSettings(api_configs=supplied)
+    supplied.clear()
+
+    assert settings.config_for(DEFAULT_API_PROVIDER) == config
+    assert settings.resolved_provider().model == "custom-model"
+    assert settings.resolved_provider(DEEPSEEK_API_PROVIDER) == get_api_provider(
+        DEEPSEEK_API_PROVIDER,
+    )
+    assert settings.config_for(OPENAI_COMPATIBLE_API_PROVIDER) == provider_default_config(
+        OPENAI_COMPATIBLE_API_PROVIDER,
+    )
+    with pytest.raises(TypeError):
+        settings.api_configs[DEFAULT_API_PROVIDER] = config  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    "configs",
+    [
+        None,
+        [],
+        {"unknown": ApiProviderConfig("https://example.org", "model", False)},
+        {DEFAULT_API_PROVIDER: {}},
+        {DEFAULT_API_PROVIDER: ApiProviderConfig("https://example.org", "", False)},
+        {
+            OPENAI_COMPATIBLE_API_PROVIDER: provider_default_config(
+                OPENAI_COMPATIBLE_API_PROVIDER,
+            ),
+        },
+    ],
+)
+def test_settings_reject_invalid_explicit_configurations(configs: object):
+    with pytest.raises(SettingsDataError):
+        AppSettings(api_configs=configs)  # type: ignore[arg-type]
+
+
+def test_load_migrates_window_shortcut_payload_without_configs(tmp_path: Path):
+    path = tmp_path / "settings.json"
+    save_settings_atomic(path, AppSettings(api_provider=DEEPSEEK_API_PROVIDER))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["api_configs"]
+    _write_json(path, payload)
+
+    settings = load_settings(path)
+
+    assert settings.api_provider == DEEPSEEK_API_PROVIDER
+    assert not settings.api_configs
+    assert settings.resolved_provider() == get_api_provider(DEEPSEEK_API_PROVIDER)
+
+
+def _valid_api_config_payload() -> dict[str, object]:
+    return {
+        "base_url": "https://example.org/v1",
+        "model": "custom-model",
+        "supports_vision": True,
+        "disable_thinking": False,
+    }
+
+
+@pytest.mark.parametrize(
+    "configs",
+    [
+        None,
+        [],
+        {"unknown": _valid_api_config_payload()},
+        {DEFAULT_API_PROVIDER: None},
+        {DEFAULT_API_PROVIDER: {}},
+        {DEFAULT_API_PROVIDER: {**_valid_api_config_payload(), "model": " "}},
+        {DEFAULT_API_PROVIDER: {**_valid_api_config_payload(), "model": "a\nb"}},
+        {DEFAULT_API_PROVIDER: {**_valid_api_config_payload(), "supports_vision": 1}},
+        {DEFAULT_API_PROVIDER: {**_valid_api_config_payload(), "disable_thinking": 0}},
+        {DEFAULT_API_PROVIDER: {**_valid_api_config_payload(), "api_key": "secret"}},
+        {
+            DEFAULT_API_PROVIDER: {
+                **_valid_api_config_payload(),
+                "base_url": "https://user:secret@example.org/v1",
+            },
+        },
+    ],
+)
+def test_load_rejects_invalid_provider_configuration_payload(
+    tmp_path: Path, configs: object,
+):
+    path = tmp_path / "settings.json"
+    save_settings_atomic(path, AppSettings())
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["api_configs"] = configs
+    _write_json(path, payload)
+
+    with pytest.raises(SettingsDataError):
+        load_settings(path)
+
+
+def test_loading_configuration_normalizes_fields(tmp_path: Path):
+    path = tmp_path / "settings.json"
+    save_settings_atomic(path, AppSettings(api_provider=OPENAI_COMPATIBLE_API_PROVIDER))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["api_configs"] = {
+        OPENAI_COMPATIBLE_API_PROVIDER: {
+            **_valid_api_config_payload(),
+            "base_url": " https://example.org/v1/// ",
+            "model": " custom-model ",
+        },
+    }
+    _write_json(path, payload)
+
+    provider = load_settings(path).resolved_provider()
+
+    assert provider.base_url == "https://example.org/v1"
+    assert provider.model == "custom-model"
+    assert provider.credential_target == "SnipDoTranslate/OpenAICompatible"

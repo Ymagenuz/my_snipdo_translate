@@ -20,11 +20,14 @@ from openai import DefaultHttpxClient, OpenAI
 
 from api_providers import (
     DEFAULT_API_PROVIDER,
+    ApiProviderConfig,
     ApiProviderSpec,
     api_provider_options,
     chat_completion_options,
     get_api_provider,
+    provider_default_config,
 )
+from model_discovery import fetch_available_models
 
 from app_cli import (
     AppRequest,
@@ -90,17 +93,17 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QFrame, QGraphicsDropShadowEffect,
     QHBoxLayout, QSystemTrayIcon, QMenu, QInputDialog, QLineEdit,
     QComboBox, QDialog, QCheckBox, QFormLayout,
-    QDialogButtonBox, QMessageBox
+    QDialogButtonBox, QMessageBox, QCompleter
 )
 from PyQt6.QtGui import (
     QColor, QScreen, QTextCursor, QTextCharFormat,
     QTextBlockFormat, QTextFormat, QFont, QAction, QIcon, QImage,
-    QKeySequence, QPainter, QPen
+    QKeySequence, QPainter, QPen, QPainterPath, QPixmap, QTransform
 )
 from PyQt6.QtCore import (
     Qt, pyqtSignal, QThread, QObject, QTimer, QByteArray, QBuffer,
     QIODevice, QMimeData, QKeyCombination, QAbstractNativeEventFilter,
-    QEvent, QRectF
+    QEvent, QRectF, QSize
 )
 
 warnings.filterwarnings("ignore")
@@ -151,10 +154,14 @@ def log(_discarded_message: object) -> None:
     return None
 
 
-def activate_api_runtime(api_provider: str, api_client: object | None) -> None:
+def activate_api_runtime(
+    api_provider: str,
+    api_client: object | None,
+    config: ApiProviderConfig | None = None,
+) -> None:
     global api_runtime, client
 
-    api_runtime = ApiRuntime(get_api_provider(api_provider), api_client)
+    api_runtime = ApiRuntime(get_api_provider(api_provider, config), api_client)
     # Keep the original module global as a compatibility alias for existing
     # integrations. Runtime calls use the immutable snapshot above.
     client = api_client
@@ -163,13 +170,14 @@ def activate_api_runtime(api_provider: str, api_client: object | None) -> None:
 def create_api_client(
     api_key: str,
     api_provider: str = DEFAULT_API_PROVIDER,
+    config: ApiProviderConfig | None = None,
 ):
     api_key = (api_key or "").strip()
     if is_placeholder_api_key(api_key):
         return None
 
     try:
-        provider = get_api_provider(api_provider)
+        provider = get_api_provider(api_provider, config)
     except ValueError:
         return None
 
@@ -202,9 +210,11 @@ def create_api_client(
 def configure_api_client(
     api_key: str,
     api_provider: str = DEFAULT_API_PROVIDER,
+    config: ApiProviderConfig | None = None,
 ) -> bool:
-    candidate = create_api_client(api_key, api_provider)
-    activate_api_runtime(api_provider, candidate)
+    options = {"config": config} if config is not None else {}
+    candidate = create_api_client(api_key, api_provider, **options)
+    activate_api_runtime(api_provider, candidate, config)
     return candidate is not None
 
 
@@ -251,6 +261,8 @@ def api_provider_for_window(window: object) -> ApiProviderSpec:
     settings = getattr(window, "app_settings", None)
     provider_id = getattr(settings, "api_provider", DEFAULT_API_PROVIDER)
     try:
+        if isinstance(settings, AppSettings):
+            return settings.resolved_provider()
         return get_api_provider(provider_id)
     except ValueError:
         return get_api_provider(DEFAULT_API_PROVIDER)
@@ -259,16 +271,18 @@ def api_provider_for_window(window: object) -> ApiProviderSpec:
 def initialize_credentials(
     paths: AppPaths,
     api_provider: str = DEFAULT_API_PROVIDER,
+    config: ApiProviderConfig | None = None,
 ) -> WindowsCredentialStore | None:
     """Resolve a key without making a network request or writing plaintext."""
     global CREDENTIAL_STORE
 
     try:
-        provider = get_api_provider(api_provider)
+        provider = get_api_provider(api_provider, config)
     except ValueError:
         provider = get_api_provider(DEFAULT_API_PROVIDER)
         api_provider = provider.provider_id
-    activate_api_runtime(api_provider, None)
+        config = None
+    activate_api_runtime(api_provider, None, config)
 
     try:
         store = create_credential_store(api_provider)
@@ -285,6 +299,7 @@ def initialize_credentials(
     if not resolution.key or not configure_api_client(
         resolution.key,
         api_provider,
+        **({"config": config} if config is not None else {}),
     ):
         record_event(AppEvent.CREDENTIAL_MISSING)
         return store
@@ -415,6 +430,32 @@ def win32_force_foreground(hwnd: int) -> bool:
     except Exception as e:
         log(f"[Win32] force foreground error: {e}")
         return False
+
+
+def create_settings_icon() -> QIcon:
+    """Draw a gear at multiple resolutions without relying on a symbol font."""
+    gear = QPainterPath()
+    gear.addEllipse(QRectF(5, 5, 14, 14))
+    tooth = QPainterPath()
+    tooth.addRoundedRect(QRectF(9.5, 2, 5, 7), 1, 1)
+    for angle in range(0, 360, 45):
+        transform = QTransform().translate(12, 12).rotate(angle).translate(-12, -12)
+        gear = gear.united(transform.map(tooth))
+    hole = QPainterPath()
+    hole.addEllipse(QRectF(8.5, 8.5, 7, 7))
+    gear = gear.subtracted(hole)
+
+    icon = QIcon()
+    for size in (20, 40, 60):
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.scale(size / 24, size / 24)
+        painter.fillPath(gear, QColor("#909399"))
+        painter.end()
+        icon.addPixmap(pixmap)
+    return icon
 
 
 def create_unread_badge_icon(base_icon: QIcon) -> QIcon:
@@ -1615,6 +1656,49 @@ class ShortcutCaptureButton(QPushButton):
         event.accept()
 
 
+class ModelListLoader(QObject):
+    completed = pyqtSignal(int, object, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._stopped = threading.Event()
+
+    def start(self, request_id, provider_id, config, api_key):
+        threading.Thread(
+            target=self._load,
+            args=(request_id, provider_id, config, api_key),
+            daemon=True,
+            name="api-model-list",
+        ).start()
+
+    def stop(self):
+        self._stopped.set()
+
+    def _load(self, request_id, provider_id, config, api_key):
+        api_client = None
+        models = ()
+        error = ""
+        try:
+            api_client = create_api_client(api_key, provider_id, config)
+            if api_client is None:
+                raise ValueError("client unavailable")
+            models = fetch_available_models(api_client)
+        except Exception:
+            # Never display response bodies or credentials from service errors.
+            error = "无法获取模型列表。请检查服务地址、API Key 和网络，或直接输入模型 ID。"
+        finally:
+            if api_client is not None:
+                try:
+                    api_client.close()
+                except Exception:
+                    pass
+        if not self._stopped.is_set():
+            try:
+                self.completed.emit(request_id, models, error)
+            except RuntimeError:
+                pass  # The dialog may have been destroyed during the request.
+
+
 class SettingsDialog(QDialog):
     def __init__(
         self,
@@ -1628,9 +1712,19 @@ class SettingsDialog(QDialog):
         self._initial_api_provider = settings.api_provider
         self._api_key_configured = api_key_configured
         self._environment_key_active = environment_key_active
+        self._initial_settings = settings
+        self._drafts = {}
+        self._shown_provider = settings.api_provider
+        self._model_lists = {}
+        self._model_request_id = 0
+        self._model_request_pending = False
+        self._model_loader = ModelListLoader(self)
+        self._model_loader.completed.connect(
+            self._on_models_loaded, Qt.ConnectionType.QueuedConnection
+        )
         self.setWindowTitle("设置")
         self.setModal(True)
-        self.setMinimumWidth(470)
+        self.setMinimumWidth(600)
         self.setStyleSheet("""
             QDialog {
                 background-color: #F5F7FA;
@@ -1714,6 +1808,39 @@ class SettingsDialog(QDialog):
         self.api_key_input.setPlaceholderText("输入新 API Key（留空不修改）")
         self.api_key_input.setClearButtonEnabled(True)
         form.addRow("API Key", self.api_key_input)
+
+        self.base_url_input = QLineEdit()
+        self.base_url_input.setPlaceholderText("https://api.example.com/v1")
+        self.base_url_input.setToolTip("填写 API 根地址，包含服务要求的 /v1 等前缀，无需填写 /chat/completions。")
+        form.addRow("服务地址", self.base_url_input)
+
+        model_row = QHBoxLayout()
+        self.model_combo = NoWheelComboBox()
+        self.model_combo.setEditable(True)
+        self.model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.model_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.model_combo.setMinimumContentsLength(18)
+        self.model_combo.lineEdit().setPlaceholderText("搜索、选择或输入模型 ID")
+        self.model_combo.completer().setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self.model_combo.completer().setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.model_combo.completer().setFilterMode(Qt.MatchFlag.MatchContains)
+        self.model_combo.completer().setMaxVisibleItems(12)
+        self.fetch_models_button = QPushButton("获取模型")
+        self.fetch_models_button.setAutoDefault(False)
+        self.fetch_models_button.clicked.connect(self.fetch_models)
+        model_row.addWidget(self.model_combo, 1)
+        model_row.addWidget(self.fetch_models_button)
+        form.addRow("模型", model_row)
+
+        self.vision_checkbox = QCheckBox("所选模型支持图片输入（OCR）")
+        form.addRow("图片能力", self.vision_checkbox)
+        self.disable_thinking_checkbox = QCheckBox("发送禁用思考参数（仅限支持此参数的服务）")
+        form.addRow("请求选项", self.disable_thinking_checkbox)
+
+        self.model_status_label = QLabel("可从接口获取模型列表，也可直接输入模型 ID。")
+        self.model_status_label.setWordWrap(True)
+        self.model_status_label.setStyleSheet("color: #909399; font-size: 12px;")
+        form.addRow("", self.model_status_label)
         layout.addLayout(form)
 
         self.status_label = QLabel()
@@ -1722,7 +1849,10 @@ class SettingsDialog(QDialog):
         self.api_provider_combo.currentIndexChanged.connect(
             self._on_api_provider_changed
         )
-        self._refresh_api_key_status()
+        self.base_url_input.textChanged.connect(self._invalidate_model_list)
+        self.api_key_input.textChanged.connect(self._on_api_key_changed)
+        self.vision_checkbox.toggled.connect(self._refresh_api_key_status)
+        self._load_provider_fields()
         layout.addWidget(self.status_label)
 
         button_box = QDialogButtonBox(
@@ -1744,8 +1874,92 @@ class SettingsDialog(QDialog):
         return str(provider_id or DEFAULT_API_PROVIDER)
 
     def _on_api_provider_changed(self, _index: int) -> None:
+        self._drafts[self._shown_provider] = self._field_values()
+        self._shown_provider = self.selected_api_provider()
         self.api_key_input.clear()
+        self._invalidate_model_list()
+        self._load_provider_fields()
+
+    def _field_values(self):
+        return (
+            self.base_url_input.text(),
+            self.model_combo.currentText(),
+            self.vision_checkbox.isChecked(),
+            self.disable_thinking_checkbox.isChecked(),
+        )
+
+    def _load_provider_fields(self):
+        provider_id = self.selected_api_provider()
+        config = self._initial_settings.config_for(provider_id)
+        values = self._drafts.get(provider_id, (
+            config.base_url, config.model,
+            config.supports_vision, config.disable_thinking,
+        ))
+        self.base_url_input.setText(values[0])
+        self.vision_checkbox.setChecked(values[2])
+        self.disable_thinking_checkbox.setChecked(values[3])
+        self._populate_models(values[1])
         self._refresh_api_key_status()
+
+    def _populate_models(self, selected_model):
+        models = self._model_lists.get(
+            (self.selected_api_provider(), self.base_url_input.text().strip().rstrip("/")),
+            (),
+        )
+        self.model_combo.clear()
+        if selected_model and selected_model not in models:
+            self.model_combo.addItem(selected_model)
+        self.model_combo.addItems(models)
+        self.model_combo.setCurrentText(selected_model)
+
+    def _invalidate_model_list(self, *_args):
+        self._model_request_id += 1
+        self._populate_models(self.model_combo.currentText())
+        self.model_status_label.setText("可从接口获取模型列表，也可直接输入模型 ID。")
+
+    def _on_api_key_changed(self, *_args):
+        self._model_lists.clear()
+        self._invalidate_model_list()
+
+    def fetch_models(self):
+        if self._model_request_pending:
+            return
+        try:
+            config = ApiProviderConfig(*self._field_values())
+        except ValueError:
+            self.model_status_label.setText("请填写有效的 HTTP(S) 服务地址；地址不能包含密钥、查询参数或片段。")
+            return
+        provider_id = self.selected_api_provider()
+        api_key = self.api_key()
+        if not api_key:
+            api_key = provider_api_key(
+                provider_id, credential_store_for_window(self.parent(), provider_id)
+            )
+        if is_placeholder_api_key(api_key):
+            self.model_status_label.setText("请先输入此接口的 API Key，再获取模型；也可直接输入模型 ID。")
+            return
+        self._model_request_id += 1
+        self._model_request_pending = True
+        self.fetch_models_button.setEnabled(False)
+        self.model_status_label.setText("正在获取模型列表…")
+        self._model_loader.start(self._model_request_id, provider_id, config, api_key)
+
+    def _on_models_loaded(self, request_id, models, error):
+        self._model_request_pending = False
+        self.fetch_models_button.setEnabled(True)
+        if request_id != self._model_request_id:
+            return
+        if error:
+            self.model_status_label.setText(error)
+            return
+        self._model_lists[(
+            self.selected_api_provider(),
+            self.base_url_input.text().strip().rstrip("/"),
+        )] = models
+        self._populate_models(self.model_combo.currentText())
+        self.model_status_label.setText(
+            f"已获取 {len(models)} 个模型。输入关键词搜索并选择；图片能力需根据所选模型确认。"
+        )
 
     def _refresh_api_key_status(self) -> None:
         provider = get_api_provider(self.selected_api_provider())
@@ -1768,23 +1982,53 @@ class SettingsDialog(QDialog):
         else:
             message = "尚未设置 API Key；新 Key 将安全保存到 Windows 凭据管理器。"
 
-        if not provider.supports_vision:
-            message += " 此接口当前仅用于文本翻译和查词，不支持图片 OCR。"
+        if not self.vision_checkbox.isChecked():
+            message += " 当前未启用图片能力，不支持图片 OCR。"
         self.status_label.setText(message)
         self.status_label.setStyleSheet("color: #909399; font-size: 12px;")
 
     def candidate_settings(self) -> AppSettings:
+        drafts = {**self._drafts, self.selected_api_provider(): self._field_values()}
+        configs = dict(self._initial_settings.api_configs)
+        for provider_id, values in drafts.items():
+            try:
+                config = ApiProviderConfig(*values)
+                if not config.model and provider_id == self.selected_api_provider():
+                    raise ValueError("missing model")
+                if config == provider_default_config(provider_id):
+                    configs.pop(provider_id, None)
+                else:
+                    if not config.model:
+                        raise ValueError("missing model")
+                    configs[provider_id] = config
+            except ValueError as exc:
+                provider = get_api_provider(provider_id)
+                raise SettingsDataError(
+                    f"{provider.display_name}：请填写有效的 HTTP(S) 服务地址和模型 ID。"
+                    "服务地址不能包含密钥、查询参数或片段。"
+                ) from exc
         return AppSettings(
             enabled=self.chk_enabled.isChecked(),
             shortcut=self.shortcut_button.binding,
             show_window_shortcut=self.show_window_shortcut_button.binding,
             api_provider=self.selected_api_provider(),
+            api_configs=configs,
         )
+
+    def accept(self) -> None:
+        try:
+            self.candidate_settings()
+        except SettingsDataError as exc:
+            self._show_capture_error(str(exc))
+            return
+        super().accept()
 
     def api_key(self) -> str:
         return self.api_key_input.text().strip()
 
     def done(self, result: int) -> None:
+        self._model_request_id += 1
+        self._model_loader.stop()
         self.shortcut_button.cancel_capture()
         self.show_window_shortcut_button.cancel_capture()
         super().done(result)
@@ -2530,8 +2774,9 @@ class TranslationWindow(QWidget):
                 not self.app_settings.enabled
             )
         if hasattr(self, "btn_settings"):
-            self.btn_settings.setText(self.app_settings.shortcut.display)
-            self.btn_settings.setToolTip(tooltip + "；点击打开设置")
+            self.btn_settings.setToolTip(
+                f"设置 · 翻译快捷键：{self.app_settings.shortcut.display}\n{tooltip}"
+            )
         if hasattr(self, "show_window_action"):
             self.show_window_action.setText(
                 "显示主窗口（"
@@ -2541,7 +2786,7 @@ class TranslationWindow(QWidget):
     def refresh_api_status(self):
         if not hasattr(self, "lbl_model_name"):
             return
-        provider = get_api_provider(self.app_settings.api_provider)
+        provider = self.app_settings.resolved_provider()
         self.lbl_model_name.setText(
             f"{provider.short_name} · {provider.model}"
         )
@@ -2672,7 +2917,7 @@ class TranslationWindow(QWidget):
 
     def show_settings(self):
         self.force_show_window()
-        provider = get_api_provider(self.app_settings.api_provider)
+        provider = self.app_settings.resolved_provider()
         dialog = SettingsDialog(
             self.app_settings,
             api_key_configured=(
@@ -2725,7 +2970,9 @@ class TranslationWindow(QWidget):
             )
             return False
 
-        provider_changed = candidate.api_provider != previous.api_provider
+        provider_changed = candidate.resolved_provider() != previous.resolved_provider()
+        candidate_config = candidate.api_configs.get(candidate.api_provider)
+        client_options = {"config": candidate_config} if candidate_config is not None else {}
         target_store = credential_store_for_window(
             self,
             candidate.api_provider,
@@ -2736,6 +2983,7 @@ class TranslationWindow(QWidget):
             candidate_client = create_api_client(
                 normalized_key,
                 candidate.api_provider,
+                **client_options,
             )
             if candidate_client is None:
                 QMessageBox.warning(
@@ -2745,15 +2993,18 @@ class TranslationWindow(QWidget):
                 )
                 return False
         elif provider_changed:
-            selected_key = provider_api_key(
-                candidate.api_provider,
-                target_store,
-            )
-            if selected_key:
-                candidate_client = create_api_client(
-                    selected_key,
-                    candidate.api_provider,
-                )
+            if (
+                candidate.api_provider == previous.api_provider
+                and candidate.resolved_provider().base_url == previous.resolved_provider().base_url
+                and api_runtime.provider == previous.resolved_provider()
+            ):
+                candidate_client = client
+            else:
+                selected_key = provider_api_key(candidate.api_provider, target_store)
+                if selected_key:
+                    candidate_client = create_api_client(
+                        selected_key, candidate.api_provider, **client_options,
+                    )
 
         if provider_changed:
             for method_name in (
@@ -2858,22 +3109,22 @@ class TranslationWindow(QWidget):
 
             if stored:
                 self.credential_store = target_store
-                activate_api_runtime(candidate.api_provider, candidate_client)
+                activate_api_runtime(candidate.api_provider, candidate_client, candidate_config)
                 record_event(AppEvent.CREDENTIAL_AVAILABLE)
             else:
                 if provider_changed:
                     self.credential_store = target_store
-                    activate_api_runtime(candidate.api_provider, None)
+                    activate_api_runtime(candidate.api_provider, None, candidate_config)
                 record_event(AppEvent.CREDENTIAL_UNAVAILABLE)
                 QMessageBox.warning(
                     self,
                     "API Key 保存失败",
-                    "接口类型、启用状态和快捷键已保存，但 API Key 无法写入 Windows 凭据管理器。",
+                    "接口设置、启用状态和快捷键已保存，但 API Key 无法写入 Windows 凭据管理器。",
                 )
                 return False
         elif provider_changed:
             self.credential_store = target_store
-            activate_api_runtime(candidate.api_provider, candidate_client)
+            activate_api_runtime(candidate.api_provider, candidate_client, candidate_config)
             record_event(
                 AppEvent.CREDENTIAL_AVAILABLE
                 if candidate_client is not None
@@ -3053,16 +3304,22 @@ class TranslationWindow(QWidget):
         self.refresh_api_status()
         header_layout.addWidget(self.lbl_model_name)
 
-        self.btn_settings = QPushButton(self.app_settings.shortcut.display)
+        self.btn_settings = QPushButton()
+        self.btn_settings.setIcon(create_settings_icon())
+        self.btn_settings.setIconSize(QSize(20, 20))
+        self.btn_settings.setFixedSize(32, 32)
+        self.btn_settings.setAccessibleName("设置")
         self.btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_settings.setToolTip("设置（按钮文字为当前全局翻译快捷键）")
+        self.btn_settings.setToolTip(
+            f"设置 · 翻译快捷键：{self.app_settings.shortcut.display}"
+        )
         self.btn_settings.setStyleSheet("""
             QPushButton {
                 background-color: #F5F7FA;
                 color: #606266;
                 border: 1px solid #E4E7ED;
                 border-radius: 4px;
-                padding: 2px 7px;
+                padding: 4px;
                 font-size: 11px;
                 font-weight: 600;
             }
@@ -3657,10 +3914,14 @@ class TranslationWindow(QWidget):
         self.force_show_window()
 
     def ensure_api_key(self, *, allow_prompt: bool = True) -> bool:
-        provider = get_api_provider(self.app_settings.api_provider)
+        provider = self.app_settings.resolved_provider()
+        if not provider.model:
+            if allow_prompt:
+                QMessageBox.warning(self, "未选择模型", "请在设置中获取并选择模型，或输入模型 ID。")
+            return False
         if (
             client is not None
-            and api_runtime.provider.provider_id == provider.provider_id
+            and api_runtime.provider == provider
         ):
             return True
         if not allow_prompt:
@@ -3676,7 +3937,11 @@ class TranslationWindow(QWidget):
             QLineEdit.EchoMode.Password
         )
 
-        if ok and configure_api_client(api_key, provider.provider_id):
+        config = self.app_settings.api_configs.get(provider.provider_id)
+        if ok and configure_api_client(
+            api_key, provider.provider_id,
+            **({"config": config} if config is not None else {}),
+        ):
             target_store = credential_store_for_window(
                 self,
                 provider.provider_id,
@@ -5039,6 +5304,8 @@ def main(argv: list[str] | None = None) -> int:
         store = initialize_credentials(
             paths,
             startup_settings.api_provider,
+            **({"config": startup_settings.api_configs[startup_settings.api_provider]}
+               if startup_settings.api_provider in startup_settings.api_configs else {}),
         )
         window = TranslationWindow(
             paths,

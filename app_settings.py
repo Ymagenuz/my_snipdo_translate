@@ -3,12 +3,20 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
-from api_providers import API_PROVIDER_IDS, DEFAULT_API_PROVIDER
+from api_providers import (
+    API_PROVIDER_IDS,
+    DEFAULT_API_PROVIDER,
+    ApiProviderConfig,
+    ApiProviderSpec,
+    get_api_provider,
+    provider_default_config,
+)
 
 
 SETTINGS_FILE_NAME = "settings.json"
@@ -27,8 +35,12 @@ _MOUSE_DISPLAY = {
 }
 _LEGACY_ROOT_FIELDS = frozenset({"enabled", "shortcut"})
 _PROVIDER_ROOT_FIELDS = frozenset({"enabled", "shortcut", "api_provider"})
-_ROOT_FIELDS = frozenset(
+_WINDOW_ROOT_FIELDS = frozenset(
     {"enabled", "shortcut", "show_window_shortcut", "api_provider"}
+)
+_ROOT_FIELDS = _WINDOW_ROOT_FIELDS | {"api_configs"}
+_API_CONFIG_FIELDS = frozenset(
+    {"base_url", "model", "supports_vision", "disable_thinking"}
 )
 _SHORTCUT_FIELDS = frozenset(
     {"kind", "mouse_button", "virtual_key", "modifiers", "display"}
@@ -170,6 +182,7 @@ class AppSettings:
         default_factory=lambda: DEFAULT_SHOW_WINDOW_SHORTCUT
     )
     api_provider: str = DEFAULT_API_PROVIDER
+    api_configs: Mapping[str, ApiProviderConfig] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
@@ -185,6 +198,26 @@ class AppSettings:
             or self.api_provider not in API_PROVIDER_IDS
         ):
             raise SettingsDataError("unsupported API provider")
+        if not isinstance(self.api_configs, Mapping):
+            raise SettingsDataError("api_configs must be a mapping")
+        copied_configs: dict[str, ApiProviderConfig] = {}
+        for provider_id, config in self.api_configs.items():
+            if not isinstance(provider_id, str) or provider_id not in API_PROVIDER_IDS:
+                raise SettingsDataError("unsupported API provider in api_configs")
+            if not isinstance(config, ApiProviderConfig):
+                raise SettingsDataError("API configuration must be an ApiProviderConfig")
+            if not config.model:
+                raise SettingsDataError("API model must not be empty")
+            copied_configs[provider_id] = config
+        object.__setattr__(self, "api_configs", MappingProxyType(copied_configs))
+
+    def config_for(self, provider_id: str) -> ApiProviderConfig:
+        default = provider_default_config(provider_id)
+        return self.api_configs.get(provider_id, default)
+
+    def resolved_provider(self, provider_id: str | None = None) -> ApiProviderSpec:
+        selected = self.api_provider if provider_id is None else provider_id
+        return get_api_provider(selected, self.config_for(selected))
 
 
 DEFAULT_SETTINGS = AppSettings()
@@ -247,7 +280,7 @@ def _decode_settings(value: object) -> AppSettings:
     elif fields == _PROVIDER_ROOT_FIELDS:
         api_provider = value["api_provider"]
         show_window_shortcut = DEFAULT_SHOW_WINDOW_SHORTCUT
-    elif fields == _ROOT_FIELDS:
+    elif fields in (_WINDOW_ROOT_FIELDS, _ROOT_FIELDS):
         api_provider = value["api_provider"]
         show_window_shortcut = _decode_shortcut(value["show_window_shortcut"])
     else:
@@ -259,7 +292,25 @@ def _decode_settings(value: object) -> AppSettings:
         shortcut=_decode_shortcut(value["shortcut"]),
         show_window_shortcut=show_window_shortcut,
         api_provider=api_provider,
+        api_configs=_decode_api_configs(value.get("api_configs", {})),
     )
+
+
+def _decode_api_configs(value: object) -> dict[str, ApiProviderConfig]:
+    if not isinstance(value, dict):
+        raise SettingsDataError("api_configs must be an object")
+    configs: dict[str, ApiProviderConfig] = {}
+    for provider_id, config in value.items():
+        if provider_id not in API_PROVIDER_IDS:
+            raise SettingsDataError("unsupported API provider in api_configs")
+        if not isinstance(config, dict):
+            raise SettingsDataError("API configuration must be an object")
+        _require_exact_fields(config, _API_CONFIG_FIELDS)
+        try:
+            configs[provider_id] = ApiProviderConfig(**config)
+        except ValueError as exc:
+            raise SettingsDataError(str(exc)) from exc
+    return configs
 
 
 def load_settings(path: Path) -> AppSettings:
@@ -284,6 +335,15 @@ def _encode_settings(settings: AppSettings) -> dict[str, object]:
     return {
         "enabled": settings.enabled,
         "api_provider": settings.api_provider,
+        "api_configs": {
+            provider_id: {
+                "base_url": config.base_url,
+                "model": config.model,
+                "supports_vision": config.supports_vision,
+                "disable_thinking": config.disable_thinking,
+            }
+            for provider_id, config in settings.api_configs.items()
+        },
         "shortcut": {
             "kind": shortcut.kind,
             "mouse_button": shortcut.mouse_button,

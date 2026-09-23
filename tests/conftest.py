@@ -8,6 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.pop("GPTSAPI_API_KEY", None)
 os.environ.pop("DEEPSEEK_API_KEY", None)
 os.environ.pop("OPENROUTER_API_KEY", None)
+os.environ.pop("OPENAI_API_KEY", None)
 
 
 @pytest.fixture(scope="session")

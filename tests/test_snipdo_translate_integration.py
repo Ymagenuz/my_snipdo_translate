@@ -22,6 +22,8 @@ from api_providers import (
     DEFAULT_API_PROVIDER,
     DEEPSEEK_API_PROVIDER,
     OPENROUTER_API_PROVIDER,
+    OPENAI_COMPATIBLE_API_PROVIDER,
+    ApiProviderConfig,
     get_api_provider,
 )
 from windows_ipc import RejectionReason
@@ -374,9 +376,15 @@ def test_ocr_accepts_only_after_in_memory_ownership_and_leaves_source_to_caller(
 
 
 @pytest.mark.parametrize("worker_kind", ["translation", "alignment", "ocr"])
-def test_openrouter_workers_use_selected_endpoint_and_model(
-    app, monkeypatch, qapp, worker_kind
+@pytest.mark.parametrize("custom_config", [
+    None,
+    ApiProviderConfig("https://custom.example/api/v1", "chosen/vision-model", True, True),
+])
+def test_workers_use_selected_endpoint_and_model(
+    app, monkeypatch, qapp, worker_kind, custom_config,
 ):
+    provider_id = OPENAI_COMPATIBLE_API_PROVIDER if custom_config else OPENROUTER_API_PROVIDER
+    provider = get_api_provider(provider_id, custom_config)
     requests = []
     outputs = {
         "translation": "Translated text",
@@ -390,7 +398,7 @@ def test_openrouter_workers_use_selected_endpoint_and_model(
         response = {
             "id": "offline-openrouter-response",
             "created": 0,
-            "model": "openai/gpt-5.6-luna",
+            "model": provider.model,
             "choices": [
                 {
                     "index": 0,
@@ -417,12 +425,12 @@ def test_openrouter_workers_use_selected_endpoint_and_model(
     http_client = httpx.Client(transport=httpx.MockTransport(handler))
     monkeypatch.setattr(app, "DefaultHttpxClient", lambda **_kwargs: http_client)
     monkeypatch.setattr(app, "OpenAI", SdkOpenAI)
-    api_client = app.create_api_client("offline-openrouter-key", OPENROUTER_API_PROVIDER)
+    api_client = app.create_api_client("offline-provider-key", provider_id, custom_config)
     assert api_client is not None
     monkeypatch.setattr(
         app,
         "api_runtime",
-        app.ApiRuntime(get_api_provider(OPENROUTER_API_PROVIDER), api_client),
+        app.ApiRuntime(provider, api_client),
     )
     image_url = "data:image/png;base64,b2ZmbGluZQ=="
     if worker_kind == "translation":
@@ -440,10 +448,13 @@ def test_openrouter_workers_use_selected_endpoint_and_model(
 
     assert len(requests) == 1
     url, payload = requests[0]
-    assert url == "https://openrouter.ai/api/v1/chat/completions"
-    assert payload["model"] == "openai/gpt-5.6-luna"
+    assert url == provider.base_url + "/chat/completions"
+    assert payload["model"] == provider.model
     assert payload["stream"] is (worker_kind == "translation")
-    assert "thinking" not in payload
+    if provider.disable_thinking:
+        assert payload["thinking"] == {"type": "disabled"}
+    else:
+        assert "thinking" not in payload
     assert "reasoning_effort" not in payload
     assert len(outcomes) == 1
     assert outcomes[0][0] is True
