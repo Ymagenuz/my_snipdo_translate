@@ -76,6 +76,7 @@ from windows_ipc import (
     validate_request_dict,
 )
 from windows_mouse_hook import WindowsMouseShortcutHook
+from windows_selection import copy_keys_released, send_ctrl_c
 from latex_support import (
     LatexStreamRestorer,
     is_latex_text,
@@ -116,6 +117,8 @@ MAX_HISTORY_ITEMS = 50
 APP_ID = "SnipDoTranslate"
 APP_DISPLAY_NAME = "SnipDo Translate"
 IPC_UI_TIMEOUT_SECONDS = 4.0
+SELECTION_KEY_RELEASE_TIMEOUT_SECONDS = 2.0
+SELECTION_COPY_TIMEOUT_SECONDS = 1.0
 NORMAL_WINDOW_WIDTH = 560
 NORMAL_WINDOW_HEIGHT = 700
 
@@ -329,9 +332,6 @@ MOD_WIN = 0x0008
 MOD_NOREPEAT = 0x4000
 TRANSLATION_HOTKEY_ID = 0x5344
 SHOW_WINDOW_HOTKEY_ID = 0x5345
-VK_CONTROL = 0x11
-VK_C = 0x43
-KEYEVENTF_KEYUP = 0x0002
 
 user32.RegisterHotKey.argtypes = [
     ctypes.c_void_p,
@@ -557,13 +557,6 @@ def clone_clipboard_mime_data():
         clone.setColorData(source.colorData())
 
     return clone
-
-
-def send_ctrl_c():
-    user32.keybd_event(VK_CONTROL, 0, 0, 0)
-    user32.keybd_event(VK_C, 0, 0, 0)
-    user32.keybd_event(VK_C, 0, KEYEVENTF_KEYUP, 0)
-    user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
 
 
 class HtmlToMarkdownParser(HTMLParser):
@@ -2490,6 +2483,10 @@ class TranslationWindow(QWidget):
         self.alignment_selected_sentence = ""
         self.alignment_selection_is_sentence = False
         self.selection_capture_busy = False
+        self._selection_capture_hwnd = 0
+        self._selection_capture_binding = None
+        self._selection_release_deadline = 0.0
+        self._selection_suspended_managers = []
         self.shortcut_manager = None
         self.show_window_shortcut_manager = None
         self.xbutton1_hook = None
@@ -2812,20 +2809,94 @@ class TranslationWindow(QWidget):
         self.on_translation_shortcut_triggered()
 
     def on_translation_shortcut_triggered(self):
-        if not self.app_settings.enabled:
+        if not self.app_settings.enabled or self.force_quit:
             return
         if self.selection_capture_busy:
             log("[Shortcut] capture skipped: busy")
             return
 
+        # Remember the source before stopping hooks or processing more events.
+        source_hwnd = int(user32.GetForegroundWindow() or 0)
+        if not source_hwnd:
+            return
+        self._selection_capture_hwnd = source_hwnd
+        self._selection_capture_binding = self.app_settings.shortcut
+        self._selection_release_deadline = (
+            time.monotonic() + SELECTION_KEY_RELEASE_TIMEOUT_SECONDS
+        )
         self.selection_capture_busy = True
-        self.suspend_xbutton1_hook()
-        # The mouse hook suppresses the native button action.  Give the
-        # foreground application one event-loop turn to settle focus before
-        # sending Ctrl+C for the existing selection.
-        QTimer.singleShot(35, self.translate_current_selection)
+        self._selection_suspended_managers = []
+        # Either shortcut can be configured as Ctrl+C. Both must be inactive
+        # while copying, and only successful suspensions should be resumed.
+        for manager in (self.shortcut_manager, self.show_window_shortcut_manager):
+            if manager is None:
+                continue
+            try:
+                suspended = manager.suspend()
+            except Exception:
+                suspended = False
+            if not suspended:
+                self._finish_selection_capture()
+                return
+            self._selection_suspended_managers.append(manager)
+        QTimer.singleShot(35, self._wait_for_selection_shortcut_release)
+
+    def _selection_capture_is_current(self) -> bool:
+        return bool(
+            self.selection_capture_busy
+            and self.app_settings.enabled
+            and not self.force_quit
+            and self._selection_capture_binding == self.app_settings.shortcut
+            and self._selection_capture_hwnd
+            and int(user32.GetForegroundWindow() or 0) == self._selection_capture_hwnd
+        )
+
+    def _wait_for_selection_shortcut_release(self):
+        if not self.selection_capture_busy:
+            return
+        try:
+            if not self._selection_capture_is_current():
+                self._finish_selection_capture()
+                return
+            if time.monotonic() >= self._selection_release_deadline:
+                self.tray_icon.showMessage(
+                    APP_DISPLAY_NAME,
+                    "请松开快捷键后重试划词翻译。",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    1800,
+                )
+                self._finish_selection_capture()
+                return
+            if not copy_keys_released(self._selection_capture_binding.virtual_key):
+                QTimer.singleShot(15, self._wait_for_selection_shortcut_release)
+                return
+            self.translate_current_selection()
+        except Exception as e:
+            log(f"[Shortcut] release wait failed: {e}")
+            self._finish_selection_capture()
+
+    def _finish_selection_capture(self):
+        managers = self._selection_suspended_managers
+        self._selection_suspended_managers = []
+        self.selection_capture_busy = False
+        self._selection_capture_hwnd = 0
+        self._selection_capture_binding = None
+        self._selection_release_deadline = 0.0
+        QTimer.singleShot(150, lambda: self._resume_selection_shortcuts(managers))
+
+    def _resume_selection_shortcuts(self, managers):
+        if self.force_quit:
+            return
+        for manager in managers:
+            manager.resume()
+        self.refresh_shortcut_status()
 
     def capture_current_selection_text(self) -> str:
+        if not self._selection_capture_is_current():
+            return ""
+        trigger_key = self._selection_capture_binding.virtual_key
+        if not copy_keys_released(trigger_key):
+            return ""
         clipboard = QApplication.clipboard()
         original_mime = clone_clipboard_mime_data()
         sentinel = f"__gptsapi_selection_probe_{uuid.uuid4()}__"
@@ -2833,29 +2904,35 @@ class TranslationWindow(QWidget):
         try:
             clipboard.setText(sentinel)
             QApplication.processEvents()
+            # A failed clipboard write must never turn old clipboard text into
+            # a selection. Recheck keys/focus after the nested event processing.
+            if clipboard.text() != sentinel:
+                return ""
             sentinel_sequence = get_clipboard_sequence_number()
+            if (
+                not sentinel_sequence
+                or not self._selection_capture_is_current()
+                or not copy_keys_released(trigger_key)
+                or not send_ctrl_c()
+            ):
+                return ""
 
-            send_ctrl_c()
-
-            start_time = time.monotonic()
-            quick_deadline = start_time + 0.28
-            full_deadline = start_time + 0.65
+            deadline = time.monotonic() + SELECTION_COPY_TIMEOUT_SECONDS
             captured_text = ""
-            clipboard_changed = False
 
-            while time.monotonic() < (full_deadline if clipboard_changed else quick_deadline):
+            while time.monotonic() < deadline:
                 QApplication.processEvents()
-                if get_clipboard_sequence_number() != sentinel_sequence:
-                    clipboard_changed = True
-
-                current_text = clipboard_mime_to_formatted_text(
-                    clipboard.mimeData(),
-                    sentinel,
-                )
-
-                if current_text and current_text != sentinel:
-                    captured_text = current_text
-                    break
+                if not self._selection_capture_is_current():
+                    return ""
+                sequence = get_clipboard_sequence_number()
+                if sequence and sequence != sentinel_sequence:
+                    current_text = clipboard_mime_to_formatted_text(
+                        clipboard.mimeData(),
+                        sentinel,
+                    )
+                    if current_text:
+                        captured_text = current_text
+                        break
 
                 time.sleep(0.015)
 
@@ -2872,16 +2949,18 @@ class TranslationWindow(QWidget):
 
     def translate_current_selection(self):
         try:
-            if not self.app_settings.enabled:
+            if not self._selection_capture_is_current():
                 return
             log("[Shortcut] triggered")
             selected_text = self.capture_current_selection_text()
+            if not self._selection_capture_is_current():
+                return
 
             if not selected_text:
                 log("[Shortcut] no selected text captured")
                 self.tray_icon.showMessage(
                     APP_DISPLAY_NAME,
-                    "未检测到选中文字，请先选择文本后再按快捷键。",
+                    "未检测到选中文字，请确认原窗口可复制文本，松开快捷键后重试。",
                     QSystemTrayIcon.MessageIcon.Information,
                     1800,
                 )
@@ -2891,8 +2970,7 @@ class TranslationWindow(QWidget):
         except Exception as e:
             log(f"[Shortcut] translate_current_selection error: {e}")
         finally:
-            self.selection_capture_busy = False
-            QTimer.singleShot(150, self.restore_xbutton1_hook)
+            self._finish_selection_capture()
 
     def on_tray_activated(self, reason):
         log(f"[Tray] activated: {reason}")

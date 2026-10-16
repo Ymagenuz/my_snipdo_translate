@@ -1127,9 +1127,14 @@ def test_shortcut_selection_is_forwarded_directly_to_translation(
     window = SimpleNamespace(
         app_settings=DEFAULT_SETTINGS,
         selection_capture_busy=True,
+        _selection_capture_is_current=lambda: True,
+        _selection_suspended_managers=[],
+        _resume_selection_shortcuts=lambda _managers: None,
         capture_current_selection_text=lambda: "selected text",
         handle_new_request=lambda text: requests.append(text) or True,
-        restore_xbutton1_hook=lambda: None,
+    )
+    window._finish_selection_capture = lambda: (
+        app.TranslationWindow._finish_selection_capture(window)
     )
 
     app.TranslationWindow.translate_current_selection(window)
@@ -1154,6 +1159,9 @@ def test_empty_shortcut_selection_does_not_open_main_window(
     window = SimpleNamespace(
         app_settings=DEFAULT_SETTINGS,
         selection_capture_busy=True,
+        _selection_capture_is_current=lambda: True,
+        _selection_suspended_managers=[],
+        _resume_selection_shortcuts=lambda _managers: None,
         capture_current_selection_text=lambda: "",
         handle_new_request=lambda _text: pytest.fail(
             "empty selection must not start translation"
@@ -1161,7 +1169,9 @@ def test_empty_shortcut_selection_does_not_open_main_window(
         tray_icon=SimpleNamespace(
             showMessage=lambda *args: messages.append(args)
         ),
-        restore_xbutton1_hook=lambda: None,
+    )
+    window._finish_selection_capture = lambda: (
+        app.TranslationWindow._finish_selection_capture(window)
     )
 
     app.TranslationWindow.translate_current_selection(window)
