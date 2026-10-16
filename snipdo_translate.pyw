@@ -77,6 +77,7 @@ from windows_ipc import (
 )
 from windows_mouse_hook import WindowsMouseShortcutHook
 from windows_selection import copy_keys_released, send_ctrl_c
+from windows_startup import StartupRegistrationError, WindowsStartupRegistration
 from latex_support import (
     LatexStreamRestorer,
     is_latex_text,
@@ -1699,6 +1700,8 @@ class SettingsDialog(QDialog):
         *,
         api_key_configured: bool,
         environment_key_active: bool,
+        startup_enabled: bool = False,
+        startup_available: bool = True,
         parent=None,
     ):
         super().__init__(parent)
@@ -1773,6 +1776,19 @@ class SettingsDialog(QDialog):
         self.chk_enabled = QCheckBox("启用全局划词翻译")
         self.chk_enabled.setChecked(settings.enabled)
         form.addRow("启用工具", self.chk_enabled)
+
+        self.chk_startup = QCheckBox("登录 Windows 时自动启动（后台托盘）")
+        self.chk_startup.setChecked(startup_enabled)
+        self.chk_startup.setEnabled(startup_available)
+        self.chk_startup.setToolTip(
+            "仅对当前 Windows 用户生效。自动启动时不弹出主窗口；取消勾选可关闭。"
+            if startup_available else "无法读取开机启动设置，可继续修改其他选项。"
+        )
+        form.addRow("开机启动", self.chk_startup)
+        if not startup_available:
+            startup_notice = QLabel("无法读取开机启动设置，可继续修改其他选项。")
+            startup_notice.setWordWrap(True)
+            form.addRow("", startup_notice)
 
         self.shortcut_button = ShortcutCaptureButton(settings.shortcut)
         self.shortcut_button.capture_error.connect(self._show_capture_error)
@@ -1979,6 +1995,11 @@ class SettingsDialog(QDialog):
             message += " 当前未启用图片能力，不支持图片 OCR。"
         self.status_label.setText(message)
         self.status_label.setStyleSheet("color: #909399; font-size: 12px;")
+
+    def launch_at_startup(self) -> bool | None:
+        if not self.chk_startup.isEnabled():
+            return None
+        return self.chk_startup.isChecked()
 
     def candidate_settings(self) -> AppSettings:
         drafts = {**self._drafts, self.selected_api_provider(): self._field_values()}
@@ -2996,6 +3017,13 @@ class TranslationWindow(QWidget):
     def show_settings(self):
         self.force_show_window()
         provider = self.app_settings.resolved_provider()
+        startup_enabled = False
+        startup_available = True
+        try:
+            startup_registration = WindowsStartupRegistration(__file__)
+            startup_enabled = startup_registration.is_enabled()
+        except StartupRegistrationError:
+            startup_available = False
         dialog = SettingsDialog(
             self.app_settings,
             api_key_configured=(
@@ -3005,6 +3033,8 @@ class TranslationWindow(QWidget):
             environment_key_active=not is_placeholder_api_key(
                 os.getenv(provider.environment_variable, "")
             ),
+            startup_enabled=startup_enabled,
+            startup_available=startup_available,
             parent=self,
         )
         shortcut_managers = [
@@ -3026,7 +3056,18 @@ class TranslationWindow(QWidget):
 
         if result != QDialog.DialogCode.Accepted:
             return
-        self.apply_settings(dialog.candidate_settings(), dialog.api_key())
+        if not self.apply_settings(dialog.candidate_settings(), dialog.api_key()):
+            return
+        requested_startup = dialog.launch_at_startup()
+        if requested_startup is not None and startup_available:
+            try:
+                startup_registration.set_enabled(requested_startup)
+            except StartupRegistrationError:
+                QMessageBox.warning(
+                    self,
+                    "开机启动设置失败",
+                    "其他设置已保存，但无法更改开机启动设置。请稍后重试。",
+                )
 
     def toggle_global_translation(self):
         candidate = replace(
@@ -5344,6 +5385,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if not is_primary:
         record_event(AppEvent.INSTANCE_SECONDARY)
+        if command.action == "startup":
+            # Sign-in must not raise or clear an already running window.
+            close_runtime_log()
+            return 0
         try:
             ack = send_request(APP_ID, prepared.request, timeout=5.0)
         except IpcError:
@@ -5408,11 +5453,12 @@ def main(argv: list[str] | None = None) -> int:
         close_runtime_log()
         return 1
 
-    initial_result = window.handle_app_request(
-        prepared.request,
-        allow_key_prompt=True,
-    )
-    settle_source_file(prepared, accepted=initial_result.accepted)
+    if command.action != "startup":
+        initial_result = window.handle_app_request(
+            prepared.request,
+            allow_key_prompt=True,
+        )
+        settle_source_file(prepared, accepted=initial_result.accepted)
     window.update_notifications.start()
 
     exit_code = 1

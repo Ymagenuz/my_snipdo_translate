@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 Action = Literal["show", "translate_text", "ocr_image"]
-CommandAction = Literal["show", "text", "file", "image", "self_test"]
+CommandAction = Literal["show", "startup", "text", "file", "image", "self_test"]
 
 
 class CliError(ValueError):
@@ -66,6 +66,7 @@ def parse_cli(argv: list[str]) -> LaunchCommand:
     parser = RaisingArgumentParser(prog="SnipDoTranslate", add_help=False)
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--show", action="store_true")
+    group.add_argument("--startup", action="store_true")
     group.add_argument("--file")
     group.add_argument("--image")
     group.add_argument("--self-test")
@@ -73,7 +74,13 @@ def parse_cli(argv: list[str]) -> LaunchCommand:
     parser.add_argument("text", nargs="*")
     args = parser.parse_args(argv)
 
-    selected = args.show or args.file is not None or args.image is not None or args.self_test is not None
+    selected = (
+        args.show
+        or args.startup
+        or args.file is not None
+        or args.image is not None
+        or args.self_test is not None
+    )
     if selected and args.text:
         raise CliError("text cannot be combined with an option action")
     if args.delete_after and args.file is None and args.image is None:
@@ -84,6 +91,8 @@ def parse_cli(argv: list[str]) -> LaunchCommand:
         return LaunchCommand("file", args.file, args.delete_after)
     if args.image is not None:
         return LaunchCommand("image", args.image, args.delete_after)
+    if args.startup:
+        return LaunchCommand("startup")
     if args.show:
         return LaunchCommand("show")
     if args.text:
@@ -92,7 +101,8 @@ def parse_cli(argv: list[str]) -> LaunchCommand:
 
 
 def prepare_request(command: LaunchCommand) -> PreparedRequest:
-    if command.action == "show":
+    if command.action in {"show", "startup"}:
+        # Startup controls local launch behavior; it is not an IPC action.
         return PreparedRequest(AppRequest("show"))
     if command.action == "text":
         if not command.value:

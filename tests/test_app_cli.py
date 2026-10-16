@@ -3,15 +3,68 @@ from pathlib import Path
 import pytest
 
 from app_cli import (
+    AppRequest,
     CliError,
+    LaunchCommand,
     delete_acknowledged_source,
     parse_cli,
     prepare_request,
 )
 
 
-def test_no_arguments_means_show():
-    assert parse_cli([]).action == "show"
+@pytest.mark.parametrize("argv", [[], ["--show"]])
+def test_no_arguments_or_explicit_show_means_show(argv):
+    command = parse_cli(argv)
+    assert command == LaunchCommand("show")
+    prepared = prepare_request(command)
+    assert prepared.request.action == "show"
+    assert prepared.request.payload == {}
+    assert prepared.delete_path is None
+
+
+def test_startup_is_a_distinct_launch_command():
+    assert parse_cli(["--startup"]) == LaunchCommand("startup")
+
+
+@pytest.mark.parametrize(
+    "other_args",
+    [
+        ["--show"],
+        ["--file", "input.txt"],
+        ["--image", "input.png"],
+        ["--self-test", "diagnostics.json"],
+        ["selected", "text"],
+        ["--delete-after"],
+    ],
+)
+def test_startup_rejects_other_actions_text_and_deletion(other_args):
+    with pytest.raises(CliError):
+        parse_cli(["--startup", *other_args])
+
+
+def test_startup_preparation_is_harmless_and_does_not_delete_sources(tmp_path: Path):
+    source = tmp_path / "input.txt"
+    source.write_text("keep this text", encoding="utf-8")
+    command = LaunchCommand("startup", str(source), delete_after=True)
+
+    prepared = prepare_request(command)
+
+    assert prepared.request.action == "show"
+    assert prepared.request.payload == {}
+    assert prepared.delete_path is None
+    assert delete_acknowledged_source(prepared, accepted=True) is False
+    assert source.read_text(encoding="utf-8") == "keep this text"
+    assert command == LaunchCommand("startup", str(source), delete_after=True)
+
+
+def test_startup_is_not_an_ipc_action():
+    with pytest.raises(CliError, match="unsupported request action"):
+        AppRequest.from_dict({
+            "version": 1,
+            "id": "startup-request",
+            "action": "startup",
+            "payload": {},
+        })
 
 
 def test_direct_unicode_text_is_structured_request():
