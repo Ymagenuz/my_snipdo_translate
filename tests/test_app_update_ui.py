@@ -36,13 +36,37 @@ class FakeChecker(QObject):
         self.is_checking = False
 
 
+class FakeUpdater(QObject):
+    failed = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.is_active = False
+        self.releases = []
+        self.shown = 0
+        self.stopped = False
+
+    def start(self, value):
+        self.releases.append(value)
+        self.is_active = True
+
+    def show_progress(self):
+        self.shown += 1
+
+    def stop(self):
+        self.stopped = True
+        self.is_active = False
+
+
 @pytest.fixture
 def notifications(qapp, tmp_path):
     window = QWidget()
     window.app_paths = SimpleNamespace(data_dir=tmp_path)
     clock = [1_000_000.0]
     checker = FakeChecker()
-    controller = ui.UpdateNotifications(window, checker=checker, clock=lambda: clock[0])
+    controller = ui.UpdateNotifications(
+        window, checker=checker, updater=FakeUpdater(), clock=lambda: clock[0]
+    )
     yield controller, checker, clock
     controller.stop()
     window.close()
@@ -103,21 +127,39 @@ def test_automatic_failure_is_quiet_but_manual_failure_is_visible(notifications)
     assert "暂时无法" in controller._status_dialog.text()
 
 
-def test_prompt_opens_browser_only_after_user_clicks(notifications, monkeypatch):
+def test_prompt_starts_in_app_update_only_after_user_clicks(notifications):
     controller, checker, _clock = notifications
-    opened = []
-    monkeypatch.setattr(ui.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()) or True)
     controller._check_automatically()
     checker.complete(release())
     dialog = controller._dialog
-    assert opened == []
+    assert controller.updater.releases == []
     assert "12.1.0" in dialog.text()
     assert ui.APP_VERSION in dialog.text()
     assert dialog.windowModality() == Qt.WindowModality.NonModal
     assert dialog.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-    next(button for button in dialog.buttons() if button.text() == "打开下载页面").click()
-    assert opened == [release().url]
+    assert all("下载页面" not in button.text() for button in dialog.buttons())
+    next(button for button in dialog.buttons() if button.text() == "更新并重启").click()
+    assert controller.updater.releases == [release()]
     assert controller._dialog is None
+
+
+def test_manual_check_during_download_reuses_progress_without_another_check(notifications):
+    controller, checker, _clock = notifications
+    controller.updater.is_active = True
+    controller.check_manually()
+    assert controller.updater.shown == 1
+    assert checker.calls == 0
+    controller.stop()
+    assert controller.updater.stopped
+
+
+def test_install_error_is_shown_and_can_be_retried(notifications):
+    controller, checker, _clock = notifications
+    controller.updater.failed.emit("安装失败，原版本已保留。")
+    assert "原版本已保留" in controller._status_dialog.text()
+    controller.check_manually()
+    checker.complete(release())
+    assert controller._dialog is not None
 
 
 def test_skip_persists_and_manual_checks_can_show_skipped_release(notifications):

@@ -253,6 +253,13 @@ class _MainHarness:
         self.forwarded = []
         self.windows = []
         self.about_to_quit = []
+        self.callbacks = []
+
+        def event_loop():
+            self.events.append("event-loop")
+            for callback in self.callbacks:
+                callback()
+            return 0
 
         def forbidden(*_args, **_kwargs):
             raise AssertionError("startup must not show UI, prompt, or access the real host")
@@ -261,7 +268,7 @@ class _MainHarness:
             setQuitOnLastWindowClosed=lambda value: self.events.append(("quit-on-close", value)),
             setApplicationVersion=lambda value: self.events.append(("version", value)),
             aboutToQuit=SimpleNamespace(connect=self.about_to_quit.append),
-            exec=lambda: self.events.append("event-loop") or 0,
+            exec=event_loop,
         )
         self.bridge = SimpleNamespace(
             receive=forbidden,
@@ -316,6 +323,11 @@ class _MainHarness:
         monkeypatch.setattr(app, "SingleInstanceServer", lambda *_args: self.server)
         monkeypatch.setattr(app, "TranslationWindow", create_window)
         monkeypatch.setattr(app, "send_request", send_request)
+        monkeypatch.setattr(app, "QTimer", SimpleNamespace(
+            singleShot=lambda _delay, callback: self.callbacks.append(callback)
+        ))
+        monkeypatch.setattr(app, "acknowledge_update_startup", lambda version: self.events.append("update-ack"))
+        monkeypatch.setattr(app, "consume_update_error", lambda: "")
         self.app = app
 
 
@@ -334,6 +346,7 @@ def test_primary_startup_enters_event_loop_without_initial_show_or_key_prompt(la
     assert "notifications-start" in launcher.events
     assert "event-loop" in launcher.events
     assert "server-stop" in launcher.events
+    assert launcher.events.index("event-loop") < launcher.events.index("update-ack")
 
 
 def test_secondary_startup_exits_without_ipc_show_or_focus_change(launcher):
@@ -347,6 +360,7 @@ def test_secondary_startup_exits_without_ipc_show_or_focus_change(launcher):
     assert "credentials-initialized" not in launcher.events
     assert "event-loop" not in launcher.events
     assert "log-close" in launcher.events
+    assert "update-ack" not in launcher.events
 
 
 @pytest.mark.parametrize("arguments", [[], ["--show"]])

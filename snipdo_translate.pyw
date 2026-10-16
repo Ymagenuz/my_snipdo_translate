@@ -1,5 +1,12 @@
 import sys
 import os
+
+# A copied one-file EXE runs the installer without loading Qt, credentials,
+# hooks or single-instance IPC. This must precede application imports.
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "--apply-update":
+    from app_update_install import run_apply_update
+    raise SystemExit(run_apply_update(sys.argv[2]) if len(sys.argv) == 3 else 2)
+
 import re
 import json
 import warnings
@@ -39,6 +46,7 @@ from app_cli import (
 )
 from app_logging import AppEvent, PrivacyEventLogger, configure_app_logging
 from app_update_ui import UpdateNotifications
+from app_update_install import acknowledge_update_startup, consume_update_error
 from app_version import APP_VERSION
 from app_settings import (
     DEFAULT_SETTINGS,
@@ -5492,6 +5500,18 @@ def main(argv: list[str] | None = None) -> int:
         )
         settle_source_file(prepared, accepted=initial_result.accepted)
     window.update_notifications.start()
+    # Acknowledge only after the primary instance has initialized successfully
+    # and reached the event loop, so a failed launch can still be rolled back.
+    def finish_update_startup():
+        try:
+            acknowledge_update_startup(APP_VERSION)
+            update_error = consume_update_error()
+        except (OSError, ValueError, RuntimeError):
+            return
+        if update_error:
+            window.update_notifications._show_status(update_error)
+
+    QTimer.singleShot(0, finish_update_startup)
 
     exit_code = 1
     try:

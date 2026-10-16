@@ -8,11 +8,11 @@ import tempfile
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QTimer, Qt, QUrl
-from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtCore import QObject, QTimer, Qt
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from app_updates import ReleaseInfo, UpdateChecker
+from app_update_flow import UpdateFlow
 from app_version import APP_VERSION
 
 
@@ -44,10 +44,12 @@ def load_update_state(path: Path) -> tuple[float, str]:
 
 
 class UpdateNotifications(QObject):
-    def __init__(self, window, *, checker=None, clock=time.time):
+    def __init__(self, window, *, checker=None, updater=None, clock=time.time):
         super().__init__(window)
         self.window = window
         self.checker = checker if checker is not None else UpdateChecker(self)
+        self.updater = updater if updater is not None else UpdateFlow(window)
+        self.updater.failed.connect(self._show_status)
         self._clock = clock
         self._path = window.app_paths.data_dir / STATE_FILE_NAME
         self._last_check, self._skipped_version = load_update_state(self._path)
@@ -81,6 +83,7 @@ class UpdateNotifications(QObject):
         self._pending_release = None
         self._pending_manual = False
         self.checker.stop()
+        self.updater.stop()
         for dialog in (self._dialog, self._status_dialog):
             if dialog is not None:
                 dialog.close()
@@ -124,6 +127,10 @@ class UpdateNotifications(QObject):
             self._begin_check(manual=True)
 
     def _begin_check(self, *, manual: bool) -> None:
+        if self.updater.is_active:
+            if manual:
+                self.updater.show_progress()
+            return
         self._manual_requested = self._manual_requested or manual
         if self.checker.is_checking:
             return
@@ -187,6 +194,10 @@ class UpdateNotifications(QObject):
         manual = manual or self._pending_manual
         if self._stopped or release is None:
             return
+        if self.updater.is_active:
+            self._pending_release = None
+            self._pending_manual = False
+            return
         if self._dialog is not None or QApplication.activeModalWidget() is not None:
             self._prompt_retry.start(30000)
             return
@@ -199,11 +210,11 @@ class UpdateNotifications(QObject):
         dialog.setTextFormat(Qt.TextFormat.PlainText)
         dialog.setText(f"发现新版本 {release.version}\n当前版本：{APP_VERSION}")
         dialog.setInformativeText(
-            "打开下载页面可查看发行说明并下载新版。\n"
-            "下载后，请从托盘彻底退出，再用新版 EXE 替换旧文件。"
-            "历史记录和 API Key 会保留。"
+            "在应用内下载并校验更新，然后自动安装并重启。\n"
+            "下载期间可继续使用或取消；重启会等待翻译、OCR 和设置完成。"
+            "设置、历史记录和 API Key 会保留。"
         )
-        open_button = dialog.addButton("打开下载页面", QMessageBox.ButtonRole.AcceptRole)
+        update_button = dialog.addButton("更新并重启", QMessageBox.ButtonRole.AcceptRole)
         later_button = dialog.addButton("稍后", QMessageBox.ButtonRole.RejectRole)
         skip_button = dialog.addButton("跳过此版本", QMessageBox.ButtonRole.ActionRole)
         dialog.setDefaultButton(later_button)
@@ -215,17 +226,16 @@ class UpdateNotifications(QObject):
 
         def finish(_result):
             clicked = dialog.clickedButton()
-            if not self._stopped:
-                if clicked is open_button:
-                    if not QDesktopServices.openUrl(QUrl(release.url)):
-                        self._show_status(f"无法打开浏览器，请访问：\n{release.url}")
-                elif clicked is skip_button:
-                    self._skipped_version = release.version
-                    self._save_state()
             if self._dialog is dialog:
                 self._dialog = None
                 self._displayed_version = None
             dialog.deleteLater()
+            if not self._stopped:
+                if clicked is update_button:
+                    self.updater.start(release)
+                elif clicked is skip_button:
+                    self._skipped_version = release.version
+                    self._save_state()
 
         dialog.finished.connect(finish)
         dialog.show()

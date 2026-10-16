@@ -28,6 +28,13 @@ def release_payload(tag="v13.0.0"):
             "browser_download_url": (
                 f"{app_updates.REPOSITORY_URL}/releases/download/{tag}/SnipDoTranslate.exe"
             ),
+        }, {
+            "name": "SnipDoTranslate.exe.sha256",
+            "state": "uploaded",
+            "size": 86,
+            "browser_download_url": (
+                f"{app_updates.REPOSITORY_URL}/releases/download/{tag}/SnipDoTranslate.exe.sha256"
+            ),
         }],
     }
 
@@ -37,6 +44,10 @@ def test_numeric_version_comparison_and_trusted_release_url():
     assert result == ReleaseInfo(
         version="1.10.0",
         url=f"{app_updates.REPOSITORY_URL}/releases/tag/v1.10.0",
+        download_url=f"{app_updates.REPOSITORY_URL}/releases/download/v1.10.0/SnipDoTranslate.exe",
+        size=1024,
+        checksum_url=f"{app_updates.REPOSITORY_URL}/releases/download/v1.10.0/SnipDoTranslate.exe.sha256",
+        checksum_size=86,
     )
     with pytest.raises(AttributeError):
         result.version = "99.0.0"
@@ -77,6 +88,7 @@ def test_draft_and_prerelease_are_ignored(field):
 @pytest.mark.parametrize("asset_change", [
     {"name": "other.exe"}, {"name": "SnipDoTranslate.exe.zip"},
     {"state": "new"}, {"size": 0}, {"size": -1}, {"size": "1024"}, {"size": True},
+    {"size": app_updates.MAX_EXECUTABLE_BYTES + 1},
     {"browser_download_url": "https://untrusted.example/SnipDoTranslate.exe"},
     {"browser_download_url": (
         "http://github.com/Ymagenuz/my_snipdo_translate/releases/download/v13.0.0/SnipDoTranslate.exe"
@@ -97,6 +109,30 @@ def test_only_finished_matching_executable_uploads_are_usable(asset_change):
 def test_source_only_release_has_no_update():
     payload = release_payload()
     payload["assets"] = []
+    assert parse_release(payload, current_version="12.0.0") is None
+
+
+@pytest.mark.parametrize("asset_change", [
+    {"name": "checksums.txt"}, {"state": "new"}, {"size": 0},
+    {"size": True}, {"size": "86"}, {"size": app_updates.MAX_CHECKSUM_BYTES + 1},
+    {"browser_download_url": "https://untrusted.example/SnipDoTranslate.exe.sha256"},
+    {"browser_download_url": (
+        f"{app_updates.REPOSITORY_URL}/releases/download/v12.0.0/SnipDoTranslate.exe.sha256"
+    )},
+])
+def test_finished_checksum_from_same_release_is_required(asset_change):
+    payload = release_payload()
+    payload["assets"][1].update(asset_change)
+    assert parse_release(payload, current_version="12.0.0") is None
+
+
+@pytest.mark.parametrize("asset_index", [0, 1])
+def test_missing_or_duplicate_required_asset_has_no_update(asset_index):
+    payload = release_payload()
+    payload["assets"].pop(asset_index)
+    assert parse_release(payload, current_version="12.0.0") is None
+    payload = release_payload()
+    payload["assets"].append(copy.deepcopy(payload["assets"][asset_index]))
     assert parse_release(payload, current_version="12.0.0") is None
 
 
@@ -219,9 +255,7 @@ def test_check_is_async_and_prevents_concurrent_requests(checker):
     assert len(checker._manager.requests) == 1
     reply = checker._reply
     complete(reply)
-    assert checker.results == [ReleaseInfo(
-        "13.0.0", f"{app_updates.REPOSITORY_URL}/releases/tag/v13.0.0"
-    )]
+    assert checker.results == [parse_release(release_payload(), current_version="12.0.0")]
     assert not checker.is_checking
     assert reply.delete_scheduled
     assert checker.failures == []
@@ -246,9 +280,7 @@ def test_finished_after_ready_read_has_already_drained_body(checker):
     assert reply.read(1) is None
     assert checker.results == []
     reply.finished.emit()
-    assert checker.results == [ReleaseInfo(
-        "13.0.0", f"{app_updates.REPOSITORY_URL}/releases/tag/v13.0.0"
-    )]
+    assert checker.results == [parse_release(release_payload(), current_version="12.0.0")]
     assert checker.failures == []
     assert not checker.is_checking
 

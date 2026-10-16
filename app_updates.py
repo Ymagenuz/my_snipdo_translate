@@ -16,6 +16,9 @@ from app_version import APP_VERSION
 REPOSITORY_URL = "https://github.com/Ymagenuz/my_snipdo_translate"
 LATEST_RELEASE_API = "https://api.github.com/repos/Ymagenuz/my_snipdo_translate/releases/latest"
 UPDATE_EXECUTABLE = "SnipDoTranslate.exe"
+UPDATE_CHECKSUM = f"{UPDATE_EXECUTABLE}.sha256"
+MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024
+MAX_CHECKSUM_BYTES = 4096
 MAX_RESPONSE_BYTES = 256 * 1024
 CHECK_TIMEOUT_MS = 10_000
 CHECK_FAILED_MESSAGE = "暂时无法检查更新，请检查网络后重试。"
@@ -26,6 +29,10 @@ _VERSION_PATTERN = re.compile(r"v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9
 class ReleaseInfo:
     version: str
     url: str
+    download_url: str = ""
+    size: int = 0
+    checksum_url: str = ""
+    checksum_size: int = 0
 
 
 def _version_parts(version: object) -> tuple[int, int, int]:
@@ -38,7 +45,7 @@ def _version_parts(version: object) -> tuple[int, int, int]:
 
 
 def parse_release(payload: object, current_version: str = APP_VERSION) -> ReleaseInfo | None:
-    """Return a newer stable release with a finished Windows executable upload.
+    """Return a newer stable release with uploaded executable and checksum assets.
 
     Malformed metadata raises ValueError; a valid but unsuitable release returns
     None. All links are restricted to this repository, and release page links are
@@ -58,19 +65,30 @@ def parse_release(payload: object, current_version: str = APP_VERSION) -> Releas
     assets = payload.get("assets")
     if not isinstance(assets, list):
         raise ValueError("Invalid release assets")
-    expected_download = f"{REPOSITORY_URL}/releases/download/{tag}/{UPDATE_EXECUTABLE}"
-    for asset in assets:
-        if not isinstance(asset, dict):
-            continue
+    validated = {}
+    for name, maximum in (
+        (UPDATE_EXECUTABLE, MAX_EXECUTABLE_BYTES),
+        (UPDATE_CHECKSUM, MAX_CHECKSUM_BYTES),
+    ):
+        matching = [asset for asset in assets if isinstance(asset, dict) and asset.get("name") == name]
+        if len(matching) != 1:
+            return None
+        asset = matching[0]
+        expected_download = f"{REPOSITORY_URL}/releases/download/{tag}/{name}"
         if (
-            asset.get("name") == UPDATE_EXECUTABLE
-            and asset.get("state") == "uploaded"
-            and type(asset.get("size")) is int
-            and asset["size"] > 0
-            and asset.get("browser_download_url") == expected_download
+            asset.get("state") != "uploaded"
+            or type(asset.get("size")) is not int
+            or not 0 < asset["size"] <= maximum
+            or asset.get("browser_download_url") != expected_download
         ):
-            return ReleaseInfo(".".join(map(str, version)), f"{REPOSITORY_URL}/releases/tag/{tag}")
-    return None
+            return None
+        validated[name] = (expected_download, asset["size"])
+    return ReleaseInfo(
+        ".".join(map(str, version)),
+        f"{REPOSITORY_URL}/releases/tag/{tag}",
+        *validated[UPDATE_EXECUTABLE],
+        *validated[UPDATE_CHECKSUM],
+    )
 
 
 class UpdateChecker(QObject):
