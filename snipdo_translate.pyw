@@ -1511,9 +1511,11 @@ def keyboard_shortcut_display(qt_key: int, modifiers: tuple[str, ...]) -> str:
 
 
 def shortcuts_conflict(
-    first: ShortcutBinding,
-    second: ShortcutBinding,
+    first: ShortcutBinding | None,
+    second: ShortcutBinding | None,
 ) -> bool:
+    if first is None or second is None:
+        return False
     if first.kind != second.kind:
         return False
     if first.kind == "mouse":
@@ -1533,13 +1535,19 @@ class ShortcutCaptureButton(QPushButton):
         Qt.MouseButton.MiddleButton: "middle",
     }
 
-    def __init__(self, binding: ShortcutBinding, parent=None):
+    def __init__(
+        self, binding: ShortcutBinding | None, parent=None, *, allow_clear: bool = False
+    ):
         super().__init__(parent)
-        self._binding = binding
+        self._allow_clear = allow_clear
         self._capturing = False
+        self.set_binding(binding)
         self.setMinimumWidth(180)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip("点击后按下新的全局快捷键；Esc 取消")
+        self.setToolTip(
+            "点击后按下新的全局快捷键；按 Esc 移除此快捷键"
+            if allow_clear else "翻译快捷键不可移除；点击后录入新快捷键，Esc 取消修改"
+        )
         self.setStyleSheet("""
             QPushButton {
                 background-color: #F5F7FA;
@@ -1560,22 +1568,29 @@ class ShortcutCaptureButton(QPushButton):
         self._refresh_text()
 
     @property
-    def binding(self) -> ShortcutBinding:
+    def binding(self) -> ShortcutBinding | None:
         return self._binding
 
-    def set_binding(self, binding: ShortcutBinding) -> None:
+    def set_binding(self, binding: ShortcutBinding | None) -> None:
+        if binding is None:
+            if not self._allow_clear:
+                raise SettingsDataError("this shortcut cannot be removed")
+        elif not isinstance(binding, ShortcutBinding):
+            raise SettingsDataError("shortcut must be a ShortcutBinding")
         self._binding = binding
         if not self._capturing:
             self._refresh_text()
 
     def _refresh_text(self) -> None:
-        self.setText(self._binding.display)
+        self.setText(self._binding.display if self._binding is not None else "未设置")
 
     def begin_capture(self) -> None:
         if self._capturing:
             return
         self._capturing = True
-        self.setText("请按下快捷键…")
+        self.setText(
+            "请按下快捷键，Esc 移除…" if self._allow_clear else "请按下快捷键，Esc 取消…"
+        )
         self.setFocus(Qt.FocusReason.OtherFocusReason)
         self.grabKeyboard()
         self.grabMouse()
@@ -1594,11 +1609,17 @@ class ShortcutCaptureButton(QPushButton):
             self.releaseMouse()
 
     def keyPressEvent(self, event):
+        # Holding Esc after clearing must not reject the entire settings dialog.
+        if event.key() == Qt.Key.Key_Escape and event.isAutoRepeat():
+            event.accept()
+            return
         if not self._capturing:
             super().keyPressEvent(event)
             return
 
         if event.key() == Qt.Key.Key_Escape:
+            if self._allow_clear:
+                self.set_binding(None)
             self.cancel_capture()
             event.accept()
             return
@@ -1640,7 +1661,10 @@ class ShortcutCaptureButton(QPushButton):
 
         button_name = self._MOUSE_BUTTONS.get(event.button())
         if button_name is None:
-            self.capture_error.emit("鼠标快捷键支持 XButton1、XButton2 和中键；Esc 取消。")
+            escape_hint = "Esc 移除此快捷键。" if self._allow_clear else "Esc 取消修改。"
+            self.capture_error.emit(
+                "鼠标快捷键支持 XButton1、XButton2 和中键；" + escape_hint
+            )
             event.accept()
             return
 
@@ -1760,8 +1784,8 @@ class SettingsDialog(QDialog):
 
         description = QLabel(
             "启用状态控制全局划词翻译；主窗口和 SnipDo 调用仍可继续使用。"
-            "显示窗口快捷键始终有效。"
-            "鼠标快捷键采用安全的非拦截检测，因此原生后退、前进或中键动作仍会执行。"
+            "录入时按 Esc 可移除显示窗口快捷键；翻译快捷键不可移除，Esc 仅取消修改。"
+            "鼠标快捷键会拦截对应的后退、前进或中键动作。"
         )
         description.setWordWrap(True)
         description.setStyleSheet("color: #909399; font-size: 12px;")
@@ -1795,7 +1819,7 @@ class SettingsDialog(QDialog):
         form.addRow("翻译快捷键", self.shortcut_button)
 
         self.show_window_shortcut_button = ShortcutCaptureButton(
-            settings.show_window_shortcut
+            settings.show_window_shortcut, allow_clear=True
         )
         self.show_window_shortcut_button.capture_error.connect(
             self._show_capture_error
@@ -2079,14 +2103,14 @@ class TranslationShortcutManager(QObject):
     def __init__(
         self,
         host_window=None,
-        binding: ShortcutBinding | None = None,
+        binding: ShortcutBinding | None = DEFAULT_SETTINGS.shortcut,
         *,
         hotkey_id: int = TRANSLATION_HOTKEY_ID,
         log_name: str = "translation",
     ):
         super().__init__(host_window)
         self._host_window = host_window
-        self._binding = binding or DEFAULT_SETTINGS.shortcut
+        self._binding = binding
         self._hotkey_id = int(hotkey_id)
         self._log_name = str(log_name)
         self._enabled = False
@@ -2103,17 +2127,17 @@ class TranslationShortcutManager(QObject):
         self._last_trigger_time = 0.0
 
     @property
-    def binding(self) -> ShortcutBinding:
+    def binding(self) -> ShortcutBinding | None:
         return self._binding
 
     @property
     def enabled(self) -> bool:
         return self._enabled
 
-    def configure(self, binding: ShortcutBinding, enabled: bool) -> bool:
-        if not isinstance(binding, ShortcutBinding):
+    def configure(self, binding: ShortcutBinding | None, enabled: bool) -> bool:
+        if binding is not None and not isinstance(binding, ShortcutBinding):
             return False
-        requested_enabled = bool(enabled)
+        requested_enabled = bool(enabled and binding is not None)
         if binding == self._binding and requested_enabled == self._enabled:
             return self._reconcile()
 
@@ -2170,6 +2194,7 @@ class TranslationShortcutManager(QObject):
             not self._enabled
             or self._suspend_depth
             or not self._keyboard_registered
+            or self._binding is None
             or self._binding.kind != "keyboard"
         ):
             return False
@@ -2191,7 +2216,9 @@ class TranslationShortcutManager(QObject):
         return False
 
     def _reconcile(self) -> bool:
-        should_be_active = self._enabled and self._suspend_depth == 0
+        should_be_active = (
+            self._binding is not None and self._enabled and self._suspend_depth == 0
+        )
         if not should_be_active:
             return self._deactivate()
         if self.is_installed():
@@ -2203,7 +2230,7 @@ class TranslationShortcutManager(QObject):
     def _start_mouse_hook(self) -> bool:
         if self._mouse_hook is not None and self._mouse_hook.is_running():
             return True
-        if not self._binding.mouse_button:
+        if self._binding is None or not self._binding.mouse_button:
             return False
 
         self._mouse_hook_generation += 1
@@ -2224,6 +2251,7 @@ class TranslationShortcutManager(QObject):
             or self._mouse_hook is None
             or not self._enabled
             or self._suspend_depth
+            or self._binding is None
             or self._binding.kind != "mouse"
         ):
             return
@@ -2237,7 +2265,11 @@ class TranslationShortcutManager(QObject):
     def _register_keyboard_hotkey(self) -> bool:
         if self._keyboard_registered:
             return True
-        if self._host_window is None or self._binding.virtual_key is None:
+        if (
+            self._host_window is None
+            or self._binding is None
+            or self._binding.virtual_key is None
+        ):
             return False
 
         modifiers = MOD_NOREPEAT
@@ -2734,7 +2766,7 @@ class TranslationWindow(QWidget):
         )
         if not self.show_window_shortcut_manager.configure(
             self.app_settings.show_window_shortcut,
-            True,
+            self.app_settings.show_window_shortcut is not None,
         ):
             self.tray_icon.showMessage(
                 APP_DISPLAY_NAME,
@@ -2769,15 +2801,16 @@ class TranslationWindow(QWidget):
             tooltip = f"{APP_DISPLAY_NAME} · {self.app_settings.shortcut.display}"
         else:
             tooltip = f"{APP_DISPLAY_NAME} · 快捷键未激活"
+        show_binding = self.app_settings.show_window_shortcut
         show_shortcut_active = bool(
-            getattr(self, "show_window_shortcut_manager", None)
+            show_binding is not None
+            and getattr(self, "show_window_shortcut_manager", None)
             and self.show_window_shortcut_manager.is_installed()
         )
-        show_shortcut_status = (
-            self.app_settings.show_window_shortcut.display
-            if show_shortcut_active
-            else "未激活"
-        )
+        if show_binding is None:
+            show_shortcut_status = "未设置"
+        else:
+            show_shortcut_status = show_binding.display if show_shortcut_active else "未激活"
         tooltip += f" · 显示窗口 {show_shortcut_status}"
         icon = (
             self.enabled_app_icon
@@ -2797,8 +2830,7 @@ class TranslationWindow(QWidget):
             )
         if hasattr(self, "show_window_action"):
             self.show_window_action.setText(
-                "显示主窗口（"
-                f"{self.app_settings.show_window_shortcut.display}）"
+                f"显示主窗口（{show_binding.display}）" if show_binding is not None else "显示主窗口"
             )
 
     def refresh_api_status(self):
@@ -3175,7 +3207,7 @@ class TranslationWindow(QWidget):
 
         if show_window_manager and not show_window_manager.configure(
             candidate.show_window_shortcut,
-            True,
+            candidate.show_window_shortcut is not None,
         ):
             if translation_manager:
                 translation_manager.configure(
@@ -3201,7 +3233,7 @@ class TranslationWindow(QWidget):
             if show_window_manager:
                 show_window_manager.configure(
                     previous.show_window_shortcut,
-                    True,
+                    previous.show_window_shortcut is not None,
                 )
             QMessageBox.warning(
                 self,

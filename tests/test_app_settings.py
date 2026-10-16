@@ -179,6 +179,7 @@ def test_mouse_factory_rejects_invalid_button(button: object):
     "constructor",
     [
         lambda: AppSettings(enabled=1),
+        lambda: AppSettings(shortcut=None),
         lambda: AppSettings(shortcut="xbutton1"),
         lambda: AppSettings(show_window_shortcut="Ctrl+Alt+W"),
         lambda: AppSettings(api_provider="unknown"),
@@ -220,6 +221,104 @@ def test_load_migrates_legacy_payload_to_default_provider(tmp_path: Path):
     assert settings.shortcut == mouse_shortcut("xbutton1")
     assert settings.show_window_shortcut == DEFAULT_SHOW_WINDOW_SHORTCUT
     assert not settings.api_configs
+
+
+def test_cleared_show_window_shortcut_round_trips_as_json_null(tmp_path: Path):
+    path = tmp_path / "settings.json"
+    settings = AppSettings(show_window_shortcut=None)
+
+    save_settings_atomic(path, settings)
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert "show_window_shortcut" in payload
+    assert payload["show_window_shortcut"] is None
+    restored = load_settings(path)
+    assert restored == settings
+    assert restored.show_window_shortcut is None
+    assert restored.shortcut == DEFAULT_SETTINGS.shortcut
+
+
+@pytest.mark.parametrize("include_api_configs", [False, True])
+def test_load_accepts_null_show_window_shortcut_in_supported_schemas(
+    tmp_path: Path, include_api_configs: bool,
+):
+    path = tmp_path / "settings.json"
+    payload = {
+        **_valid_mouse_payload(),
+        "api_provider": DEFAULT_API_PROVIDER,
+        "show_window_shortcut": None,
+    }
+    if include_api_configs:
+        payload["api_configs"] = {}
+    _write_json(path, payload)
+
+    settings = load_settings(path)
+
+    assert settings.show_window_shortcut is None
+    assert settings.shortcut == DEFAULT_SETTINGS.shortcut
+
+
+@pytest.mark.parametrize("value", [False, True, 0, 1, "", "Ctrl+Alt+W", [], {}])
+def test_dataclass_rejects_invalid_optional_show_window_shortcut(value: object):
+    with pytest.raises(SettingsDataError, match="show_window_shortcut"):
+        AppSettings(show_window_shortcut=value)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("include_api_configs", [False, True])
+@pytest.mark.parametrize(
+    "value",
+    [
+        False, True, 0, 1, "", "Ctrl+Alt+W", [], {},
+        {**_valid_mouse_payload()["shortcut"], "extra": True},
+        {**_valid_mouse_payload()["shortcut"], "display": "XBUTTON1"},
+    ],
+)
+def test_load_rejects_invalid_show_window_shortcut_in_supported_schemas(
+    tmp_path: Path, include_api_configs: bool, value: object,
+):
+    path = tmp_path / "settings.json"
+    payload = {
+        **_valid_mouse_payload(),
+        "api_provider": DEFAULT_API_PROVIDER,
+        "show_window_shortcut": value,
+    }
+    if include_api_configs:
+        payload["api_configs"] = {}
+    _write_json(path, payload)
+
+    with pytest.raises(SettingsDataError):
+        load_settings(path)
+
+
+@pytest.mark.parametrize("include_api_configs", [False, True])
+def test_null_translation_shortcut_is_rejected_when_show_shortcut_is_cleared(
+    tmp_path: Path, include_api_configs: bool,
+):
+    path = tmp_path / "settings.json"
+    payload = {
+        "enabled": True,
+        "shortcut": None,
+        "show_window_shortcut": None,
+        "api_provider": DEFAULT_API_PROVIDER,
+    }
+    if include_api_configs:
+        payload["api_configs"] = {}
+    _write_json(path, payload)
+
+    with pytest.raises(SettingsDataError, match="shortcut must be an object"):
+        load_settings(path)
+
+
+def test_current_schema_still_requires_show_window_shortcut_field(tmp_path: Path):
+    path = tmp_path / "settings.json"
+    _write_json(path, {
+        **_valid_mouse_payload(),
+        "api_provider": DEFAULT_API_PROVIDER,
+        "api_configs": {},
+    })
+
+    with pytest.raises(SettingsDataError, match="supported schema"):
+        load_settings(path)
 
 
 @pytest.mark.parametrize("provider_id", [DEEPSEEK_API_PROVIDER, OPENROUTER_API_PROVIDER])

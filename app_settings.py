@@ -178,7 +178,7 @@ DEFAULT_SHOW_WINDOW_SHORTCUT = keyboard_shortcut(
 class AppSettings:
     enabled: bool = True
     shortcut: ShortcutBinding = field(default_factory=lambda: DEFAULT_SHORTCUT)
-    show_window_shortcut: ShortcutBinding = field(
+    show_window_shortcut: ShortcutBinding | None = field(
         default_factory=lambda: DEFAULT_SHOW_WINDOW_SHORTCUT
     )
     api_provider: str = DEFAULT_API_PROVIDER
@@ -189,9 +189,11 @@ class AppSettings:
             raise SettingsDataError("enabled must be a boolean")
         if not isinstance(self.shortcut, ShortcutBinding):
             raise SettingsDataError("shortcut must be a ShortcutBinding")
-        if not isinstance(self.show_window_shortcut, ShortcutBinding):
+        if self.show_window_shortcut is not None and not isinstance(
+            self.show_window_shortcut, ShortcutBinding
+        ):
             raise SettingsDataError(
-                "show_window_shortcut must be a ShortcutBinding"
+                "show_window_shortcut must be a ShortcutBinding or None"
             )
         if (
             not isinstance(self.api_provider, str)
@@ -282,7 +284,11 @@ def _decode_settings(value: object) -> AppSettings:
         show_window_shortcut = DEFAULT_SHOW_WINDOW_SHORTCUT
     elif fields in (_WINDOW_ROOT_FIELDS, _ROOT_FIELDS):
         api_provider = value["api_provider"]
-        show_window_shortcut = _decode_shortcut(value["show_window_shortcut"])
+        show_window_shortcut = (
+            None
+            if value["show_window_shortcut"] is None
+            else _decode_shortcut(value["show_window_shortcut"])
+        )
     else:
         raise SettingsDataError("settings fields do not match the supported schema")
     if not isinstance(value["enabled"], bool):
@@ -351,13 +357,17 @@ def _encode_settings(settings: AppSettings) -> dict[str, object]:
             "modifiers": list(shortcut.modifiers),
             "display": shortcut.display,
         },
-        "show_window_shortcut": {
-            "kind": show_window_shortcut.kind,
-            "mouse_button": show_window_shortcut.mouse_button,
-            "virtual_key": show_window_shortcut.virtual_key,
-            "modifiers": list(show_window_shortcut.modifiers),
-            "display": show_window_shortcut.display,
-        },
+        "show_window_shortcut": (
+            None
+            if show_window_shortcut is None
+            else {
+                "kind": show_window_shortcut.kind,
+                "mouse_button": show_window_shortcut.mouse_button,
+                "virtual_key": show_window_shortcut.virtual_key,
+                "modifiers": list(show_window_shortcut.modifiers),
+                "display": show_window_shortcut.display,
+            }
+        ),
     }
 
 
