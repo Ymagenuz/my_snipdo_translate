@@ -822,6 +822,191 @@ def test_manual_mode_changes_do_not_rerun_empty_text(app):
     assert starts == []
 
 
+@pytest.fixture
+def edit_window(app, monkeypatch, qapp, tmp_path):
+    class Signal:
+        def __init__(self):
+            self.callbacks = []
+
+        def connect(self, callback):
+            self.callbacks.append(callback)
+
+        def emit(self, *args):
+            for callback in self.callbacks:
+                callback(*args)
+
+    workers = []
+
+    class TranslationWorker:
+        def __init__(self, text, mode, *_args):
+            self.text = text
+            self.mode = mode
+            self.running = False
+            self.stop_requested = False
+            self.chunk_received = Signal()
+            self.finished = Signal()
+            workers.append(self)
+
+        def start(self):
+            self.running = True
+
+        def isRunning(self):
+            return self.running
+
+        def request_stop(self):
+            self.stop_requested = True
+
+        def wait(self, _timeout):
+            # Leave queued worker signals deliverable after cancellation.
+            self.running = False
+            return True
+
+        def complete(self):
+            self.running = False
+            self.finished.emit(True, "")
+
+    monkeypatch.setattr(app, "TranslationThread", TranslationWorker)
+    monkeypatch.setattr(app, "record_event", lambda _event: None)
+    monkeypatch.setattr(app.TranslationWindow, "setup_tray_icon", lambda self: None)
+    monkeypatch.setattr(
+        app.TranslationWindow, "setup_translation_shortcut", lambda self: None
+    )
+    monkeypatch.setattr(app.TranslationWindow, "force_show_window", lambda self: None)
+    monkeypatch.setattr(
+        app.TranslationWindow, "notify_translation_completed", lambda self: None
+    )
+    monkeypatch.setattr(
+        app.TranslationWindow, "ensure_api_key", lambda self, **_kwargs: True
+    )
+    window = app.TranslationWindow(_app_paths(tmp_path), object())
+    try:
+        yield window, workers
+    finally:
+        window.cancel_current_translation()
+        window.update_notifications.stop()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize("use_pending_text", [True, False])
+def test_edit_selection_preserves_source_syntax_and_completed_result(
+    app, edit_window, qapp, use_pending_text
+):
+    window, workers = edit_window
+    source = "# Source\n\n- **Bold item**\n\nEnergy: $E=mc^2$."
+    result = "# Translation\n\n- **Translated item**\n\nEnergy: $E=mc^2$."
+    assert window.handle_new_request(source)
+    workers[-1].chunk_received.emit(result)
+    workers[-1].complete()
+    rendered_result = window.txt_result.toHtml()
+    assert window.txt_origin.toPlainText() != source
+    assert not window.btn_edit_origin.isHidden()
+    assert window.btn_clear_origin.isHidden()
+    if not use_pending_text:
+        window.pending_snipdo_text = ""
+
+    window.show()
+    qapp.processEvents()
+    edit_position = window.btn_edit_origin.pos()
+    window.btn_edit_origin.click()
+    qapp.processEvents()
+
+    assert window.source_mode == "manual"
+    assert not window.txt_origin.isReadOnly()
+    assert window.txt_origin.toPlainText() == source
+    assert window.txt_result.isReadOnly()
+    assert window.txt_result.toHtml() == rendered_result
+    assert window.full_translation == result
+    assert window.result_opacity_effect.isEnabled()
+    assert 0 < window.result_opacity_effect.opacity() < 1
+    assert window.btn_edit_origin.isHidden()
+    assert not window.btn_clear_origin.isHidden()
+    assert window.btn_clear_origin.pos() == edit_position
+    assert window.btn_clear_origin.isEnabled()
+    assert not window.btn_translate.isHidden()
+    assert window.btn_translate.isEnabled()
+    assert window.btn_translate.text() == "Translate (Ctrl+Enter)"
+    assert not window.btn_copy.isEnabled()
+
+
+@pytest.mark.parametrize("submit_with_keyboard", [False, True])
+def test_edit_streaming_selection_ignores_late_worker_signals_and_submits_edits(
+    app, edit_window, submit_with_keyboard
+):
+    from PyQt6.QtTest import QTest
+
+    window, workers = edit_window
+    assert window.handle_new_request("The selected original sentence.")
+    old_worker = workers[-1]
+    old_worker.chunk_received.emit("Partial translation")
+
+    window.btn_edit_origin.click()
+    old_worker.chunk_received.emit(" stale text")
+    old_worker.complete()
+
+    assert old_worker.stop_requested
+    assert window.trans_thread is None
+    assert window.full_translation == "Partial translation"
+    assert window.txt_result.toPlainText() == "Partial translation"
+    assert not window.btn_copy.isEnabled()
+    assert window.result_opacity_effect.isEnabled()
+
+    edited_source = "# Edited source\n\nA new sentence with $x^2$."
+    window.txt_origin.setPlainText(edited_source)
+    if submit_with_keyboard:
+        QTest.keyClick(
+            window.txt_origin,
+            app.Qt.Key.Key_Return,
+            app.Qt.KeyboardModifier.ControlModifier,
+        )
+    else:
+        window.btn_translate.click()
+
+    assert len(workers) == 2
+    assert workers[-1].text == edited_source
+    assert window.trans_thread is workers[-1]
+    assert not window.result_opacity_effect.isEnabled()
+    assert window.txt_result.toPlainText() == ""
+    assert window.full_translation == ""
+    assert not window.btn_translate.isEnabled()
+    workers[-1].chunk_received.emit("Fresh translation")
+    workers[-1].complete()
+    assert window.full_translation == "Fresh translation"
+    assert window.btn_translate.isEnabled()
+    assert window.btn_copy.isEnabled()
+
+
+@pytest.mark.parametrize("next_action", ["clear", "selection", "history"])
+def test_edit_result_dimming_is_reset_by_replacing_content(edit_window, next_action):
+    window, workers = edit_window
+    assert window.handle_new_request("The selected original sentence.")
+    workers[-1].chunk_received.emit("Previous translation")
+    workers[-1].complete()
+    window.btn_edit_origin.click()
+    assert window.result_opacity_effect.isEnabled()
+
+    if next_action == "clear":
+        window.btn_clear_origin.click()
+        assert window.txt_origin.toPlainText() == ""
+        assert window.txt_result.toPlainText() == ""
+        assert window.full_translation == ""
+    elif next_action == "selection":
+        assert window.handle_new_request("A newly selected sentence.")
+        assert window.source_mode == "snipdo"
+        assert not window.btn_edit_origin.isHidden()
+        assert window.btn_clear_origin.isHidden()
+        assert window.txt_origin.isReadOnly()
+        assert window.txt_result.toPlainText() == ""
+    else:
+        window.load_history_entry(
+            {"source": "Historical source", "result": "Historical translation"}
+        )
+        assert window.txt_origin.toPlainText() == "Historical source"
+        assert window.txt_result.toPlainText() == "Historical translation"
+        assert window.btn_copy.isEnabled()
+    assert not window.result_opacity_effect.isEnabled()
+
+
 @pytest.mark.parametrize("provider_id", [DEFAULT_API_PROVIDER, OPENROUTER_API_PROVIDER])
 def test_translation_thread_streams_markdown_over_explicit_sse(
     app,

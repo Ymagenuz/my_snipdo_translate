@@ -131,6 +131,7 @@ def _ocr_window(app):
         lbl_origin=_WidgetStub(),
         lbl_result=_WidgetStub(),
         btn_copy=_WidgetStub(),
+        btn_edit_origin=_WidgetStub(),
         result_char_fmt=object(),
         ensure_api_key=lambda *, allow_prompt=True: True,
         cancel_current_translation=lambda: None,

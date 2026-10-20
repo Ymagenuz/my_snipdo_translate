@@ -100,7 +100,7 @@ from latex_renderer import (
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTextEdit,
-    QPushButton, QLabel, QFrame, QGraphicsDropShadowEffect,
+    QPushButton, QLabel, QFrame, QGraphicsDropShadowEffect, QGraphicsOpacityEffect,
     QHBoxLayout, QSystemTrayIcon, QMenu, QInputDialog, QLineEdit,
     QComboBox, QDialog, QCheckBox, QFormLayout,
     QDialogButtonBox, QMessageBox, QCompleter
@@ -3572,6 +3572,10 @@ class TranslationWindow(QWidget):
         self.txt_result.setReadOnly(True)
         self.txt_result.selectionChanged.connect(lambda: self.on_text_selection_changed("result"))
         self.txt_result.setStyleSheet("background-color: transparent;")
+        self.result_opacity_effect = QGraphicsOpacityEffect(self.txt_result)
+        self.result_opacity_effect.setOpacity(0.45)
+        self.result_opacity_effect.setEnabled(False)
+        self.txt_result.setGraphicsEffect(self.result_opacity_effect)
         card_layout.addWidget(self.txt_result)
 
         self.btn_align_selection = QPushButton(self.card_frame)
@@ -3600,7 +3604,12 @@ class TranslationWindow(QWidget):
         btn_layout = QHBoxLayout()
         btn_layout.setContentsMargins(0, 10, 0, 0)
         btn_layout.setSpacing(10)
-        btn_layout.addStretch(1)
+
+        self.btn_edit_origin = QPushButton("Edit")
+        self.btn_edit_origin.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_edit_origin.setToolTip("编辑原文后重新翻译")
+        self.btn_edit_origin.clicked.connect(self.edit_selected_text)
+        btn_layout.addWidget(self.btn_edit_origin)
 
         self.btn_clear_origin = QPushButton("Clear")
         self.btn_clear_origin.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -3621,7 +3630,9 @@ class TranslationWindow(QWidget):
                 color: #303133;
             }
         """)
+        self.btn_edit_origin.setStyleSheet(self.btn_clear_origin.styleSheet())
         btn_layout.addWidget(self.btn_clear_origin)
+        btn_layout.addStretch(1)
 
         self.btn_ocr_clipboard = QPushButton("OCR")
         self.btn_ocr_clipboard.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -3675,9 +3686,9 @@ class TranslationWindow(QWidget):
         self.btn_translate.clicked.connect(self.start_manual_translation)
         self.btn_translate.setStyleSheet("""
             QPushButton {
-                background-color: #F2F3F5;
-                color: #606266;
-                border: 1px solid #DCDFE6;
+                background-color: #52677D;
+                color: white;
+                border: 1px solid #52677D;
                 border-radius: 6px;
                 padding: 6px 16px;
                 font-family: 'Segoe UI', 'Microsoft YaHei UI';
@@ -3685,12 +3696,17 @@ class TranslationWindow(QWidget):
                 font-size: 13px;
             }
             QPushButton:hover {
-                background-color: #E4E7ED;
-                color: #303133;
+                background-color: #44596E;
+                border-color: #44596E;
+            }
+            QPushButton:pressed {
+                background-color: #384B5E;
+                border-color: #384B5E;
             }
             QPushButton:disabled {
-                background-color: #F2F3F5;
-                color: #C0C4CC;
+                background-color: #E9EDF1;
+                color: #8995A3;
+                border-color: #D8DFE6;
             }
         """)
         btn_layout.addWidget(self.btn_translate)
@@ -3750,6 +3766,7 @@ class TranslationWindow(QWidget):
         if hasattr(self, "btn_align_selection"):
             self.reset_alignment_ui()
 
+        self.result_opacity_effect.setEnabled(False)
         self.txt_result.clear()
 
         font = QFont()
@@ -4222,6 +4239,7 @@ class TranslationWindow(QWidget):
         self.lbl_result.setText("OCR")
         self.btn_copy.setText("OCR...")
         self.btn_copy.setEnabled(False)
+        self.btn_edit_origin.setEnabled(False)
 
         if self.source_mode == "manual":
             self.btn_clear_origin.setEnabled(False)
@@ -4282,6 +4300,28 @@ class TranslationWindow(QWidget):
         self.txt_origin.setPlainText(ocr_text)
         self.force_show_window()
         QTimer.singleShot(60, self.start_manual_translation)
+
+    def edit_selected_text(self):
+        if self.source_mode != "snipdo":
+            return
+        if self.ocr_thread and self.ocr_thread.isRunning():
+            return
+
+        source_text = self.pending_snipdo_text or "\n".join(self.original_paragraphs)
+        if not source_text.strip():
+            return
+
+        self.cancel_current_translation()
+        self.apply_manual_mode_ui(reset_content=False)
+        # Use the source, not the rendered document, to preserve Markdown/LaTeX.
+        self.txt_origin.setPlainText(source_text)
+        self.result_opacity_effect.setEnabled(True)
+        self.btn_clear_origin.setEnabled(True)
+        self.btn_translate.setEnabled(True)
+        self.btn_translate.setText("Translate (Ctrl+Enter)")
+        self.btn_copy.setText("Copy")
+        self.btn_copy.setEnabled(False)
+        self.txt_origin.setFocus()
 
     def clear_manual_origin(self):
         if self.source_mode != "manual":
@@ -4905,6 +4945,7 @@ class TranslationWindow(QWidget):
         self.reset_alignment_ui()
 
         self.btn_content_mode.show()
+        self.btn_edit_origin.hide()
         self.btn_clear_origin.show()
         self.btn_ocr_clipboard.show()
         self.btn_ocr_clipboard.setEnabled(True)
@@ -4942,12 +4983,14 @@ class TranslationWindow(QWidget):
         self.update_content_mode_button_text()
         self.btn_translate.hide()
         self.btn_clear_origin.hide()
+        self.btn_edit_origin.show()
         self.btn_ocr_clipboard.hide()
         self.set_dictionary_language_controls_visible(True)
         self.txt_origin.setReadOnly(True)
         self.txt_origin.setPlaceholderText("")
 
         total_text = "\n".join(self.original_paragraphs).strip()
+        self.btn_edit_origin.setEnabled(bool(total_text))
         effective_mode = self.resolve_effective_mode(total_text)
         dict_mode = effective_mode == "dictionary"
 
