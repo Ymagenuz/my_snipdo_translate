@@ -27,6 +27,7 @@ from openai import DefaultHttpxClient, OpenAI
 
 from api_providers import (
     DEFAULT_API_PROVIDER,
+    OPENAI_COMPATIBLE_API_PROVIDER,
     ApiProviderConfig,
     ApiProviderSpec,
     api_provider_options,
@@ -1852,7 +1853,12 @@ class SettingsDialog(QDialog):
 
         self.base_url_input = QLineEdit()
         self.base_url_input.setPlaceholderText("https://api.example.com/v1")
-        self.base_url_input.setToolTip("填写 API 根地址，包含服务要求的 /v1 等前缀，无需填写 /chat/completions。")
+        self.base_url_input.setStyleSheet("""
+            QLineEdit:read-only {
+                background-color: #F2F3F5;
+                color: #606266;
+            }
+        """)
         form.addRow("服务地址", self.base_url_input)
 
         model_row = QHBoxLayout()
@@ -1931,6 +1937,13 @@ class SettingsDialog(QDialog):
 
     def _load_provider_fields(self):
         provider_id = self.selected_api_provider()
+        custom_provider = provider_id == OPENAI_COMPATIBLE_API_PROVIDER
+        self.base_url_input.setReadOnly(not custom_provider)
+        self.base_url_input.setToolTip(
+            "填写 API 根地址，包含服务要求的 /v1 等前缀，无需填写 /chat/completions。"
+            if custom_provider else
+            "此接口的服务地址为只读；如需自定义地址，请选择 OpenAI 兼容接口（自定义）。"
+        )
         config = self._initial_settings.config_for(provider_id)
         values = self._drafts.get(provider_id, (
             config.base_url, config.model,

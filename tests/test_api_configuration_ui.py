@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from PyQt6.QtCore import Qt
+from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QCompleter, QDialog, QWidget
 
 from api_providers import (
@@ -89,7 +90,18 @@ def begin_fetch(dialog, requests):
 
 
 def test_provider_drafts_survive_switches_and_persist_all_edits(dialog, tmp_path):
-    dialog.base_url_input.setText("https://gateway.example.test/v2/")
+    for provider in api_provider_options():
+        if provider.provider_id == OPENAI_COMPATIBLE_API_PROVIDER:
+            continue
+        select_provider(dialog, provider.provider_id)
+        assert dialog.base_url_input.isReadOnly()
+        dialog.base_url_input.selectAll()
+        QTest.keyClicks(dialog.base_url_input, "https://blocked.example.test/v1")
+        QTest.keyClick(dialog.base_url_input, Qt.Key.Key_Backspace)
+        assert dialog.base_url_input.text() == provider.base_url
+    select_provider(dialog, DEFAULT_API_PROVIDER)
+    assert dialog.base_url_input.isReadOnly()
+    assert dialog.base_url_input.text() == get_api_provider(DEFAULT_API_PROVIDER).base_url
     dialog.model_combo.setCurrentText("custom/gpts-model")
     dialog.vision_checkbox.setChecked(False)
     dialog.disable_thinking_checkbox.setChecked(True)
@@ -98,25 +110,29 @@ def test_provider_drafts_survive_switches_and_persist_all_edits(dialog, tmp_path
     select_provider(dialog, OPENAI_COMPATIBLE_API_PROVIDER)
     assert dialog.api_key_input.text() == ""
     assert dialog.model_combo.currentText() == ""
+    assert not dialog.base_url_input.isReadOnly()
     assert dialog.base_url_input.text() == "https://api.openai.com/v1"
-    dialog.base_url_input.setText("http://localhost:8080/v1")
+    dialog.base_url_input.selectAll()
+    QTest.keyClicks(dialog.base_url_input, "http://localhost:8080/v1")
     dialog.model_combo.setCurrentText("local-vision-model")
     dialog.vision_checkbox.setChecked(True)
 
     select_provider(dialog, DEFAULT_API_PROVIDER)
-    assert dialog.base_url_input.text() == "https://gateway.example.test/v2/"
+    assert dialog.base_url_input.isReadOnly()
+    assert dialog.base_url_input.text() == get_api_provider(DEFAULT_API_PROVIDER).base_url
     assert dialog.model_combo.currentText() == "custom/gpts-model"
     assert not dialog.vision_checkbox.isChecked()
     assert dialog.disable_thinking_checkbox.isChecked()
 
     select_provider(dialog, OPENAI_COMPATIBLE_API_PROVIDER)
+    assert not dialog.base_url_input.isReadOnly()
     assert dialog.base_url_input.text() == "http://localhost:8080/v1"
     assert dialog.model_combo.currentText() == "local-vision-model"
     assert dialog.vision_checkbox.isChecked()
     candidate = dialog.candidate_settings()
     assert candidate.api_provider == OPENAI_COMPATIBLE_API_PROVIDER
     assert candidate.config_for(DEFAULT_API_PROVIDER) == ApiProviderConfig(
-        "https://gateway.example.test/v2", "custom/gpts-model", False, True
+        get_api_provider(DEFAULT_API_PROVIDER).base_url, "custom/gpts-model", False, True
     )
     assert candidate.config_for(OPENAI_COMPATIBLE_API_PROVIDER) == ApiProviderConfig(
         "http://localhost:8080/v1", "local-vision-model", True, False
@@ -144,6 +160,8 @@ def test_invalid_configuration_keeps_settings_open_with_error(dialog, qapp, fiel
     accepted = []
     dialog.accepted.connect(lambda: accepted.append(True))
     if field == "url":
+        select_provider(dialog, OPENAI_COMPATIBLE_API_PROVIDER)
+        dialog.model_combo.setCurrentText("custom-model")
         dialog.base_url_input.setText(value)
     else:
         dialog.model_combo.setCurrentText(value)
@@ -252,6 +270,8 @@ def test_loaded_models_preserve_manual_choice_and_offer_contains_search(dialog, 
 
 @pytest.mark.parametrize("change", ["provider", "url", "key"])
 def test_old_model_results_are_ignored_after_request_context_changes(dialog, requests, change):
+    if change == "url":
+        select_provider(dialog, OPENAI_COMPATIBLE_API_PROVIDER)
     request_id = begin_fetch(dialog, requests)
     if change == "provider":
         select_provider(dialog, DEEPSEEK_API_PROVIDER)

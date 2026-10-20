@@ -4,7 +4,7 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 
 ## 版本与应用内更新
 
-- 应用版本统一定义在 `app_version.py`，当前版本为 `12.3.0`：新增应用内下载、校验、安装并重启更新，支持登录 Windows 时自动启动与按 Esc 移除显示窗口快捷键，并改进划词快捷键取词可靠性。主窗口标题、设置标题、托盘“关于”菜单及打包 EXE 的 Windows 文件属性均显示版本。
+- 应用版本统一定义在 `app_version.py`，当前版本为 `12.3.1`：划词结果新增 Edit 按钮，可保留原文进入手动编辑并将旧译文置灰；Translate 按钮改用低饱和度蓝灰色；非自定义接口的服务地址改为只读。主窗口标题、设置标题、托盘“关于”菜单及打包 EXE 的 Windows 文件属性均显示版本。
 - 正常启动主实例 5 秒后，程序会在后台检查本项目的 [GitHub Releases](https://github.com/Ymagenuz/my_snipdo_translate/releases)。自动检查每台设备最多每天一次；保持运行时也会每天检查。托盘菜单中的“检查更新…”可随时手动检查。
 - 只有正式版版本号更高、且已上传有效的 `SnipDoTranslate.exe` 和 `SnipDoTranslate.exe.sha256` 附件时才会提示。草稿、预发布版本、只有源码的 Release、缺少校验文件和旧版本均不会提示。
 - 提醒提供“更新并重启”“稍后”和“跳过此版本”。点击“更新并重启”后，程序直接下载更新并显示进度，无需打开浏览器。“稍后”在本次运行期间不重复提醒同一版本；“跳过此版本”会在本机保存，手动检查仍可查看被跳过的版本。
@@ -16,9 +16,9 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 
 发布新版本时：
 
-1. 修改 `app_version.py` 中的 `APP_VERSION`，采用 `主版本.次版本.修订版本` 格式，例如 `12.3.0`，每段为 `0`–`65535` 的整数。
+1. 修改 `app_version.py` 中的 `APP_VERSION`，采用 `主版本.次版本.修订版本` 格式，例如 `12.3.1`，每段为 `0`–`65535` 的整数。
 2. 运行下方 Windows 构建流程，得到已校验的 `dist\SnipDoTranslate.exe` 和 SHA-256 文件；构建检查会验证 EXE 中的版本资源与源码一致。
-3. 在本项目 GitHub Releases 中创建对应标签（例如 `v12.3.0`）的正式 Release，上传 `SnipDoTranslate.exe` 和 `SnipDoTranslate.exe.sha256`，填写更新说明，再发布并标记为最新版本。校验文件使用构建脚本生成的 `SHA256  SnipDoTranslate.exe` 格式。只推送代码或创建 Git 标签不会发布应用更新。
+3. 在本项目 GitHub Releases 中创建对应标签（例如 `v12.3.1`）的正式 Release，上传 `SnipDoTranslate.exe` 和 `SnipDoTranslate.exe.sha256`，填写更新说明，再发布并标记为最新版本。校验文件使用构建脚本生成的 `SHA256  SnipDoTranslate.exe` 格式。只推送代码或创建 Git 标签不会发布应用更新。
 
 所有设备共用这个公开的发布源，无需搭建推送服务器或在设备间直接连接。EXE 内置固定的本项目检查地址；无需 GitHub Token。
 
@@ -61,7 +61,7 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 - 鼠标快捷键会拦截对应的 XButton1/XButton2/中键原生动作，避免同时触发浏览器后退、前进或中键功能。低级鼠标回调运行在独立的 Win32 消息线程中，只投递翻译信号，不在回调内执行剪贴板、界面或网络工作。
 - 关闭主窗口通常只会隐藏到系统托盘；要完全退出，请使用托盘菜单中的退出命令。
 
-设置中的“API 接口”提供四个独立配置。所有配置都使用 OpenAI Chat Completions 兼容格式，并允许编辑服务地址（Base URL）和模型：
+设置中的“API 接口”提供四个独立配置。所有配置都使用 OpenAI Chat Completions 兼容格式，并允许编辑模型；只有“OpenAI 兼容接口（自定义）”允许编辑服务地址（Base URL），其他接口的服务地址为只读：
 
 | 接口 | 初始 Base URL | 预设模型 | 可选环境变量 | Windows 凭据目标 |
 | --- | --- | --- | --- | --- |
@@ -74,7 +74,7 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 
 配置或切换模型：
 
-1. 打开设置并选择接口，填写该服务的 Base URL 和 API Key。Base URL 应为服务提供的 API 根地址，不包含 `/chat/completions` 或 `/models`。
+1. 打开设置并选择接口，填写该服务的 API Key。使用“OpenAI 兼容接口（自定义）”时可以编辑 Base URL；其他接口的地址只读。Base URL 应为服务提供的 API 根地址，不包含 `/chat/completions` 或 `/models`。
 2. 点击“获取模型”，程序会在后台请求当前填写地址的 `/models`，优先使用当前输入的 Key；留空时使用所选接口已有的环境变量或 Windows 凭据。
 3. 获取模型后，可在模型下拉框中输入关键词搜索，按模型 ID 包含的文字匹配且不区分大小写；也可以直接选择模型或输入完整模型 ID。服务不支持模型列表或获取失败时，仍可手动输入并保存。
 4. 根据所选模型配置图片输入/OCR 能力。只有服务和模型实际支持图片输入时才启用；关闭时，程序会在执行 OCR 前拒绝请求并保留传入的源文件。DeepSeek 预设关闭图片输入。
