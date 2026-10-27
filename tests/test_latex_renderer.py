@@ -1,14 +1,50 @@
+import threading
 from io import BytesIO
 
 from PIL import Image
 from PyQt6.QtWidgets import QTextEdit
 
+import latex_renderer
 from latex_renderer import (
     LatexMathFragment,
     prepare_latex_math_for_document,
     render_latex_fragment_png,
     render_math_fragments_in_document,
+    warm_up_math_rendering,
 )
+
+
+def test_math_warm_up_runs_once_off_the_calling_thread(monkeypatch):
+    ran = threading.Event()
+    threads = []
+
+    def fake_warm_up():
+        threads.append(threading.get_ident())
+        ran.set()
+
+    monkeypatch.setattr(latex_renderer, "_warm_up_started", False)
+    monkeypatch.setattr(latex_renderer, "_warm_up", fake_warm_up)
+
+    assert warm_up_math_rendering()
+    assert ran.wait(5)
+    assert not warm_up_math_rendering()
+    assert threads != [threading.get_ident()]
+    assert len(threads) == 1
+
+
+def test_math_warm_up_fills_the_result_view_render_cache(monkeypatch):
+    calls = []
+    original = latex_renderer._render_math_row_png
+
+    def recording_render(*args):
+        calls.append(args)
+        return original(*args)
+
+    monkeypatch.setattr(latex_renderer, "_render_math_row_png", recording_render)
+
+    latex_renderer._warm_up()
+
+    assert calls == [("x", 15, "#2c3e50", 192)]
 
 
 def test_prepare_latex_math_recognizes_common_delimiters_and_environments():

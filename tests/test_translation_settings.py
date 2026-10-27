@@ -420,6 +420,67 @@ def test_streaming_options_request_sse_without_redundant_reasoning(
     }
 
 
+def test_openrouter_reasoning_option_reaches_the_wire(app):
+    captured = {}
+    default = get_api_provider(OPENROUTER_API_PROVIDER)
+    provider = get_api_provider(
+        OPENROUTER_API_PROVIDER,
+        ApiProviderConfig(default.base_url, default.model, True, True),
+    )
+
+    def handler(request):
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=b"data: [DONE]\n\n",
+        )
+
+    api_client = SdkOpenAI(
+        api_key="sk-wire-contract-test",
+        base_url=provider.base_url,
+        max_retries=0,
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        list(api_client.chat.completions.create(
+            messages=[{"role": "user", "content": "hello"}],
+            stream=True,
+            **app.chat_completion_options(provider, streaming=True),
+        ))
+    finally:
+        api_client.close()
+
+    assert captured["body"]["reasoning"] == {"effort": "none"}
+    assert "thinking" not in captured["body"]
+
+
+def test_created_client_warms_its_connection_without_credentials(app, monkeypatch):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(404)
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(app, "DefaultHttpxClient", lambda **_kwargs: http_client)
+    monkeypatch.setattr(app, "OpenAI", SdkOpenAI)
+    api_client = app.create_api_client("sk-never-sent-by-warm-up", OPENROUTER_API_PROVIDER)
+    try:
+        warmer = app.connection_warmer(api_client)
+        assert warmer is not None
+        assert warmer.warm()
+        assert warmer.wait(5)
+    finally:
+        api_client.close()
+
+    assert [(request.method, str(request.url)) for request in requests] == [
+        ("HEAD", "https://openrouter.ai/api/v1")
+    ]
+    assert "authorization" not in requests[0].headers
+    assert requests[0].content == b""
+
+
 @pytest.mark.parametrize("provider_id", [DEFAULT_API_PROVIDER, OPENROUTER_API_PROVIDER])
 def test_streaming_options_reach_the_wire_as_mobile_compatible_sse(app, provider_id):
     captured = {}
@@ -886,6 +947,140 @@ def edit_window(app, monkeypatch, qapp, tmp_path):
         window.update_notifications.stop()
         window.deleteLater()
         qapp.processEvents()
+
+
+def test_translation_with_math_warms_formula_rendering_in_background(
+    app, edit_window, monkeypatch
+):
+    window, workers = edit_window
+    warmups = []
+    monkeypatch.setattr(app, "warm_up_math_rendering", lambda: warmups.append(True))
+
+    assert window.handle_new_request("A plain sentence to translate.")
+    assert warmups == []
+    assert window.handle_new_request(r"Energy is \(E=mc^2\) in this frame.")
+    assert warmups == [True]
+    assert len(workers) == 2
+
+
+def test_translation_starts_connection_keep_warm_checks(app, edit_window, monkeypatch):
+    window, _workers = edit_window
+    refreshes = []
+
+    class Warmer:
+        def keep_warm(self):
+            refreshes.append(True)
+            return len(refreshes) < 2
+
+    monkeypatch.setattr(app, "connection_warmer", lambda _client: Warmer())
+    assert not window.connection_refresh_timer.isActive()
+
+    assert window.handle_new_request("A plain sentence to translate.")
+    assert window.connection_refresh_timer.isActive()
+    assert window.connection_refresh_timer.interval() == app.CONNECTION_REFRESH_CHECK_MS
+    window.refresh_api_connection()
+    assert window.connection_refresh_timer.isActive()
+    window.refresh_api_connection()
+    assert not window.connection_refresh_timer.isActive()
+
+
+def test_stream_renders_markdown_at_once_then_throttles(app, edit_window, monkeypatch):
+    window, workers = edit_window
+    monkeypatch.setattr(app, "LIVE_RENDER_INTERVAL_SECONDS", 60.0)
+    assert window.handle_new_request("serendipity")
+    monkeypatch.setattr(
+        app, "record_event", lambda _event: pytest.fail("chunks must not log to disk"),
+    )
+
+    workers[-1].chunk_received.emit("# serendipity\n\n> **语言**：英语")
+    assert window.txt_result.toPlainText() == "serendipity\n语言：英语"
+
+    workers[-1].chunk_received.emit("\n\n## 对应表达")
+    assert window.live_render_timer.isActive()
+    assert "对应表达" not in window.txt_result.toPlainText()
+    window.on_live_render_timer()
+    assert window.txt_result.toPlainText().endswith("\n对应表达")
+    assert not window.live_render_timer.isActive()
+
+
+@pytest.mark.parametrize(
+    ("source", "dictionary"),
+    [("serendipity", True), ("A plain sentence to translate.", False)],
+)
+def test_stream_and_final_render_keep_the_reader_in_place(
+    app, edit_window, qapp, source, dictionary
+):
+    window, workers = edit_window
+    window.show()
+    qapp.processEvents()
+    assert window.handle_new_request(source)
+    assert (window.active_translation_mode == "dictionary") is dictionary
+
+    workers[-1].chunk_received.emit(
+        "# 结果\n\n" + "".join(f"- **第 {index} 项**：说明\n" for index in range(60))
+    )
+    qapp.processEvents()
+    scroll_bar = window.txt_result.verticalScrollBar()
+    assert scroll_bar.maximum() > 0
+    assert scroll_bar.value() == 0
+
+    scroll_bar.setValue(scroll_bar.maximum() // 2)
+    position = scroll_bar.value()
+    workers[-1].chunk_received.emit("- **第 60 项**：说明\n")
+    window.flush_live_translation()
+    qapp.processEvents()
+    assert "第 60 项" in window.txt_result.toPlainText()
+    assert scroll_bar.value() == position
+
+    workers[-1].complete()
+    qapp.processEvents()
+    assert window.btn_copy.isEnabled()
+    assert scroll_bar.value() == position
+
+
+def test_live_render_shows_formula_source_until_the_final_render(
+    app, edit_window, monkeypatch
+):
+    window, workers = edit_window
+    rendered = []
+    monkeypatch.setattr(app, "warm_up_math_rendering", lambda: None)
+    monkeypatch.setattr(
+        app,
+        "render_math_fragments_in_document",
+        lambda _widget, fragments, **_kwargs: (
+            rendered.append(len(fragments)) or SimpleNamespace(fallback=0)
+        ),
+    )
+    assert window.handle_new_request("A plain sentence to translate.")
+
+    workers[-1].chunk_received.emit(r"能量为 \(E=mc^2\)。")
+    assert window.txt_result.toPlainText() == r"能量为 \(E=mc^2\)。"
+    assert rendered == []
+
+    workers[-1].complete()
+    assert rendered == [1]
+
+
+@pytest.mark.parametrize("interruption", ["failure", "edit"])
+def test_interrupted_stream_shows_every_received_chunk(
+    app, edit_window, monkeypatch, interruption
+):
+    window, workers = edit_window
+    monkeypatch.setattr(app, "LIVE_RENDER_INTERVAL_SECONDS", 60.0)
+    assert window.handle_new_request("The selected original sentence.")
+    workers[-1].chunk_received.emit("Partial")
+    workers[-1].chunk_received.emit(" translation")
+    assert window.live_render_timer.isActive()
+
+    if interruption == "failure":
+        workers[-1].finished.emit(False, "network down")
+        expected = "Partial translation\n\n[翻译出错: network down]"
+    else:
+        window.btn_edit_origin.click()
+        expected = "Partial translation"
+
+    assert window.txt_result.toPlainText() == expected
+    assert not window.live_render_timer.isActive()
 
 
 @pytest.mark.parametrize("use_pending_text", [True, False])

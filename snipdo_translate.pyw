@@ -25,6 +25,11 @@ from urllib.parse import unquote
 from httpx import Limits
 from openai import DefaultHttpxClient, OpenAI
 
+from api_connection import (
+    ConnectionWarmer,
+    attach_connection_warmer,
+    connection_warmer,
+)
 from api_providers import (
     DEFAULT_API_PROVIDER,
     OPENAI_COMPATIBLE_API_PROVIDER,
@@ -97,6 +102,8 @@ from latex_renderer import (
     prepare_latex_math_for_document,
     render_latex_fragment_png,
     render_math_fragments_in_document,
+    show_math_fragment_sources,
+    warm_up_math_rendering,
 )
 
 from PyQt6.QtWidgets import (
@@ -122,7 +129,15 @@ warnings.filterwarnings("ignore")
 # ================= 配置区域 =================
 MODEL_NAME = get_api_provider(DEFAULT_API_PROVIDER).model
 REQUEST_TIMEOUT_SECONDS = 15.0
-HTTP_KEEPALIVE_SECONDS = 60.0
+# OpenRouter's edge closes idle connections after 120 seconds. Pooled
+# connections expire just before that, and warm-up refreshes them sooner.
+HTTP_KEEPALIVE_SECONDS = 110.0
+CONNECTION_REFRESH_SECONDS = 90.0
+CONNECTION_REFRESH_CHECK_MS = 15_000
+CONNECTION_KEEP_WARM_SECONDS = 15 * 60.0
+CONNECTION_WARMUP_TIMEOUT_SECONDS = 5.0
+CONNECTION_WARMUP_WAIT_SECONDS = 2.0
+LIVE_RENDER_INTERVAL_SECONDS = 0.12
 MAX_HISTORY_ITEMS = 50
 APP_ID = "SnipDoTranslate"
 APP_DISPLAY_NAME = "SnipDo Translate"
@@ -204,13 +219,24 @@ def create_api_client(
                 keepalive_expiry=HTTP_KEEPALIVE_SECONDS,
             ),
         )
-        return OpenAI(
+        api_client = OpenAI(
             api_key=api_key,
             base_url=provider.base_url,
             timeout=REQUEST_TIMEOUT_SECONDS,
             max_retries=0,
             http_client=http_client,
         )
+        attach_connection_warmer(
+            api_client,
+            ConnectionWarmer(
+                http_client,
+                provider.base_url,
+                refresh_after=CONNECTION_REFRESH_SECONDS,
+                keep_warm_for=CONNECTION_KEEP_WARM_SECONDS,
+                timeout=CONNECTION_WARMUP_TIMEOUT_SECONDS,
+            ),
+        )
+        return api_client
     except Exception:
         if http_client is not None:
             try:
@@ -1150,6 +1176,7 @@ class TranslationThread(QThread):
 """
 
     def run(self):
+        warmer = connection_warmer(self.runtime.client)
         try:
             runtime = self.runtime
             if self._stop_requested:
@@ -1166,6 +1193,8 @@ class TranslationThread(QThread):
                 prompt = f"{format_instruction}\n\n{prompt}"
             log(f"[TranslateThread] start, mode={self.mode}, text={repr(self.text[:200])}")
 
+            if warmer is not None:
+                warmer.before_request(CONNECTION_WARMUP_WAIT_SECONDS)
             response = runtime.client.chat.completions.create(
                 messages=[
                     {"role": "user", "content": prompt}
@@ -1202,6 +1231,9 @@ class TranslationThread(QThread):
         except Exception as e:
             log(f"[TranslateThread] error: {e}")
             self.finished.emit(False, str(e))
+        finally:
+            if warmer is not None:
+                warmer.after_request()
 
 
 class AlignmentThread(QThread):
@@ -2568,6 +2600,13 @@ class TranslationWindow(QWidget):
         self.active_translation_text = ""
         self.active_translation_mode = ""
         self.translation_history = self.load_translation_history()
+        self.connection_refresh_timer = QTimer(self)
+        self.connection_refresh_timer.setInterval(CONNECTION_REFRESH_CHECK_MS)
+        self.connection_refresh_timer.timeout.connect(self.refresh_api_connection)
+        self.live_render_timer = QTimer(self)
+        self.live_render_timer.setSingleShot(True)
+        self.live_render_timer.timeout.connect(self.on_live_render_timer)
+        self._live_render_due = 0.0
 
         self.init_ui()
         self.setup_result_format()
@@ -2914,6 +2953,11 @@ class TranslationWindow(QWidget):
                 return
             self._selection_suspended_managers.append(manager)
         QTimer.singleShot(35, self._wait_for_selection_shortcut_release)
+
+    def refresh_api_connection(self):
+        warmer = connection_warmer(api_runtime.client)
+        if warmer is None or not warmer.keep_warm():
+            self.connection_refresh_timer.stop()
 
     def _selection_capture_is_current(self) -> bool:
         return bool(
@@ -3780,6 +3824,8 @@ class TranslationWindow(QWidget):
             self.reset_alignment_ui()
 
         self.result_opacity_effect.setEnabled(False)
+        self.live_render_timer.stop()
+        self._live_render_due = 0.0
         self.txt_result.clear()
 
         font = QFont()
@@ -3789,10 +3835,6 @@ class TranslationWindow(QWidget):
         self.result_char_fmt = QTextCharFormat()
         self.result_char_fmt.setFont(font)
         self.result_char_fmt.setForeground(QColor("#2c3e50"))
-
-        self.result_block_fmt = QTextBlockFormat()
-        self.result_block_fmt.setLineHeight(150, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
-        self.result_block_fmt.setBottomMargin(12)
 
     def apply_markdown_document_style(self, widget, source_name: str):
         text_color = "#606266" if source_name == "origin" else "#2c3e50"
@@ -3941,7 +3983,15 @@ class TranslationWindow(QWidget):
 
             block = block.next()
 
-    def render_markdown_text(self, widget, markdown_text: str, source_name: str) -> bool:
+    def render_markdown_text(
+        self,
+        widget,
+        markdown_text: str,
+        source_name: str,
+        *,
+        preview: bool = False,
+    ) -> bool:
+        """Render Markdown; a preview shows formulas as source instead of images."""
         markdown_text = (markdown_text or "").strip()
         if not markdown_text:
             widget.clear()
@@ -3965,7 +4015,9 @@ class TranslationWindow(QWidget):
                 widget.setMarkdown(document_text)
                 self.compact_markdown_list_indents(widget)
 
-            if formula_fragments:
+            if formula_fragments and preview:
+                show_math_fragment_sources(widget, formula_fragments)
+            elif formula_fragments:
                 formula_stats = render_math_fragments_in_document(
                     widget,
                     formula_fragments,
@@ -4325,6 +4377,7 @@ class TranslationWindow(QWidget):
             return
 
         self.cancel_current_translation()
+        self.flush_live_translation()
         self.apply_manual_mode_ui(reset_content=False)
         # Use the source, not the rendered document, to preserve Markdown/LaTeX.
         self.txt_origin.setPlainText(source_text)
@@ -5267,6 +5320,11 @@ class TranslationWindow(QWidget):
             return False
 
         record_event(AppEvent.TRANSLATION_STARTED)
+        if not self.connection_refresh_timer.isActive():
+            self.connection_refresh_timer.start()
+        if prepare_latex_math_for_document(text)[1]:
+            # Load the formula renderer while the response streams in.
+            warm_up_math_rendering()
         return True
 
     # ---------- 结果输出 ----------
@@ -5283,17 +5341,49 @@ class TranslationWindow(QWidget):
 
     def append_translation_chunk(self, chunk):
         self.full_translation += chunk
-        cursor = self.txt_result.textCursor()
+        if self.live_render_timer.isActive():
+            return
+        delay = self._live_render_due - time.monotonic()
+        if delay <= 0:
+            self.render_live_translation()
+        else:
+            # A trailing render picks up every chunk that arrives meanwhile.
+            self.live_render_timer.start(int(delay * 1000) + 1)
 
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.setBlockFormat(self.result_block_fmt)
-        cursor.insertText(chunk, self.result_char_fmt)
+    def on_live_render_timer(self):
+        if self.trans_thread is not None:
+            self.render_live_translation()
 
-        self.txt_result.setTextCursor(cursor)
-        self.txt_result.ensureCursorVisible()
+    def flush_live_translation(self):
+        if self.live_render_timer.isActive():
+            self.render_live_translation()
+
+    def render_result_in_place(self, *, preview: bool) -> None:
+        """Re-render the response without moving the reader's scroll position."""
+        scroll_bar = self.txt_result.verticalScrollBar()
+        position = scroll_bar.value()
+        self.render_markdown_text(
+            self.txt_result, self.full_translation, "result", preview=preview,
+        )
+        scroll_bar.setValue(position)
+
+    def render_live_translation(self):
+        """Render the partial response as Markdown while it streams."""
+        self.live_render_timer.stop()
+        started = time.monotonic()
+        self.render_result_in_place(preview=True)
+        finished = time.monotonic()
+        # Long responses take longer to re-render; keep the UI thread mostly free.
+        self._live_render_due = finished + max(
+            LIVE_RENDER_INTERVAL_SECONDS, 4 * (finished - started),
+        )
 
     def on_translation_finished(self, success, error_msg):
         log(f"[UI] on_translation_finished success={success}, error={error_msg}")
+        if success:
+            self.live_render_timer.stop()
+        else:
+            self.flush_live_translation()
         cursor = self.txt_result.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
 
@@ -5306,7 +5396,7 @@ class TranslationWindow(QWidget):
                 cursor.insertText(f"\n\n[翻译出错: {error_msg}]", self.result_char_fmt)
         elif self.full_translation.strip():
             record_event(AppEvent.TRANSLATION_COMPLETED)
-            self.render_markdown_text(self.txt_result, self.full_translation, "result")
+            self.render_result_in_place(preview=False)
             self.add_history_entry(
                 self.active_translation_text,
                 self.full_translation,

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import threading
 import uuid
 
 from PyQt6.QtCore import Qt, QUrl
@@ -229,6 +230,13 @@ def _configure_matplotlib_cache() -> None:
         return
 
 
+# matplotlib keeps global rc state, so the background warm-up and the UI thread
+# must not render at the same time.
+_MATPLOTLIB_LOCK = threading.Lock()
+_WARM_UP_LOCK = threading.Lock()
+_warm_up_started = False
+
+
 @lru_cache(maxsize=1)
 def _matplotlib_api():
     _configure_matplotlib_cache()
@@ -268,26 +276,64 @@ def _render_math_row_png(
     color: str,
     dpi: int,
 ) -> bytes:
-    rc_context, FontProperties, math_to_image = _matplotlib_api()
-    point_size = max(8.0, float(font_pixel_size) * 72.0 / 96.0)
-    output = BytesIO()
-    with rc_context(
-        {
-            "figure.facecolor": "none",
-            "savefig.facecolor": "none",
-            "savefig.transparent": True,
-            "mathtext.fontset": "stix",
-        }
-    ):
-        math_to_image(
-            f"${expression}$",
-            output,
-            prop=FontProperties(size=point_size),
-            dpi=dpi,
-            format="png",
-            color=color,
-        )
-    return output.getvalue()
+    with _MATPLOTLIB_LOCK:
+        rc_context, FontProperties, math_to_image = _matplotlib_api()
+        point_size = max(8.0, float(font_pixel_size) * 72.0 / 96.0)
+        output = BytesIO()
+        with rc_context(
+            {
+                "figure.facecolor": "none",
+                "savefig.facecolor": "none",
+                "savefig.transparent": True,
+                "mathtext.fontset": "stix",
+            }
+        ):
+            math_to_image(
+                f"${expression}$",
+                output,
+                prop=FontProperties(size=point_size),
+                dpi=dpi,
+                format="png",
+                color=color,
+            )
+        return output.getvalue()
+
+
+def warm_up_math_rendering() -> bool:
+    """Load the formula renderer off the UI thread before a formula is shown.
+
+    The first render imports matplotlib and loads its fonts, which otherwise
+    freezes the window for most of a second. Only the first call starts work.
+    """
+    global _warm_up_started
+
+    with _WARM_UP_LOCK:
+        if _warm_up_started:
+            return False
+        _warm_up_started = True
+    try:
+        threading.Thread(
+            target=_warm_up,
+            name="SnipDoTranslate-MathWarmup",
+            daemon=True,
+        ).start()
+    except RuntimeError:
+        with _WARM_UP_LOCK:
+            _warm_up_started = False
+        return False
+    return True
+
+
+def _warm_up() -> None:
+    try:
+        import PIL.Image
+
+        # Same size, colour and DPI as the result view, so the parser, fonts
+        # and caches it fills are the ones the first real formula needs.
+        _render_math_row_png("x", 15, "#2c3e50", 192)
+    except Exception:
+        # The UI thread renders normally (with its own fallback) if this fails.
+        pass
 
 
 def render_latex_fragment_png(
@@ -406,11 +452,7 @@ def render_math_fragments_in_document(
                 cursor.setBlockFormat(block_format)
             rendered_count += 1
         except Exception:
-            fallback_format = QTextCharFormat()
-            fallback_format.setFontFamilies(["Cascadia Mono", "Consolas", "monospace"])
-            fallback_format.setForeground(Qt.GlobalColor.darkGray)
-            cursor.removeSelectedText()
-            cursor.insertText(fragment.source, fallback_format)
+            _insert_formula_source(cursor, fragment)
             fallback_count += 1
 
     return FormulaRenderStats(
@@ -418,3 +460,20 @@ def render_math_fragments_in_document(
         rendered=rendered_count,
         fallback=fallback_count,
     )
+
+
+def show_math_fragment_sources(widget, fragments: list[LatexMathFragment]) -> None:
+    """Show prepared formulas as LaTeX source until the final render."""
+    document = widget.document()
+    for fragment in fragments:
+        cursor = document.find(fragment.placeholder)
+        if not cursor.isNull():
+            _insert_formula_source(cursor, fragment)
+
+
+def _insert_formula_source(cursor, fragment: LatexMathFragment) -> None:
+    source_format = QTextCharFormat()
+    source_format.setFontFamilies(["Cascadia Mono", "Consolas", "monospace"])
+    source_format.setForeground(Qt.GlobalColor.darkGray)
+    cursor.removeSelectedText()
+    cursor.insertText(fragment.source, source_format)

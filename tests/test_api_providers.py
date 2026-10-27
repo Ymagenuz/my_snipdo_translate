@@ -9,6 +9,7 @@ from api_providers import (
     DEFAULT_API_PROVIDER,
     DEEPSEEK_API_PROVIDER,
     OPENAI_COMPATIBLE_API_PROVIDER,
+    OPENROUTER_API_PROVIDER,
     ApiProviderConfig,
     api_provider_options,
     chat_completion_options,
@@ -74,6 +75,20 @@ def test_configured_thinking_option_is_used_in_request_options():
         "model": "local-model",
         "extra_headers": {"Accept": "text/event-stream"},
         "extra_body": {"thinking": {"type": "disabled"}},
+    }
+
+
+def test_openrouter_disables_thinking_with_its_reasoning_parameter():
+    default = provider_default_config(OPENROUTER_API_PROVIDER)
+    provider = get_api_provider(
+        OPENROUTER_API_PROVIDER,
+        ApiProviderConfig(default.base_url, "openai/gpt-6-luna", True, True),
+    )
+
+    assert chat_completion_options(provider, streaming=True) == {
+        "model": "openai/gpt-6-luna",
+        "extra_headers": {"Accept": "text/event-stream"},
+        "extra_body": {"reasoning": {"effort": "none"}},
     }
 
 

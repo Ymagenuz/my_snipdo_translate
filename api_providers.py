@@ -172,7 +172,12 @@ def chat_completion_options(
     if streaming:
         options["extra_headers"] = {"Accept": "text/event-stream"}
     if provider.disable_thinking:
-        options["extra_body"] = {"thinking": {"type": "disabled"}}
+        if provider.provider_id == OPENROUTER_API_PROVIDER:
+            # OpenRouter's Chat Completions API uses its unified reasoning
+            # object; it does not read DeepSeek's thinking extension.
+            options["extra_body"] = {"reasoning": {"effort": "none"}}
+        else:
+            options["extra_body"] = {"thinking": {"type": "disabled"}}
     return options
 
 

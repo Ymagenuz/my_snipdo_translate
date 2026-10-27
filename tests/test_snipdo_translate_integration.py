@@ -103,13 +103,28 @@ class _CursorStub:
         return None
 
 
+class _ScrollBarStub:
+    def __init__(self):
+        self.position = 0
+
+    def value(self):
+        return self.position
+
+    def setValue(self, value):
+        self.position = value
+
+
 class _TextEditStub(_WidgetStub):
     def __init__(self):
         super().__init__()
         self.cursor = _CursorStub()
+        self.scroll_bar = _ScrollBarStub()
 
     def textCursor(self):
         return self.cursor
+
+    def verticalScrollBar(self):
+        return self.scroll_bar
 
     def setTextCursor(self, _cursor):
         return None
@@ -169,6 +184,10 @@ def _translation_window(app):
         current_dictionary_languages=lambda: ("auto", "default"),
         append_translation_chunk=lambda _chunk: None,
         on_translation_finished=lambda *_args: None,
+        connection_refresh_timer=SimpleNamespace(
+            isActive=lambda: False,
+            start=lambda: None,
+        ),
     )
     _bind(window, app.TranslationWindow, "on_translation_worker_chunk")
     _bind(window, app.TranslationWindow, "on_translation_worker_finished")
@@ -580,29 +599,6 @@ def test_stale_translation_worker_signals_cannot_overwrite_new_request(
     assert window.translation_threads == set()
 
 
-def test_first_chunk_is_rendered_immediately_without_auxiliary_logging(
-    app,
-    monkeypatch,
-):
-    monkeypatch.setattr(
-        app,
-        "record_event",
-        lambda _event: pytest.fail("first chunk must not perform disk event logging"),
-    )
-    window = SimpleNamespace(
-        full_translation="",
-        txt_result=_TextEditStub(),
-        result_block_fmt=object(),
-        result_char_fmt=object(),
-    )
-
-    app.TranslationWindow.append_translation_chunk(window, "# 译文")
-    app.TranslationWindow.append_translation_chunk(window, "\n\n- 项目")
-
-    assert window.full_translation == "# 译文\n\n- 项目"
-    assert window.txt_result.cursor.insertions == ["# 译文", "\n\n- 项目"]
-
-
 def test_completed_stream_is_reparsed_as_full_markdown(app, monkeypatch):
     events = []
     rendered = []
@@ -611,6 +607,12 @@ def test_completed_stream_is_reparsed_as_full_markdown(app, monkeypatch):
     notifications = []
     monkeypatch.setattr(app, "record_event", events.append)
     markdown = "# 译文\n\n- 第一项\n- 第二项"
+
+    def render_markdown_text(widget, text, source, **options):
+        rendered.append((widget, text, source, options))
+        # Rendering moves the cursor, and with it the view, to the start.
+        widget.verticalScrollBar().setValue(0)
+
     window = SimpleNamespace(
         full_translation=markdown,
         txt_result=_TextEditStub(),
@@ -619,17 +621,19 @@ def test_completed_stream_is_reparsed_as_full_markdown(app, monkeypatch):
         result_char_fmt=object(),
         active_translation_text="# Source\n\n- One\n- Two",
         active_translation_mode="en2zh",
-        render_markdown_text=lambda widget, text, source: rendered.append(
-            (widget, text, source)
-        ),
+        render_markdown_text=render_markdown_text,
         add_history_entry=lambda *args: history.append(args),
         notify_translation_completed=lambda: notifications.append(True),
         ensure_large_window_size=lambda: size_requests.append(True),
+        live_render_timer=SimpleNamespace(stop=lambda: None),
     )
+    _bind(window, app.TranslationWindow, "render_result_in_place")
+    window.txt_result.verticalScrollBar().setValue(37)
 
     app.TranslationWindow.on_translation_finished(window, True, "")
 
-    assert rendered == [(window.txt_result, markdown, "result")]
+    assert rendered == [(window.txt_result, markdown, "result", {"preview": False})]
+    assert window.txt_result.verticalScrollBar().value() == 37
     assert history == [
         (
             window.active_translation_text,
