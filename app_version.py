@@ -1,6 +1,6 @@
 """Application release version shared by the UI, updater, and Windows build."""
 
-APP_VERSION = "12.3.2"
+APP_VERSION = "12.3.3"
 
 # Windows version resources use four unsigned 16-bit components. Releases use
 # major.minor.patch; the fourth component is reserved for Windows metadata.
