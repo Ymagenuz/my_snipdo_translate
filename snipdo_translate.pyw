@@ -3592,10 +3592,10 @@ class TranslationWindow(QWidget):
         self.txt_origin.selectionChanged.connect(lambda: self.on_text_selection_changed("origin"))
         self.txt_origin.setMaximumHeight(180)
 
-        origin_font = QFont()
-        origin_font.setFamilies(["Segoe UI", "Microsoft YaHei UI", "sans-serif"])
-        origin_font.setPixelSize(14)
-        self.txt_origin.setFont(origin_font)
+        self.origin_font = QFont()
+        self.origin_font.setFamilies(["Segoe UI", "Microsoft YaHei UI", "sans-serif"])
+        self.origin_font.setPixelSize(14)
+        self.txt_origin.setFont(self.origin_font)
         self.txt_origin.setStyleSheet("""
             background-color: #FAFAFA;
             border-left: 2px solid #E4E7ED;
@@ -4147,6 +4147,8 @@ class TranslationWindow(QWidget):
         self.apply_manual_mode_ui(reset_content=True)
         self.txt_origin.setPlainText(source_text)
         self.original_paragraphs = [p.strip() for p in re.split(r'\n+', normalize_newlines(source_text)) if p.strip()]
+        self.active_translation_text = source_text
+        self.active_translation_mode = entry.get("mode") or "auto"
         self.full_translation = result_text
         self.setup_result_format()
         if result_text:
@@ -4380,6 +4382,7 @@ class TranslationWindow(QWidget):
         self.flush_live_translation()
         self.apply_manual_mode_ui(reset_content=False)
         # Use the source, not the rendered document, to preserve Markdown/LaTeX.
+        self.reset_origin_editor()
         self.txt_origin.setPlainText(source_text)
         self.result_opacity_effect.setEnabled(True)
         self.btn_clear_origin.setEnabled(True)
@@ -4394,7 +4397,7 @@ class TranslationWindow(QWidget):
             return
 
         self.cancel_current_translation()
-        self.txt_origin.clear()
+        self.reset_origin_editor()
         self.original_paragraphs = []
         self.full_translation = ""
         self.setup_result_format()
@@ -4403,6 +4406,16 @@ class TranslationWindow(QWidget):
         self.btn_copy.setText("Copy")
         self.btn_copy.setEnabled(False)
         self.txt_origin.setFocus()
+
+    def reset_origin_editor(self):
+        """Empty the input and drop formatting left by rendered or pasted text."""
+        # QTextEdit.clear() and setPlainText() keep the cursor's character format.
+        self.txt_origin.clear()
+        self.txt_origin.setCurrentCharFormat(QTextCharFormat())
+        self.txt_origin.setFont(self.origin_font)
+        document = self.txt_origin.document()
+        document.setDefaultFont(self.origin_font)
+        document.setDefaultStyleSheet("")
 
     def current_dictionary_languages(self):
         source_lang = self.cbo_dictionary_source.currentData() or "auto"
@@ -4513,7 +4526,15 @@ class TranslationWindow(QWidget):
 
     def alignment_feature_enabled(self):
         if self.source_mode != "snipdo":
-            return False
+            # History entries and finished manual translations, until the
+            # input no longer holds the text that was translated.
+            return (
+                self.trans_thread is None
+                and bool(self.full_translation.strip())
+                and self.active_translation_mode != "dictionary"
+                and "".join(self.txt_origin.toPlainText().split())
+                == "".join(self.active_translation_text.split())
+            )
 
         total_text = self.pending_snipdo_text.strip() or "\n".join(self.original_paragraphs).strip()
         if not total_text or not self.full_translation.strip():
@@ -5034,7 +5055,7 @@ class TranslationWindow(QWidget):
         if reset_content:
             self.original_paragraphs = []
             self.full_translation = ""
-            self.txt_origin.clear()
+            self.reset_origin_editor()
             self.setup_result_format()
             self.btn_translate.setEnabled(True)
             self.btn_translate.setText("Translate (Ctrl+Enter)")

@@ -1202,6 +1202,110 @@ def test_edit_result_dimming_is_reset_by_replacing_content(edit_window, next_act
     assert not window.result_opacity_effect.isEnabled()
 
 
+@pytest.mark.parametrize(
+    "source",
+    ["The selected original sentence.", "# Heading\n\n- **Bold item**"],
+)
+def test_clear_drops_formatting_left_in_the_input(app, edit_window, source):
+    from PyQt6.QtTest import QTest
+
+    window, workers = edit_window
+    assert window.handle_new_request(source)
+    workers[-1].chunk_received.emit("Previous translation")
+    workers[-1].complete()
+    window.btn_edit_origin.click()
+
+    window.btn_clear_origin.click()
+    QTest.keyClicks(window.txt_origin, "typed")
+
+    assert window.txt_origin.toPlainText() == "typed"
+    assert window.txt_origin.font().pixelSize() == 14
+    assert window.txt_origin.document().defaultFont().pixelSize() == 14
+    cursor = app.QTextCursor(window.txt_origin.document())
+    cursor.setPosition(len("typed"))
+    assert cursor.charFormat() == app.QTextCharFormat()
+    assert cursor.blockFormat() == app.QTextBlockFormat()
+
+
+def _select_text(widget, text, app):
+    start = widget.toPlainText().index(text)
+    cursor = widget.textCursor()
+    cursor.setPosition(start)
+    cursor.setPosition(start + len(text), app.QTextCursor.MoveMode.KeepAnchor)
+    widget.setTextCursor(cursor)
+
+
+def test_history_entry_locates_the_counterpart_text(
+    app, edit_window, monkeypatch, qapp
+):
+    alignments = []
+
+    class AlignmentWorker:
+        def __init__(self, source_text, target_text, selected_text, *_args):
+            alignments.append((source_text, target_text, selected_text))
+            self.finished = SimpleNamespace(connect=self.connect)
+            self.workers.append(self)
+
+        def connect(self, callback):
+            self.callback = callback
+
+        def start(self):
+            return None
+
+        def isRunning(self):
+            return False
+
+    AlignmentWorker.workers = []
+
+    monkeypatch.setattr(app, "AlignmentThread", AlignmentWorker)
+    window, _workers = edit_window
+    window.show()
+    window.load_history_entry({
+        "mode": "en2zh",
+        "source": "First sentence. Second sentence.",
+        "result": "第一句。第二句。",
+    })
+    qapp.processEvents()
+
+    _select_text(window.txt_origin, "Second sentence.", app)
+    assert not window.btn_align_selection.isHidden()
+    assert window.btn_align_selection.text() == "定位译文"
+
+    window.btn_align_selection.click()
+    AlignmentWorker.workers[-1].callback(True, {"text": "第二句。"}, "")
+
+    assert alignments == [
+        ("First sentence. Second sentence.", "第一句。第二句。", "Second sentence.")
+    ]
+    highlights = window.txt_result.extraSelections()
+    assert [item.cursor.selectedText() for item in highlights] == ["第二句。"]
+    assert window.btn_align_selection.isHidden()
+
+    _select_text(window.txt_result, "第一句。", app)
+    assert window.btn_align_selection.text() == "定位原文"
+    assert not window.btn_align_selection.isHidden()
+
+
+def test_locate_is_unavailable_once_history_source_is_edited(edit_window):
+    window, _workers = edit_window
+    window.load_history_entry({
+        "mode": "en2zh",
+        "source": "First sentence.",
+        "result": "第一句。",
+    })
+    assert window.alignment_feature_enabled()
+
+    window.txt_origin.setPlainText("A different sentence.")
+    assert not window.alignment_feature_enabled()
+
+    window.load_history_entry({
+        "mode": "dictionary",
+        "source": "serendipity",
+        "result": "意外发现珍奇事物的本领",
+    })
+    assert not window.alignment_feature_enabled()
+
+
 @pytest.mark.parametrize("provider_id", [DEFAULT_API_PROVIDER, OPENROUTER_API_PROVIDER])
 def test_translation_thread_streams_markdown_over_explicit_sse(
     app,
