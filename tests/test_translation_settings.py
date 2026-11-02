@@ -12,6 +12,8 @@ from types import SimpleNamespace
 import pytest
 import httpx
 from openai import OpenAI as SdkOpenAI
+from PyQt6.QtCore import QPoint, QSize
+from PyQt6.QtGui import QResizeEvent
 
 from app_paths import AppPaths
 from api_providers import (
@@ -2025,6 +2027,111 @@ def test_force_show_keeps_an_already_visible_window_state_while_focusing(
         ("foreground", 0xCAFE),
     ]
     assert scheduled == [(120, window._force_activate_only)]
+
+
+@pytest.mark.parametrize("maximized", [False, True])
+def test_force_show_centres_a_hidden_window_and_remembers_its_geometry(
+    app, monkeypatch, maximized
+):
+    moves = []
+    available = SimpleNamespace(
+        x=lambda: 0,
+        y=lambda: 0,
+        width=lambda: 2560,
+        height=lambda: 1392,
+    )
+    window = SimpleNamespace(
+        _show_geometry=None,
+        isVisible=lambda: False,
+        isMinimized=lambda: False,
+        isMaximized=lambda: maximized,
+        width=lambda: 560,
+        height=lambda: 700,
+        pos=lambda: moves[-1] if moves else (40, 40),
+        size=lambda: (560, 700),
+        move=lambda x, y: moves.append((x, y)),
+        showNormal=lambda: None,
+        show=lambda: None,
+        setHidden=lambda _hidden: None,
+        raise_=lambda: None,
+        activateWindow=lambda: None,
+        winId=lambda: 0xCAFE,
+        x=lambda: 10,
+        y=lambda: 20,
+        _force_activate_only=lambda: None,
+    )
+    monkeypatch.setattr(
+        app,
+        "QApplication",
+        SimpleNamespace(
+            primaryScreen=lambda: SimpleNamespace(
+                availableGeometry=lambda: available
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        app,
+        "QTimer",
+        SimpleNamespace(singleShot=lambda _delay, _callback: None),
+    )
+    monkeypatch.setattr(app, "win32_force_foreground", lambda _hwnd: True)
+
+    app.TranslationWindow.force_show_window(window)
+
+    if maximized:
+        # Moving would un-maximize it and leave it shifted off-screen.
+        assert moves == []
+        assert window._show_geometry is None
+    else:
+        assert moves == [(1000, 346)]
+        assert window._show_geometry == ((1000, 346), (560, 700))
+
+
+def test_reshown_window_undoes_a_monitor_scale_resize(
+    app, monkeypatch, qapp, tmp_path: Path
+):
+    class SystemResizeEvent(QResizeEvent):
+        def spontaneous(self):
+            return True
+
+    monkeypatch.setattr(app.TranslationWindow, "setup_tray_icon", lambda self: None)
+    monkeypatch.setattr(
+        app.TranslationWindow, "setup_translation_shortcut", lambda self: None
+    )
+    monkeypatch.setattr(app, "win32_force_foreground", lambda _hwnd: True)
+    window = app.TranslationWindow(_app_paths(tmp_path), object())
+    size = QSize(app.NORMAL_WINDOW_WIDTH, app.NORMAL_WINDOW_HEIGHT)
+    pos = QPoint(1000, 346)
+    rescaled = QSize(636, 717)
+    try:
+        window.move(pos)
+        window._show_geometry = (pos, size)
+
+        # Qt's own resizes and ones that already match are left alone.
+        window.resizeEvent(QResizeEvent(rescaled, size))
+        window.resizeEvent(SystemResizeEvent(size, size))
+        assert window._show_geometry == (pos, size)
+
+        window.resize(rescaled)
+        window.move(997, 331)
+        window.resizeEvent(SystemResizeEvent(rescaled, size))
+        assert window.size() == size
+        assert window.pos() == pos
+        assert window._show_geometry is None
+
+        # Once settled, later resizes (e.g. by the user) are kept.
+        window.resize(820, 900)
+        window.resizeEvent(SystemResizeEvent(QSize(820, 900), size))
+        assert window.size() == QSize(820, 900)
+
+        window._show_geometry = (pos, size)
+        window._force_activate_only()
+        assert window._show_geometry is None
+    finally:
+        window.hide()
+        window.update_notifications.stop()
+        window.deleteLater()
+        qapp.processEvents()
 
 
 def test_apply_settings_persists_successful_configuration(

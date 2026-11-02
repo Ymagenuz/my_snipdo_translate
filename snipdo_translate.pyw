@@ -2576,6 +2576,7 @@ class TranslationWindow(QWidget):
         self.original_paragraphs = []
         self.full_translation = ""
         self.force_quit = False
+        self._show_geometry = None
         self.trans_thread = None
         self.translation_threads = set()
         self.align_thread = None
@@ -3397,7 +3398,8 @@ class TranslationWindow(QWidget):
 
         try:
             was_visible = self.isVisible()
-            if not was_visible:
+            # Moving a hidden maximized window un-maximizes it, so it keeps its place.
+            if not was_visible and not self.isMaximized():
                 screen = QApplication.primaryScreen()
                 if screen:
                     available = screen.availableGeometry()
@@ -3410,6 +3412,10 @@ class TranslationWindow(QWidget):
                         (available.height() - self.height()) // 2,
                     )
                     self.move(x, y)
+                # Qt rescales a hidden window wrongly once it reappears on a
+                # monitor with another display scale (e.g. 150% -> 100%);
+                # resizeEvent puts this geometry back.
+                self._show_geometry = (self.pos(), self.size())
 
             if self.isMinimized():
                 self.showNormal()
@@ -3429,6 +3435,7 @@ class TranslationWindow(QWidget):
             log(f"[UI] force_show_window error: {e}")
 
     def _force_activate_only(self):
+        self._show_geometry = None
         try:
             if self.isMinimized():
                 self.showNormal()
@@ -3442,6 +3449,17 @@ class TranslationWindow(QWidget):
             log(f"[UI] window re-activated, hwnd={hwnd}, visible={self.isVisible()}, minimized={self.isMinimized()}")
         except Exception as e:
             log(f"[UI] force_show_window activate-only stage error: {e}")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._show_geometry is None or not event.spontaneous():
+            return
+        pos, size = self._show_geometry
+        if event.size() == size or self.isMaximized():
+            return
+        self._show_geometry = None
+        self.resize(size)
+        self.move(pos)
 
     # ---------- UI ----------
     def init_ui(self):
