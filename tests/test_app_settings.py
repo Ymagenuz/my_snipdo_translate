@@ -93,6 +93,7 @@ def test_missing_settings_returns_enabled_xbutton1_default(tmp_path: Path):
             api_provider=DEEPSEEK_API_PROVIDER,
         ),
         AppSettings(back_translation=True),
+        AppSettings(completion_notifications=False),
     ],
 )
 def test_settings_round_trip_is_utf8_and_canonical(
@@ -111,9 +112,11 @@ def test_settings_round_trip_is_utf8_and_canonical(
         "api_provider",
         "api_configs",
         "back_translation",
+        "completion_notifications",
     }
     assert payload["api_provider"] == settings.api_provider
     assert payload["back_translation"] is settings.back_translation
+    assert payload["completion_notifications"] is settings.completion_notifications
     assert set(payload["api_configs"]) == set(settings.api_configs)
     assert set(payload["shortcut"]) == {
         "kind",
@@ -516,6 +519,7 @@ def test_load_migrates_window_shortcut_payload_without_configs(tmp_path: Path):
     payload = json.loads(path.read_text(encoding="utf-8"))
     del payload["api_configs"]
     del payload["back_translation"]
+    del payload["completion_notifications"]
     _write_json(path, payload)
 
     settings = load_settings(path)
@@ -593,12 +597,40 @@ def test_load_migrates_config_payload_with_back_translation_off(tmp_path: Path):
     save_settings_atomic(path, AppSettings(api_provider=DEEPSEEK_API_PROVIDER))
     payload = json.loads(path.read_text(encoding="utf-8"))
     del payload["back_translation"]
+    del payload["completion_notifications"]
     _write_json(path, payload)
 
     settings = load_settings(path)
 
     assert settings.api_provider == DEEPSEEK_API_PROVIDER
     assert settings.back_translation is False
+    assert settings.completion_notifications is True
+
+
+def test_load_migrates_back_translation_payload_with_notifications_on(
+    tmp_path: Path,
+):
+    path = tmp_path / "settings.json"
+    save_settings_atomic(path, AppSettings(back_translation=True))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["completion_notifications"]
+    _write_json(path, payload)
+
+    settings = load_settings(path)
+
+    assert settings.back_translation is True
+    assert settings.completion_notifications is True
+
+
+def test_payload_with_notifications_needs_back_translation(tmp_path: Path):
+    path = tmp_path / "settings.json"
+    save_settings_atomic(path, AppSettings())
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["back_translation"]
+    _write_json(path, payload)
+
+    with pytest.raises(SettingsDataError, match="schema"):
+        load_settings(path)
 
 
 @pytest.mark.parametrize("value", [None, 0, 1, "true", []])
@@ -613,3 +645,17 @@ def test_back_translation_must_be_a_boolean(tmp_path: Path, value: object):
         load_settings(path)
     with pytest.raises(SettingsDataError, match="back_translation"):
         AppSettings(back_translation=value)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "false", []])
+def test_completion_notifications_must_be_a_boolean(tmp_path: Path, value: object):
+    path = tmp_path / "settings.json"
+    save_settings_atomic(path, AppSettings())
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["completion_notifications"] = value
+    _write_json(path, payload)
+
+    with pytest.raises(SettingsDataError, match="completion_notifications"):
+        load_settings(path)
+    with pytest.raises(SettingsDataError, match="completion_notifications"):
+        AppSettings(completion_notifications=value)  # type: ignore[arg-type]

@@ -137,7 +137,9 @@ def test_prompt_starts_in_app_update_only_after_user_clicks(notifications):
     assert ui.APP_VERSION in dialog.text()
     assert dialog.windowModality() == Qt.WindowModality.NonModal
     assert dialog.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-    assert all("下载页面" not in button.text() for button in dialog.buttons())
+    assert {button.text() for button in dialog.buttons()} == {
+        "更新并重启", "打开 GitHub 页面", "稍后", "跳过此版本",
+    }
     next(button for button in dialog.buttons() if button.text() == "更新并重启").click()
     assert controller.updater.releases == [release()]
     assert controller._dialog is None
@@ -231,3 +233,42 @@ def test_manual_check_reuses_visible_update_prompt(notifications):
     assert controller._dialog is original_dialog
     assert controller._pending_release is None
     assert not controller._prompt_retry.isActive()
+
+
+def test_github_option_opens_the_release_page_without_updating(notifications, monkeypatch):
+    controller, checker, _clock = notifications
+    opened = []
+    monkeypatch.setattr(
+        ui,
+        "QDesktopServices",
+        SimpleNamespace(openUrl=lambda url: opened.append(url.toString()) or True),
+    )
+    controller._check_automatically()
+    checker.complete(release())
+    dialog = controller._dialog
+
+    next(button for button in dialog.buttons() if button.text() == "打开 GitHub 页面").click()
+
+    assert opened == [release().url]
+    assert controller.updater.releases == []
+    assert controller._dialog is None
+    assert controller._status_dialog is None
+    assert ui.load_update_state(controller._path)[1] == ""
+
+
+def test_github_option_shows_the_address_when_no_browser_opens(notifications, monkeypatch):
+    controller, checker, _clock = notifications
+    monkeypatch.setattr(
+        ui, "QDesktopServices", SimpleNamespace(openUrl=lambda _url: False)
+    )
+    controller.check_manually()
+    checker.complete(release())
+
+    next(
+        button
+        for button in controller._dialog.buttons()
+        if button.text() == "打开 GitHub 页面"
+    ).click()
+
+    assert release().url in controller._status_dialog.text()
+    assert controller.updater.releases == []

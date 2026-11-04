@@ -184,6 +184,7 @@ def _translation_window(app):
         current_dictionary_languages=lambda: ("auto", "default"),
         append_translation_chunk=lambda _chunk: None,
         on_translation_finished=lambda *_args: None,
+        refresh_stop_button=lambda: None,
         connection_refresh_timer=SimpleNamespace(
             isActive=lambda: False,
             start=lambda: None,
@@ -628,6 +629,7 @@ def test_completed_stream_is_reparsed_as_full_markdown(app, monkeypatch):
         start_back_translation=lambda: back_translations.append(True),
         ensure_large_window_size=lambda: size_requests.append(True),
         live_render_timer=SimpleNamespace(stop=lambda: None),
+        refresh_stop_button=lambda: None,
     )
     _bind(window, app.TranslationWindow, "render_result_in_place")
     window.txt_result.verticalScrollBar().setValue(37)
@@ -695,6 +697,7 @@ def test_translation_completion_notification_requires_unfocused_window(app):
 
     window = SimpleNamespace(
         tray_icon=TrayStub(),
+        app_settings=AppSettings(),
         full_translation="这是通知中显示的译文。",
         isVisible=lambda: True,
         isMinimized=lambda: False,
@@ -717,6 +720,12 @@ def test_translation_completion_notification_requires_unfocused_window(app):
         "翻译完成",
         window.full_translation,
     )
+
+    # With notifications off the tray badge still marks the unread result.
+    window.app_settings = AppSettings(completion_notifications=False)
+    assert window.notify_translation_completed() is True
+    assert unread_states == [False, True, True]
+    assert len(shown_messages) == 1
 
 
 def test_unread_badge_is_rendered_in_icon_top_right(app, qapp):

@@ -393,67 +393,84 @@ def render_math_fragments_in_document(
     rendered_count = 0
     fallback_count = 0
 
-    for fragment in fragments:
-        cursor = document.find(fragment.placeholder)
-        if cursor.isNull():
-            fallback_count += 1
-            continue
+    # Formulas appear in document order, so search on from the previous
+    # one, and lay the document out once instead of after every edit.
+    search_from = 0
+    # A formula repeated through the text shares one image resource.
+    resources: dict[tuple[str, str], tuple[str, float, float]] = {}
+    edit_cursor = QTextCursor(document)
+    edit_cursor.beginEditBlock()
+    try:
+        for fragment in fragments:
+            cursor = _find_placeholder(document, fragment.placeholder, search_from)
+            if cursor.isNull():
+                fallback_count += 1
+                continue
 
-        try:
-            rendered = render_latex_fragment_png(
-                fragment,
-                font_pixel_size=font_pixel_size,
-                color=color,
-            )
-            image = QImage.fromData(rendered.png, "PNG")
-            if image.isNull():
-                raise ValueError("formula renderer returned an invalid image")
+            try:
+                resource_key = (fragment.body, fragment.environment)
+                resource = resources.get(resource_key)
+                if resource is None:
+                    rendered = render_latex_fragment_png(
+                        fragment,
+                        font_pixel_size=font_pixel_size,
+                        color=color,
+                    )
+                    image = QImage.fromData(rendered.png, "PNG")
+                    if image.isNull():
+                        raise ValueError("formula renderer returned an invalid image")
 
-            resource_url = QUrl(
-                f"snipdo-math:{uuid.uuid4().hex}/{rendered_count}"
-            )
-            document.addResource(
-                QTextDocument.ResourceType.ImageResource,
-                resource_url,
-                image,
-            )
+                    resource_url = QUrl(
+                        f"snipdo-math:{uuid.uuid4().hex}/{rendered_count}"
+                    )
+                    document.addResource(
+                        QTextDocument.ResourceType.ImageResource,
+                        resource_url,
+                        image,
+                    )
 
-            logical_width = rendered.logical_width
-            logical_height = rendered.logical_height
-            if logical_width > available_width:
-                ratio = available_width / logical_width
-                logical_width *= ratio
-                logical_height *= ratio
+                    logical_width = rendered.logical_width
+                    logical_height = rendered.logical_height
+                    if logical_width > available_width:
+                        ratio = available_width / logical_width
+                        logical_width *= ratio
+                        logical_height *= ratio
+                    resource = (resource_url.toString(), logical_width, logical_height)
+                    resources[resource_key] = resource
+                resource_name, logical_width, logical_height = resource
 
-            image_format = QTextImageFormat()
-            image_format.setName(resource_url.toString())
-            image_format.setWidth(logical_width)
-            image_format.setHeight(logical_height)
-            image_format.setVerticalAlignment(
-                QTextCharFormat.VerticalAlignment.AlignMiddle
-            )
-            image_format.setProperty(
-                QTextFormat.Property.ImageAltText,
-                fragment.source,
-            )
-            image_format.setProperty(
-                QTextFormat.Property.ImageTitle,
-                fragment.source,
-            )
+                image_format = QTextImageFormat()
+                image_format.setName(resource_name)
+                image_format.setWidth(logical_width)
+                image_format.setHeight(logical_height)
+                image_format.setVerticalAlignment(
+                    QTextCharFormat.VerticalAlignment.AlignMiddle
+                )
+                image_format.setProperty(
+                    QTextFormat.Property.ImageAltText,
+                    fragment.source,
+                )
+                image_format.setProperty(
+                    QTextFormat.Property.ImageTitle,
+                    fragment.source,
+                )
 
-            cursor.removeSelectedText()
-            cursor.insertImage(image_format)
+                cursor.removeSelectedText()
+                cursor.insertImage(image_format)
 
-            if fragment.display:
-                block_format = cursor.blockFormat()
-                block_format.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-                block_format.setTopMargin(8)
-                block_format.setBottomMargin(10)
-                cursor.setBlockFormat(block_format)
-            rendered_count += 1
-        except Exception:
-            _insert_formula_source(cursor, fragment)
-            fallback_count += 1
+                if fragment.display:
+                    block_format = cursor.blockFormat()
+                    block_format.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+                    block_format.setTopMargin(8)
+                    block_format.setBottomMargin(10)
+                    cursor.setBlockFormat(block_format)
+                rendered_count += 1
+            except Exception:
+                _insert_formula_source(cursor, fragment)
+                fallback_count += 1
+            search_from = cursor.position()
+    finally:
+        edit_cursor.endEditBlock()
 
     return FormulaRenderStats(
         found=len(fragments),
@@ -465,10 +482,24 @@ def render_math_fragments_in_document(
 def show_math_fragment_sources(widget, fragments: list[LatexMathFragment]) -> None:
     """Show prepared formulas as LaTeX source until the final render."""
     document = widget.document()
-    for fragment in fragments:
-        cursor = document.find(fragment.placeholder)
-        if not cursor.isNull():
-            _insert_formula_source(cursor, fragment)
+    search_from = 0
+    edit_cursor = QTextCursor(document)
+    edit_cursor.beginEditBlock()
+    try:
+        for fragment in fragments:
+            cursor = _find_placeholder(document, fragment.placeholder, search_from)
+            if not cursor.isNull():
+                _insert_formula_source(cursor, fragment)
+                search_from = cursor.position()
+    finally:
+        edit_cursor.endEditBlock()
+
+
+def _find_placeholder(document, placeholder: str, position: int):
+    cursor = document.find(placeholder, position)
+    if cursor.isNull() and position:
+        cursor = document.find(placeholder)
+    return cursor
 
 
 def _insert_formula_source(cursor, fragment: LatexMathFragment) -> None:

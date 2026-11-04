@@ -1090,6 +1090,16 @@ def dictionary_language_label(code: str, target: bool = False) -> str:
 
 
 # ================= 1. 统一后台翻译/查词线程 =================
+def close_stream(response) -> None:
+    """End a streamed response now instead of when it is garbage collected."""
+    close = getattr(response, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception as e:
+            log(f"[TranslateThread] close stream error: {e}")
+
+
 class TranslationThread(QThread):
     chunk_received = pyqtSignal(str)
     finished = pyqtSignal(bool, str)  # success, error_message
@@ -1247,21 +1257,25 @@ class TranslationThread(QThread):
                 self.latex_placeholders
             )
 
-            for chunk in response:
-                if self._stop_requested:
-                    log("[TranslateThread] cancelled")
-                    self.finished.emit(False, "已取消")
-                    return
+            try:
+                for chunk in response:
+                    if self._stop_requested:
+                        log("[TranslateThread] cancelled")
+                        self.finished.emit(False, "已取消")
+                        return
 
-                try:
-                    delta = chunk.choices[0].delta
-                    content = getattr(delta, "content", None)
-                    if content:
-                        restored_content = stream_restorer.feed(content)
-                        if restored_content:
-                            self.chunk_received.emit(restored_content)
-                except Exception:
-                    continue
+                    try:
+                        delta = chunk.choices[0].delta
+                        content = getattr(delta, "content", None)
+                        if content:
+                            restored_content = stream_restorer.feed(content)
+                            if restored_content:
+                                self.chunk_received.emit(restored_content)
+                    except Exception:
+                        continue
+            finally:
+                # A stopped stream would otherwise keep the model generating.
+                close_stream(response)
 
             remaining_content = stream_restorer.finish()
             if remaining_content:
@@ -1941,6 +1955,19 @@ class SettingsDialog(QDialog):
             startup_notice.setWordWrap(True)
             form.addRow("", startup_notice)
 
+        self.chk_completion_notifications = QCheckBox("翻译完成时显示 Windows 通知")
+        self.chk_completion_notifications.setChecked(
+            settings.completion_notifications
+        )
+        form.addRow("通知", self.chk_completion_notifications)
+        notification_note = QLabel(
+            "仅在主窗口不在前台时通知。关闭后不再弹出通知，"
+            "托盘图标仍会显示未读标志。"
+        )
+        notification_note.setWordWrap(True)
+        notification_note.setStyleSheet("color: #909399; font-size: 12px;")
+        form.addRow("", notification_note)
+
         form = self._add_page(
             "快捷键",
             "录入时按 Esc 可移除显示窗口快捷键；翻译快捷键不可移除，Esc 仅取消修改。"
@@ -2250,6 +2277,7 @@ class SettingsDialog(QDialog):
             api_provider=self.selected_api_provider(),
             api_configs=configs,
             back_translation=self.chk_back_translation.isChecked(),
+            completion_notifications=self.chk_completion_notifications.isChecked(),
         )
 
     def accept(self) -> None:
@@ -2934,6 +2962,8 @@ class TranslationWindow(QWidget):
             return False
 
         self.set_translation_unread(True)
+        if not self.app_settings.completion_notifications:
+            return True
         try:
             self.tray_icon.showMessage(
                 "翻译完成",
@@ -3535,6 +3565,7 @@ class TranslationWindow(QWidget):
             log("[UI] cancel_current_translation")
             worker.request_stop()
             worker.wait(800)
+        self.refresh_stop_button()
 
     def cancel_current_alignment(self):
         if self.align_thread and self.align_thread.isRunning():
@@ -3859,6 +3890,24 @@ class TranslationWindow(QWidget):
         self.lbl_back_translation.setStyleSheet("color: #909399; font-size: 10px; font-weight: 700; letter-spacing: 1px;")
         back_header_layout.addWidget(self.lbl_back_translation)
         back_header_layout.addStretch()
+        self.btn_stop_back_translation = QPushButton("停止")
+        self.btn_stop_back_translation.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_stop_back_translation.setToolTip("停止回译，保留已收到的内容")
+        self.btn_stop_back_translation.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #909399;
+                border: none;
+                padding: 0 2px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                color: #F56C6C;
+            }
+        """)
+        self.btn_stop_back_translation.clicked.connect(self.stop_back_translation)
+        self.btn_stop_back_translation.hide()
+        back_header_layout.addWidget(self.btn_stop_back_translation)
         back_layout.addLayout(back_header_layout)
         self.txt_back_translation = InteractiveTextEdit()
         self.txt_back_translation.setReadOnly(True)
@@ -4012,6 +4061,29 @@ class TranslationWindow(QWidget):
             }
         """)
         btn_layout.addWidget(self.btn_translate)
+
+        self.btn_stop = QPushButton("Stop")
+        self.btn_stop.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_stop.setToolTip("停止翻译，保留已收到的译文")
+        self.btn_stop.clicked.connect(self.stop_translation)
+        self.btn_stop.setStyleSheet("""
+            QPushButton {
+                background-color: #FFFFFF;
+                color: #F56C6C;
+                border: 1px solid #FBC4C4;
+                border-radius: 6px;
+                padding: 6px 16px;
+                font-family: 'Segoe UI', 'Microsoft YaHei UI';
+                font-weight: 600;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #FEF0F0;
+                border-color: #F56C6C;
+            }
+        """)
+        self.btn_stop.hide()
+        btn_layout.addWidget(self.btn_stop)
 
         self.btn_copy = QPushButton("Copy")
         self.btn_copy.setEnabled(False)
@@ -4255,30 +4327,39 @@ class TranslationWindow(QWidget):
                     prepare_latex_math_for_document(markdown_text)
                 )
 
-            if (
+            plain_text = (
                 is_latex_text(markdown_text)
                 and not is_markdown_structured_text(markdown_text)
-            ):
+            )
+            if plain_text:
                 widget.setPlainText(document_text)
             else:
                 widget.setMarkdown(document_text)
-                self.compact_markdown_list_indents(widget)
 
-            if formula_fragments and preview:
-                show_math_fragment_sources(widget, formula_fragments)
-            elif formula_fragments:
-                formula_stats = render_math_fragments_in_document(
-                    widget,
-                    formula_fragments,
-                    font_pixel_size=15,
-                    color="#2c3e50",
-                )
-                if formula_stats.fallback:
-                    log(
-                        "[LaTeX] formula render fallback "
-                        f"count={formula_stats.fallback}"
+            # One edit block: outside it Qt lays the whole document out again
+            # after every block format, so long texts took seconds to render.
+            edit_cursor = QTextCursor(widget.document())
+            edit_cursor.beginEditBlock()
+            try:
+                if not plain_text:
+                    self.compact_markdown_list_indents(widget)
+                if formula_fragments and preview:
+                    show_math_fragment_sources(widget, formula_fragments)
+                elif formula_fragments:
+                    formula_stats = render_math_fragments_in_document(
+                        widget,
+                        formula_fragments,
+                        font_pixel_size=15,
+                        color="#2c3e50",
                     )
-            self.apply_markdown_block_formats(widget, source_name)
+                    if formula_stats.fallback:
+                        log(
+                            "[LaTeX] formula render fallback "
+                            f"count={formula_stats.fallback}"
+                        )
+                self.apply_markdown_block_formats(widget, source_name)
+            finally:
+                edit_cursor.endEditBlock()
             widget.moveCursor(QTextCursor.MoveOperation.Start)
             return True
         except Exception as e:
@@ -4702,10 +4783,19 @@ class TranslationWindow(QWidget):
     def resolve_effective_mode(self, text: str) -> str:
         if self.content_mode_override == "dictionary":
             return "dictionary"
-        if is_dictionary_mode(text):
-            return "dictionary"
         source_lang, target_lang = self.current_dictionary_languages()
-        return resolve_auto_translation_mode(text, source_lang, target_lang)
+        # Every selection change asks again; rescanning a very long text on
+        # each mouse move made dragging a selection sluggish.
+        key = (text, source_lang, target_lang)
+        cached = getattr(self, "_effective_mode_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        if is_dictionary_mode(text):
+            mode = "dictionary"
+        else:
+            mode = resolve_auto_translation_mode(text, source_lang, target_lang)
+        self._effective_mode_cache = (key, mode)
+        return mode
 
     def rerun_snipdo_translation(self):
         if self.source_mode != "snipdo":
@@ -5338,6 +5428,8 @@ class TranslationWindow(QWidget):
     def cancel_current_back_translation(self, wait_ms: int = 0):
         worker = self.back_thread
         self.back_thread = None
+        if hasattr(self, "btn_stop_back_translation"):
+            self.btn_stop_back_translation.hide()
         if worker and worker.isRunning():
             log("[UI] cancel_current_back_translation")
             # translation_threads keeps the worker alive until it stops.
@@ -5412,7 +5504,22 @@ class TranslationWindow(QWidget):
             return False
 
         self.show_back_translation_message("正在回译…")
+        self.btn_stop_back_translation.show()
         return True
+
+    def stop_back_translation(self):
+        """Stop the back-translation and keep the part that arrived."""
+        if self.back_thread is None:
+            return
+        self.cancel_current_back_translation()
+        self.back_render_timer.stop()
+        if not self.back_translation_text.strip():
+            self.show_back_translation_message("[已停止回译]")
+            return
+        self.render_back_translation()
+        cursor = self.txt_back_translation.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText("\n\n[已停止回译]", QTextCharFormat())
 
     def on_back_translation_chunk(self, worker, chunk):
         if worker is not self.back_thread:
@@ -5426,6 +5533,7 @@ class TranslationWindow(QWidget):
         if worker is not self.back_thread:
             return
         self.back_thread = None
+        self.btn_stop_back_translation.hide()
         self.back_render_timer.stop()
 
         received = bool(self.back_translation_text.strip())
@@ -5469,6 +5577,8 @@ class TranslationWindow(QWidget):
         self.txt_origin.setReadOnly(False)
         self.txt_origin.setMaximumHeight(220)
 
+        self.refresh_stop_button()
+
         if self.content_mode_override == "dictionary":
             self.lbl_origin.setText("ORIGINAL")
             self.lbl_result.setText("DICTIONARY")
@@ -5498,6 +5608,7 @@ class TranslationWindow(QWidget):
         self.btn_translate.hide()
         self.btn_clear_origin.hide()
         self.btn_edit_origin.show()
+        self.refresh_stop_button()
         self.btn_ocr_clipboard.hide()
         self.set_dictionary_language_controls_visible(True)
         self.txt_origin.setReadOnly(True)
@@ -5538,11 +5649,13 @@ class TranslationWindow(QWidget):
         char_fmt.setFont(font)
         char_fmt.setForeground(QColor("#606266" if self.source_mode == "snipdo" else "#303133"))
 
+        cursor.beginEditBlock()
         for idx, para in enumerate(self.original_paragraphs):
             cursor.insertText(para, char_fmt)
             cursor.setBlockFormat(block_fmt)
             if idx != len(self.original_paragraphs) - 1:
                 cursor.insertBlock()
+        cursor.endEditBlock()
 
         self.txt_origin.moveCursor(QTextCursor.MoveOperation.Start)
 
@@ -5768,6 +5881,7 @@ class TranslationWindow(QWidget):
             return False
 
         record_event(AppEvent.TRANSLATION_STARTED)
+        self.refresh_stop_button()
         if not self.connection_refresh_timer.isActive():
             self.connection_refresh_timer.start()
         if prepare_latex_math_for_document(text)[1]:
@@ -5861,9 +5975,36 @@ class TranslationWindow(QWidget):
 
         self.btn_copy.setText("Copy")
         self.btn_copy.setEnabled(bool(self.full_translation.strip()))
+        self.refresh_stop_button()
 
         if self.source_mode == "snipdo":
             self.ensure_large_window_size()
+
+    def refresh_stop_button(self):
+        """Stop takes the Translate button's place while a translation runs."""
+        if not hasattr(self, "btn_stop"):
+            return
+        running = self.trans_thread is not None
+        self.btn_stop.setVisible(running)
+        self.btn_translate.setVisible(self.source_mode == "manual" and not running)
+
+    def stop_translation(self):
+        """Stop generating and keep the part of the translation that arrived."""
+        worker = self.trans_thread
+        if worker is None:
+            return
+        log("[UI] stop_translation")
+        # Detach at once: a worker still waiting for the API only sees the
+        # request at its next chunk, and its late signals are ignored.
+        self.trans_thread = None
+        worker.request_stop()
+        self.on_translation_finished(False, "已取消")
+        cursor = self.txt_result.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText(
+            "\n\n[已停止]" if self.full_translation.strip() else "[已停止]",
+            self.result_char_fmt,
+        )
 
     # ---------- 剪贴板 ----------
     def copy_to_clipboard(self):

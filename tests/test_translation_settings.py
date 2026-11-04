@@ -314,6 +314,7 @@ def test_settings_dialog_groups_options_into_pages(app, qapp):
 
         assert page_of(dialog.chk_enabled) == "常规"
         assert page_of(dialog.chk_startup) == "常规"
+        assert page_of(dialog.chk_completion_notifications) == "常规"
         assert page_of(dialog.shortcut_button) == "快捷键"
         assert page_of(dialog.show_window_shortcut_button) == "快捷键"
         assert page_of(dialog.chk_back_translation) == "翻译"
@@ -3054,3 +3055,305 @@ def test_disable_while_suspended_prevents_delayed_resume_from_reinstalling(
     assert manager.is_installed() is False
     assert len(mocked_mouse_hook.instances) == 1
     assert len(refreshes) == 2
+
+
+def test_stop_button_takes_the_translate_buttons_place_while_running(edit_window):
+    window, workers = edit_window
+    assert window.btn_stop.isHidden()
+    assert not window.btn_translate.isHidden()
+
+    window.txt_origin.setPlainText("这是一个测试句子。")
+    window.start_manual_translation()
+
+    assert not window.btn_stop.isHidden()
+    assert window.btn_translate.isHidden()
+
+    workers[-1].chunk_received.emit("This is a test sentence.")
+    workers[-1].complete()
+
+    assert window.btn_stop.isHidden()
+    assert not window.btn_translate.isHidden()
+
+    assert window.handle_new_request("A selected sentence to translate.")
+    assert window.source_mode == "snipdo"
+    assert not window.btn_stop.isHidden()
+    assert window.btn_translate.isHidden()
+
+    workers[-1].complete()
+
+    assert window.btn_stop.isHidden()
+    assert window.btn_translate.isHidden()
+
+
+def test_stop_keeps_the_partial_translation_and_drops_later_output(edit_window):
+    window, workers = edit_window
+    window.txt_origin.setPlainText("这是第一句。这是第二句。")
+    window.start_manual_translation()
+    worker = workers[-1]
+    worker.chunk_received.emit("This is the first sentence.")
+
+    window.btn_stop.click()
+
+    assert worker.stop_requested
+    assert window.trans_thread is None
+    assert window.btn_stop.isHidden()
+    assert not window.btn_translate.isHidden()
+    assert window.btn_translate.isEnabled()
+    assert window.btn_translate.text() == "Translate (Ctrl+Enter)"
+    assert window.btn_copy.isEnabled()
+    assert window.full_translation == "This is the first sentence."
+    assert window.txt_result.toPlainText() == "This is the first sentence.\n\n[已停止]"
+    assert window.translation_history == []
+
+    # The worker only notices at its next chunk; nothing it sends is shown.
+    worker.chunk_received.emit(" This is the second sentence.")
+    worker.complete()
+
+    assert window.full_translation == "This is the first sentence."
+    assert window.txt_result.toPlainText() == "This is the first sentence.\n\n[已停止]"
+    assert worker not in window.translation_threads
+    assert window.translation_history == []
+
+
+def test_stop_before_any_text_arrives_resets_the_selection_view(edit_window):
+    window, workers = edit_window
+    assert window.handle_new_request("A selected sentence to translate.")
+    assert window.btn_copy.text() == "Translating..."
+
+    window.stop_translation()
+
+    assert workers[-1].stop_requested
+    assert window.txt_result.toPlainText() == "[已停止]"
+    assert window.btn_copy.text() == "Copy"
+    assert not window.btn_copy.isEnabled()
+    assert window.btn_stop.isHidden()
+
+    # Stopping again, or with nothing running, does nothing.
+    window.stop_translation()
+    assert window.txt_result.toPlainText() == "[已停止]"
+
+
+def test_stopping_the_back_translation_keeps_what_arrived(edit_window, back_workers):
+    window, workers = edit_window
+    window.app_settings = replace(window.app_settings, back_translation=True)
+    _translate_manually(window, workers, "这是一个测试句子。", "This is a test.")
+    worker = back_workers[-1]
+
+    assert not window.btn_stop_back_translation.isHidden()
+    # The main Stop belongs to the translation, which has finished.
+    assert window.btn_stop.isHidden()
+    assert not window.btn_translate.isHidden()
+
+    worker.chunk_received.emit("这是一")
+    window.btn_stop_back_translation.click()
+
+    assert worker.stop_requested
+    assert window.back_thread is None
+    assert window.btn_stop_back_translation.isHidden()
+    assert window.txt_back_translation.toPlainText() == "这是一\n\n[已停止回译]"
+
+    worker.complete("个测试。")
+
+    assert window.txt_back_translation.toPlainText() == "这是一\n\n[已停止回译]"
+    assert worker not in window.translation_threads
+
+    window.sync_back_translation()
+    assert window.txt_back_translation.toPlainText() == "这是一\n\n[已停止回译]"
+
+    window.start_back_translation()
+    back_workers[-1].complete("这是一个测试。")
+    assert window.btn_stop_back_translation.isHidden()
+
+    window.start_back_translation()
+    window.stop_back_translation()
+    assert window.txt_back_translation.toPlainText() == "[已停止回译]"
+
+
+class _ClosableStream:
+    def __init__(self, contents, on_next=None):
+        self.contents = list(contents)
+        self.on_next = on_next
+        self.closed = 0
+
+    def __iter__(self):
+        for content in self.contents:
+            if self.on_next is not None:
+                self.on_next()
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=content))]
+            )
+
+    def close(self):
+        self.closed += 1
+
+
+def _run_translation_thread(app, stream):
+    api_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **_kwargs: stream)
+        )
+    )
+    app.activate_api_runtime(DEFAULT_API_PROVIDER, api_client)
+    thread = app.TranslationThread("A sentence to translate.", "auto")
+    chunks = []
+    outcomes = []
+    thread.chunk_received.connect(chunks.append)
+    thread.finished.connect(lambda success, error: outcomes.append((success, error)))
+    return thread, chunks, outcomes
+
+
+def test_translation_thread_closes_a_stopped_stream_at_once(app, qapp):
+    stream = _ClosableStream(["First part.", " Second part.", " Third part."])
+    thread, chunks, outcomes = _run_translation_thread(app, stream)
+    stream.on_next = lambda: chunks and thread.request_stop()
+
+    thread.run()
+
+    assert chunks == ["First part."]
+    assert outcomes == [(False, "已取消")]
+    assert stream.closed == 1
+
+
+def test_translation_thread_closes_a_finished_stream(app, qapp):
+    stream = _ClosableStream(["Whole translation."])
+    thread, chunks, outcomes = _run_translation_thread(app, stream)
+
+    thread.run()
+
+    assert chunks == ["Whole translation."]
+    assert outcomes == [(True, "")]
+    assert stream.closed == 1
+
+
+def test_long_render_formats_the_document_in_one_edit(edit_window):
+    window, _workers = edit_window
+    widget = window.txt_result
+    changes = []
+    widget.document().contentsChange.connect(lambda *args: changes.append(args))
+    paragraphs = [f"Paragraph {index} of a long translation." for index in range(200)]
+    paragraphs[50] = "## A heading"
+    paragraphs[51] = "- a list item"
+
+    assert window.render_markdown_text(widget, "\n\n".join(paragraphs), "result")
+
+    # Loading the Markdown plus one batched formatting pass; formatting each
+    # of the 200 blocks separately reported 400 changes.
+    assert len(changes) <= 5
+    document = widget.document()
+    assert document.blockCount() == 200
+    heading = document.findBlockByNumber(50)
+    assert heading.blockFormat().headingLevel() == 2
+    assert heading.blockFormat().lineHeight() == 140
+    body = document.findBlockByNumber(199)
+    assert body.blockFormat().lineHeight() == 140
+    fragment = body.begin().fragment()
+    assert fragment.charFormat().foreground().color().name() == "#2c3e50"
+
+
+def test_long_source_is_inserted_in_one_edit(edit_window):
+    window, _workers = edit_window
+    window.original_paragraphs = [f"Paragraph {index}." for index in range(200)]
+    window.current_request_is_structured = False
+    changes = []
+    window.txt_origin.document().contentsChange.connect(
+        lambda *args: changes.append(args)
+    )
+
+    window.populate_original_text()
+
+    # Clearing plus one batched insertion instead of three per paragraph.
+    assert len(changes) <= 4
+    assert window.txt_origin.document().blockCount() == 200
+    assert window.txt_origin.toPlainText().split("\n") == window.original_paragraphs
+
+
+def test_effective_mode_is_reused_until_text_or_languages_change(
+    app, edit_window, monkeypatch
+):
+    window, _workers = edit_window
+    scans = []
+    original = app.resolve_auto_translation_mode
+
+    def counting(text, source_lang="auto", target_lang="default"):
+        scans.append((text, source_lang, target_lang))
+        return original(text, source_lang, target_lang)
+
+    monkeypatch.setattr(app, "resolve_auto_translation_mode", counting)
+    text = "这是一个用于测试的中文句子。"
+
+    assert window.resolve_effective_mode(text) == "zh2en"
+    assert window.resolve_effective_mode(text) == "zh2en"
+    assert len(scans) == 1
+
+    window.cbo_dictionary_target.setCurrentIndex(
+        window.cbo_dictionary_target.findData("zh")
+    )
+    assert window.resolve_effective_mode(text) == "en2zh"
+    assert len(scans) == 2
+
+    window.content_mode_override = "dictionary"
+    assert window.resolve_effective_mode(text) == "dictionary"
+    window.content_mode_override = "auto"
+    assert window.resolve_effective_mode(text) == "en2zh"
+    assert len(scans) == 2
+
+    assert window.resolve_effective_mode("Another English sentence.") == "en2zh"
+    assert len(scans) == 3
+
+
+def test_selection_changes_do_not_rescan_the_source(app, edit_window, monkeypatch):
+    window, workers = edit_window
+    source = " ".join(["A long selected passage to translate."] * 50)
+    assert window.handle_new_request(source)
+    workers[-1].chunk_received.emit("一段很长的译文。")
+    workers[-1].complete()
+    scans = []
+    monkeypatch.setattr(
+        app, "is_dictionary_mode", lambda text: scans.append(text) or False
+    )
+
+    for end in range(10, 60, 5):
+        cursor = window.txt_origin.textCursor()
+        cursor.setPosition(2)
+        cursor.setPosition(end, cursor.MoveMode.KeepAnchor)
+        window.txt_origin.setTextCursor(cursor)
+
+    assert scans == []
+    assert not window.btn_align_selection.isHidden()
+
+
+def test_settings_dialog_offers_completion_notifications_on_the_general_page(
+    app, qapp
+):
+    dialog = app.SettingsDialog(
+        DEFAULT_SETTINGS,
+        api_key_configured=False,
+        environment_key_active=False,
+    )
+    try:
+        general = dialog.pages.widget(0)
+        assert dialog.page_list.item(0).text() == "常规"
+        assert general.isAncestorOf(dialog.chk_completion_notifications)
+        assert dialog.chk_completion_notifications.isChecked()
+
+        dialog.chk_completion_notifications.setChecked(False)
+
+        assert dialog.candidate_settings() == replace(
+            DEFAULT_SETTINGS, completion_notifications=False
+        )
+    finally:
+        dialog.deleteLater()
+        qapp.processEvents()
+
+    settings = replace(DEFAULT_SETTINGS, completion_notifications=False)
+    dialog = app.SettingsDialog(
+        settings,
+        api_key_configured=False,
+        environment_key_active=False,
+    )
+    try:
+        assert not dialog.chk_completion_notifications.isChecked()
+        assert dialog.candidate_settings() == settings
+    finally:
+        dialog.deleteLater()
+        qapp.processEvents()

@@ -1,3 +1,4 @@
+import re
 import threading
 from io import BytesIO
 
@@ -10,6 +11,7 @@ from latex_renderer import (
     prepare_latex_math_for_document,
     render_latex_fragment_png,
     render_math_fragments_in_document,
+    show_math_fragment_sources,
     warm_up_math_rendering,
 )
 
@@ -123,3 +125,33 @@ def test_document_renderer_replaces_formulas_with_images(qapp):
     assert widget.toPlainText().count("\ufffc") == 2
     assert "SNIPDOMATHPLACEHOLDER" not in widget.toPlainText()
     assert widget.toHtml().count("<img") == 2
+
+
+def test_document_renderer_shares_one_image_for_a_repeated_formula(qapp):
+    source = "设 $x$ 为整数，$x$ 大于零，且 $y$ 为偶数。"
+    prepared, fragments = prepare_latex_math_for_document(source)
+    widget = QTextEdit()
+    widget.resize(500, 300)
+    widget.setPlainText(prepared)
+    changes = []
+    widget.document().contentsChange.connect(lambda *args: changes.append(args))
+
+    stats = render_math_fragments_in_document(widget, fragments)
+
+    assert stats.rendered == 3
+    names = re.findall(r'<img src="([^"]+)"', widget.toHtml())
+    assert len(names) == 3
+    assert names[0] == names[1] != names[2]
+    # The three replacements reach the layout as one change.
+    assert len(changes) == 1
+
+
+def test_formula_sources_are_found_out_of_document_order(qapp):
+    source = "A $a$, B $b$, C $c$."
+    prepared, fragments = prepare_latex_math_for_document(source)
+    widget = QTextEdit()
+    widget.setPlainText(prepared)
+
+    show_math_fragment_sources(widget, list(reversed(fragments)))
+
+    assert widget.toPlainText() == source

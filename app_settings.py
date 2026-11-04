@@ -39,7 +39,8 @@ _WINDOW_ROOT_FIELDS = frozenset(
     {"enabled", "shortcut", "show_window_shortcut", "api_provider"}
 )
 _CONFIG_ROOT_FIELDS = _WINDOW_ROOT_FIELDS | {"api_configs"}
-_ROOT_FIELDS = _CONFIG_ROOT_FIELDS | {"back_translation"}
+_BACK_TRANSLATION_ROOT_FIELDS = _CONFIG_ROOT_FIELDS | {"back_translation"}
+_ROOT_FIELDS = _BACK_TRANSLATION_ROOT_FIELDS | {"completion_notifications"}
 _API_CONFIG_FIELDS = frozenset(
     {"base_url", "model", "supports_vision", "disable_thinking"}
 )
@@ -185,12 +186,15 @@ class AppSettings:
     api_provider: str = DEFAULT_API_PROVIDER
     api_configs: Mapping[str, ApiProviderConfig] = field(default_factory=dict)
     back_translation: bool = False
+    completion_notifications: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
             raise SettingsDataError("enabled must be a boolean")
         if not isinstance(self.back_translation, bool):
             raise SettingsDataError("back_translation must be a boolean")
+        if not isinstance(self.completion_notifications, bool):
+            raise SettingsDataError("completion_notifications must be a boolean")
         if not isinstance(self.shortcut, ShortcutBinding):
             raise SettingsDataError("shortcut must be a ShortcutBinding")
         if self.show_window_shortcut is not None and not isinstance(
@@ -286,7 +290,12 @@ def _decode_settings(value: object) -> AppSettings:
     elif fields == _PROVIDER_ROOT_FIELDS:
         api_provider = value["api_provider"]
         show_window_shortcut = DEFAULT_SHOW_WINDOW_SHORTCUT
-    elif fields in (_WINDOW_ROOT_FIELDS, _CONFIG_ROOT_FIELDS, _ROOT_FIELDS):
+    elif fields in (
+        _WINDOW_ROOT_FIELDS,
+        _CONFIG_ROOT_FIELDS,
+        _BACK_TRANSLATION_ROOT_FIELDS,
+        _ROOT_FIELDS,
+    ):
         api_provider = value["api_provider"]
         show_window_shortcut = (
             None
@@ -300,6 +309,9 @@ def _decode_settings(value: object) -> AppSettings:
     back_translation = value.get("back_translation", False)
     if not isinstance(back_translation, bool):
         raise SettingsDataError("back_translation must be a boolean")
+    completion_notifications = value.get("completion_notifications", True)
+    if not isinstance(completion_notifications, bool):
+        raise SettingsDataError("completion_notifications must be a boolean")
     return AppSettings(
         enabled=value["enabled"],
         shortcut=_decode_shortcut(value["shortcut"]),
@@ -307,6 +319,7 @@ def _decode_settings(value: object) -> AppSettings:
         api_provider=api_provider,
         api_configs=_decode_api_configs(value.get("api_configs", {})),
         back_translation=back_translation,
+        completion_notifications=completion_notifications,
     )
 
 
@@ -359,6 +372,7 @@ def _encode_settings(settings: AppSettings) -> dict[str, object]:
             for provider_id, config in settings.api_configs.items()
         },
         "back_translation": settings.back_translation,
+        "completion_notifications": settings.completion_notifications,
         "shortcut": {
             "kind": shortcut.kind,
             "mouse_button": shortcut.mouse_button,
