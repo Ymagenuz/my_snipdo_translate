@@ -172,12 +172,12 @@ def test_invalid_configuration_keeps_settings_open_with_error(dialog, qapp, fiel
     dialog.accept()
 
     assert accepted == []
-    assert dialog.page_list.currentItem().text() == "API 接口"
+    assert dialog.page_list.currentItem().text() == "API"
     assert dialog.pages.currentWidget().isAncestorOf(dialog.status_label)
     assert dialog.result() != QDialog.DialogCode.Accepted
     assert dialog.isVisible()
     assert "HTTP(S)" in dialog.status_label.text()
-    assert "模型 ID" in dialog.status_label.text()
+    assert "model ID" in dialog.status_label.text()
     assert "secret" not in dialog.status_label.text()
 
 
@@ -329,7 +329,7 @@ def test_missing_key_prevents_discovery_without_blocking_manual_models(dialog, r
 
     assert requests == []
     assert dialog.model_combo.currentText() == "manual-model"
-    assert "API Key" in dialog.model_status_label.text()
+    assert "API key" in dialog.model_status_label.text()
     assert dialog.candidate_settings().config_for(DEFAULT_API_PROVIDER).model == "manual-model"
 
 
@@ -411,6 +411,6 @@ def test_model_loader_never_emits_secret_exception_details(app, qapp, monkeypatc
         assert closed == [True]
     if failure_stage in {"create", "fetch"}:
         assert results[0][1] == ()
-        assert "模型 ID" in results[0][2]
+        assert "model ID" in results[0][2]
     else:
         assert results[0] == (9, ("listed-model",), "")

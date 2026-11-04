@@ -85,7 +85,7 @@ def test_escape_clears_optional_binding_and_releases_capture(app, dialogs):
 
     assert event.isAccepted()
     assert button.binding is None
-    assert button.text() == "未设置"
+    assert button.text() == "Not set"
     assert not button._capturing
     assert QWidget.keyboardGrabber() is not button
     assert QWidget.mouseGrabber() is not button
@@ -151,9 +151,9 @@ def test_settings_dialog_exposes_optional_show_shortcut_and_retains_translation(
     dialog = app.SettingsDialog(settings, api_key_configured=False, environment_key_active=False)
     dialogs.append(dialog)
 
-    assert dialog.show_window_shortcut_button.text() == "未设置"
+    assert dialog.show_window_shortcut_button.text() == "Not set"
     assert "Esc" in dialog.show_window_shortcut_button.toolTip()
-    assert "移除" in dialog.show_window_shortcut_button.toolTip()
+    assert "remove" in dialog.show_window_shortcut_button.toolTip()
     assert dialog.candidate_settings().show_window_shortcut is None
     assert dialog.candidate_settings().shortcut == DEFAULT_SETTINGS.shortcut
     with pytest.raises((ValueError, TypeError)):
@@ -325,7 +325,7 @@ def test_remove_save_reload_and_reassign_shortcut(app, dialogs, tmp_path):
     assert persisted.show_window_shortcut is None
     reopened = app.SettingsDialog(persisted, api_key_configured=False, environment_key_active=False)
     dialogs.append(reopened)
-    assert reopened.show_window_shortcut_button.text() == "未设置"
+    assert reopened.show_window_shortcut_button.text() == "Not set"
     reopened.show_window_shortcut_button.set_binding(DEFAULT_SETTINGS.show_window_shortcut)
 
     assert app.TranslationWindow.apply_settings(window, reopened.candidate_settings())
@@ -355,7 +355,7 @@ def test_save_failure_restores_previous_optional_shortcut_state(app, monkeypatch
         (replacement, replacement is not None),
         (previous_binding, previous_binding is not None),
     ]
-    assert warnings and warnings[-1][1] == "设置保存失败"
+    assert warnings and warnings[-1][1] == "Couldn't save settings"
 
 
 def test_unset_shortcut_status_and_tray_menu_are_readable(app):
@@ -374,9 +374,9 @@ def test_unset_shortcut_status_and_tray_menu_are_readable(app):
 
     app.TranslationWindow.refresh_shortcut_status(window)
 
-    assert "显示窗口 未设置" in window._base_tray_tooltip
-    assert labels == ["显示主窗口"]
-    assert tooltips and "未设置" in tooltips[-1]
+    assert "Show window Not set" in window._base_tray_tooltip
+    assert labels == ["Show main window"]
+    assert tooltips and "Not set" in tooltips[-1]
 
 
 def test_setup_with_removed_shortcut_disables_manager_without_warning(app, monkeypatch):

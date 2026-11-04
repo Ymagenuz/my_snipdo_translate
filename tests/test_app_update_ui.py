@@ -139,9 +139,9 @@ def test_prompt_starts_in_app_update_only_after_user_clicks(notifications):
     assert dialog.windowModality() == Qt.WindowModality.NonModal
     assert dialog.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
     assert {button.text() for button in dialog.buttons()} == {
-        "更新并重启", "打开 GitHub 页面", "稍后", "跳过此版本",
+        "Update and restart", "Open GitHub page", "Later", "Skip this version",
     }
-    next(button for button in dialog.buttons() if button.text() == "更新并重启").click()
+    next(button for button in dialog.buttons() if button.text() == "Update and restart").click()
     assert controller.updater.releases == [release()]
     assert controller._dialog is None
 
@@ -170,7 +170,7 @@ def test_skip_persists_and_manual_checks_can_show_skipped_release(notifications)
     controller._check_automatically()
     checker.complete(release())
     dialog = controller._dialog
-    next(button for button in dialog.buttons() if button.text() == "跳过此版本").click()
+    next(button for button in dialog.buttons() if button.text() == "Skip this version").click()
     assert ui.load_update_state(controller._path)[1] == "12.1.0"
     controller._shown_versions.clear()
     clock[0] += ui.CHECK_INTERVAL_SECONDS
@@ -248,7 +248,7 @@ def test_github_option_opens_the_release_page_without_updating(notifications, mo
     checker.complete(release())
     dialog = controller._dialog
 
-    next(button for button in dialog.buttons() if button.text() == "打开 GitHub 页面").click()
+    next(button for button in dialog.buttons() if button.text() == "Open GitHub page").click()
 
     assert opened == [release().url]
     assert controller.updater.releases == []
@@ -268,7 +268,7 @@ def test_github_option_shows_the_address_when_no_browser_opens(notifications, mo
     next(
         button
         for button in controller._dialog.buttons()
-        if button.text() == "打开 GitHub 页面"
+        if button.text() == "Open GitHub page"
     ).click()
 
     assert release().url in controller._status_dialog.text()

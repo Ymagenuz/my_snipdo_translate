@@ -1,4 +1,4 @@
-# 唯一需要配置的项目；路径可以包含空格。
+# The only setting to change; the path may contain spaces.
 $exePath = "C:\Tools\SnipDoTranslate\SnipDoTranslate.exe"
 
 $inputText = [string]::Join(" ", [string[]]$args)
@@ -24,12 +24,12 @@ try {
     $utf8WithoutBom = [System.Text.UTF8Encoding]::new($false)
     [System.IO.File]::WriteAllText($tempFile, $inputText, $utf8WithoutBom)
 } catch {
-    # 写入失败时不尝试删除可能已产生的临时文件。
+    # If writing fails, don't try to delete a temporary file that may exist.
     exit 3
 }
 
 if (!$exeAvailable) {
-    # 选中文本已经安全写入临时文件；路径配置错误时也保留它。
+    # The selection is safely in the temporary file; keep it even if the path is wrong.
     exit 1
 }
 
@@ -40,7 +40,7 @@ try {
         "--delete-after"
     ) -ErrorAction Stop | Out-Null
 } catch {
-    # EXE 未能启动时保留临时文件；成功启动后只由 accepted ACK 触发删除。
+    # Keep the temporary file if the EXE fails to start; once it starts, only an accepted ACK deletes it.
     exit 4
 }
 

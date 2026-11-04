@@ -151,7 +151,7 @@ def test_source_and_folder_builds_are_refused_without_changes(app_files, monkeyp
 
 def test_unwritable_install_location_is_reported_before_download(app_files, monkeypatch):
     monkeypatch.setattr(install.os, "access", lambda *_args: False)
-    assert "不可写" in install.install_unavailable_reason()
+    assert "isn't writable" in install.install_unavailable_reason()
 
 
 @pytest.mark.parametrize("failure", ["hash", "format", "permission"])

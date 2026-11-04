@@ -157,6 +157,7 @@ def _ocr_window(app):
         on_ocr_finished=lambda *_args: None,
     )
     _bind(window, app.TranslationWindow, "start_ocr")
+    _bind(window, app.TranslationWindow, "show_heading_labels")
     _bind(window, app.TranslationWindow, "start_image_file_ocr")
     return window
 
@@ -319,7 +320,7 @@ def test_deepseek_rejects_ocr_before_reading_and_retains_source(
     assert result.reason is RejectionReason.STARTUP_FAILED
     assert source.exists()
     assert messages and "DeepSeek" in messages[-1]
-    assert "不支持图片 OCR" in messages[-1]
+    assert "doesn't support image OCR" in messages[-1]
 
 
 def test_handle_ocr_rejects_when_thread_start_fails_and_retains_source(
@@ -756,7 +757,7 @@ def test_translation_completion_notification_requires_unfocused_window(app):
     assert unread_states == [False, True]
     assert len(shown_messages) == 1
     assert shown_messages[0][0:2] == (
-        "翻译完成",
+        "Translation finished",
         window.full_translation,
     )
 

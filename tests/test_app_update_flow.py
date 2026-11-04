@@ -103,7 +103,7 @@ def test_progress_and_duplicate_start_keep_one_download(update):
     assert len(update.downloader.calls) == 1
     update.downloader.progress.emit(512, 1024)
     assert update._dialog.value() == 512
-    assert "正在下载" in update._dialog.labelText()
+    assert "Downloading update" in update._dialog.labelText()
     assert update.window.quit_calls == 0
 
 
@@ -170,7 +170,7 @@ def test_restart_waits_for_work_and_settings_before_starting_helper(update, monk
     else:
         setattr(update.window, busy, running)
     update._try_restart()
-    assert "等待" in update._dialog.labelText()
+    assert "ready" in update._dialog.labelText()
     assert update.test_job.started == 0
     assert update.window.quit_calls == 0
     update.cancel()
@@ -183,7 +183,7 @@ def test_prepare_failure_is_reported_without_quitting(update, monkeypatch):
     monkeypatch.setattr(flow, "prepare_install", fail)
     prepare(update)
     assert not update.is_active
-    assert "无法准备" in update.errors[0]
+    assert "Couldn't prepare" in update.errors[0]
     assert update.window.quit_calls == 0
 
 

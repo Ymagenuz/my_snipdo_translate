@@ -94,6 +94,7 @@ def test_missing_settings_returns_enabled_xbutton1_default(tmp_path: Path):
         ),
         AppSettings(back_translation=True),
         AppSettings(completion_notifications=False),
+        AppSettings(ui_language="zh-CN"),
     ],
 )
 def test_settings_round_trip_is_utf8_and_canonical(
@@ -113,10 +114,12 @@ def test_settings_round_trip_is_utf8_and_canonical(
         "api_configs",
         "back_translation",
         "completion_notifications",
+        "ui_language",
     }
     assert payload["api_provider"] == settings.api_provider
     assert payload["back_translation"] is settings.back_translation
     assert payload["completion_notifications"] is settings.completion_notifications
+    assert payload["ui_language"] == settings.ui_language
     assert set(payload["api_configs"]) == set(settings.api_configs)
     assert set(payload["shortcut"]) == {
         "kind",
@@ -520,6 +523,7 @@ def test_load_migrates_window_shortcut_payload_without_configs(tmp_path: Path):
     del payload["api_configs"]
     del payload["back_translation"]
     del payload["completion_notifications"]
+    del payload["ui_language"]
     _write_json(path, payload)
 
     settings = load_settings(path)
@@ -598,6 +602,7 @@ def test_load_migrates_config_payload_with_back_translation_off(tmp_path: Path):
     payload = json.loads(path.read_text(encoding="utf-8"))
     del payload["back_translation"]
     del payload["completion_notifications"]
+    del payload["ui_language"]
     _write_json(path, payload)
 
     settings = load_settings(path)
@@ -614,6 +619,7 @@ def test_load_migrates_back_translation_payload_with_notifications_on(
     save_settings_atomic(path, AppSettings(back_translation=True))
     payload = json.loads(path.read_text(encoding="utf-8"))
     del payload["completion_notifications"]
+    del payload["ui_language"]
     _write_json(path, payload)
 
     settings = load_settings(path)
@@ -659,3 +665,74 @@ def test_completion_notifications_must_be_a_boolean(tmp_path: Path, value: objec
         load_settings(path)
     with pytest.raises(SettingsDataError, match="completion_notifications"):
         AppSettings(completion_notifications=value)  # type: ignore[arg-type]
+
+
+def test_default_ui_language_is_english():
+    assert DEFAULT_SETTINGS.ui_language == "en"
+
+
+def test_ui_language_persists(tmp_path: Path):
+    path = tmp_path / "settings.json"
+    save_settings_atomic(path, AppSettings(ui_language="zh-CN"))
+
+    assert json.loads(path.read_text(encoding="utf-8"))["ui_language"] == "zh-CN"
+    assert load_settings(path).ui_language == "zh-CN"
+
+
+def test_settings_written_before_the_language_option_load_as_english(tmp_path: Path):
+    path = tmp_path / "settings.json"
+    save_settings_atomic(
+        path,
+        AppSettings(back_translation=True, completion_notifications=False),
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["ui_language"]
+    _write_json(path, payload)
+
+    settings = load_settings(path)
+
+    assert settings.ui_language == "en"
+    assert settings.back_translation is True
+    assert settings.completion_notifications is False
+
+
+def test_language_from_a_newer_release_falls_back_to_english(tmp_path: Path):
+    path = tmp_path / "settings.json"
+    save_settings_atomic(path, AppSettings(back_translation=True))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["ui_language"] = "ja"
+    _write_json(path, payload)
+
+    settings = load_settings(path)
+
+    assert settings.ui_language == "en"
+    assert settings.back_translation is True
+
+
+@pytest.mark.parametrize("value", [None, 0, True, [], {}])
+def test_ui_language_must_be_a_string(tmp_path: Path, value: object):
+    path = tmp_path / "settings.json"
+    save_settings_atomic(path, AppSettings())
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["ui_language"] = value
+    _write_json(path, payload)
+
+    with pytest.raises(SettingsDataError, match="ui_language"):
+        load_settings(path)
+
+
+@pytest.mark.parametrize("value", [None, "", "ja", "zh", "EN", 1])
+def test_settings_reject_unsupported_ui_language(value: object):
+    with pytest.raises(SettingsDataError, match="ui_language"):
+        AppSettings(ui_language=value)  # type: ignore[arg-type]
+
+
+def test_ui_language_needs_the_notification_field(tmp_path: Path):
+    path = tmp_path / "settings.json"
+    save_settings_atomic(path, AppSettings())
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["completion_notifications"]
+    _write_json(path, payload)
+
+    with pytest.raises(SettingsDataError, match="schema"):
+        load_settings(path)

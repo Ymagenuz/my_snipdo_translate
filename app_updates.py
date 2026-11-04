@@ -10,6 +10,7 @@ import re
 from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 
+from app_i18n import tr
 from app_version import APP_VERSION
 
 
@@ -21,7 +22,6 @@ MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024
 MAX_CHECKSUM_BYTES = 4096
 MAX_RESPONSE_BYTES = 256 * 1024
 CHECK_TIMEOUT_MS = 10_000
-CHECK_FAILED_MESSAGE = "暂时无法检查更新，请检查网络后重试。"
 _VERSION_PATTERN = re.compile(r"v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", re.ASCII)
 
 
@@ -201,7 +201,7 @@ class UpdateChecker(QObject):
         if reply is not self._reply:
             return
         self._dispose(abort=True)
-        self.failed.emit(CHECK_FAILED_MESSAGE)
+        self.failed.emit(tr("update.check_failed"))
 
     def _dispose(self, *, abort=False):
         # Detach before abort(): Qt may emit finished synchronously while aborting.

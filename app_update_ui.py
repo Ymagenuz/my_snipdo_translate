@@ -12,6 +12,7 @@ from PyQt6.QtCore import QObject, QTimer, Qt, QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
+from app_i18n import tr
 from app_updates import ReleaseInfo, UpdateChecker
 from app_update_flow import UpdateFlow
 from app_version import APP_VERSION
@@ -148,7 +149,7 @@ class UpdateNotifications(QObject):
         self._manual_requested = False
         if release is None:
             if manual:
-                self._show_status(f"当前版本为 {APP_VERSION}，未发现可用的更新。")
+                self._show_status(tr("update.status.current", version=APP_VERSION))
             return
         if not manual and (
             release.version == self._skipped_version
@@ -176,7 +177,7 @@ class UpdateNotifications(QObject):
         if self._status_dialog is not None:
             self._status_dialog.close()
         dialog = QMessageBox(self.window)
-        dialog.setWindowTitle("检查更新")
+        dialog.setWindowTitle(tr("update.status.title"))
         dialog.setTextFormat(Qt.TextFormat.PlainText)
         dialog.setText(message)
         dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
@@ -207,19 +208,24 @@ class UpdateNotifications(QObject):
         self._pending_manual = False
         self._shown_versions.add(release.version)
         dialog = QMessageBox(self.window)
-        dialog.setWindowTitle("SnipDo Translate 有新版本")
+        dialog.setWindowTitle(tr("update.available.title"))
         dialog.setTextFormat(Qt.TextFormat.PlainText)
-        dialog.setText(f"发现新版本 {release.version}\n当前版本：{APP_VERSION}")
-        dialog.setInformativeText(
-            "在应用内下载并校验更新，然后自动安装并重启。\n"
-            "下载期间可继续使用或取消；重启会等待翻译、OCR 和设置完成。"
-            "设置、历史记录和 API Key 会保留。\n"
-            "也可打开 GitHub 页面查看发行说明并手动下载。"
+        dialog.setText(
+            tr("update.available.text", version=release.version, current=APP_VERSION)
         )
-        update_button = dialog.addButton("更新并重启", QMessageBox.ButtonRole.AcceptRole)
-        github_button = dialog.addButton("打开 GitHub 页面", QMessageBox.ButtonRole.ActionRole)
-        later_button = dialog.addButton("稍后", QMessageBox.ButtonRole.RejectRole)
-        skip_button = dialog.addButton("跳过此版本", QMessageBox.ButtonRole.ActionRole)
+        dialog.setInformativeText(tr("update.available.details"))
+        update_button = dialog.addButton(
+            tr("update.button.install"), QMessageBox.ButtonRole.AcceptRole
+        )
+        github_button = dialog.addButton(
+            tr("update.button.github"), QMessageBox.ButtonRole.ActionRole
+        )
+        later_button = dialog.addButton(
+            tr("update.button.later"), QMessageBox.ButtonRole.RejectRole
+        )
+        skip_button = dialog.addButton(
+            tr("update.button.skip"), QMessageBox.ButtonRole.ActionRole
+        )
         dialog.setDefaultButton(later_button)
         dialog.setEscapeButton(later_button)
         dialog.setWindowModality(Qt.WindowModality.NonModal)
@@ -238,7 +244,7 @@ class UpdateNotifications(QObject):
                     self.updater.start(release)
                 elif clicked is github_button:
                     if not QDesktopServices.openUrl(QUrl(release.url)):
-                        self._show_status(f"无法打开浏览器，请访问：\n{release.url}")
+                        self._show_status(tr("update.browser_failed", url=release.url))
                 elif clicked is skip_button:
                     self._skipped_version = release.version
                     self._save_state()

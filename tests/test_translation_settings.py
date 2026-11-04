@@ -273,7 +273,7 @@ def test_main_settings_gear_and_dialog_display_shortcuts(
         assert window.app_settings == DEFAULT_SETTINGS
         assert window.btn_settings.text() == ""
         assert not window.btn_settings.icon().isNull()
-        assert window.btn_settings.accessibleName() == "设置"
+        assert window.btn_settings.accessibleName() == "Settings"
         assert "XButton1" in window.btn_settings.toolTip()
         assert dialog.shortcut_button.text() == "XButton1"
         assert dialog.show_window_shortcut_button.text() == "Ctrl+Alt+W"
@@ -302,7 +302,7 @@ def test_settings_dialog_groups_options_into_pages(app, qapp):
             dialog.page_list.item(index).text()
             for index in range(dialog.page_list.count())
         ]
-        assert names == ["常规", "快捷键", "翻译", "API 接口"]
+        assert names == ["General", "Shortcuts", "Translation", "API"]
         assert dialog.pages.count() == len(names)
 
         def page_of(widget):
@@ -312,12 +312,12 @@ def test_settings_dialog_groups_options_into_pages(app, qapp):
                 if dialog.pages.widget(index).isAncestorOf(widget)
             )
 
-        assert page_of(dialog.chk_enabled) == "常规"
-        assert page_of(dialog.chk_startup) == "常规"
-        assert page_of(dialog.chk_completion_notifications) == "常规"
-        assert page_of(dialog.shortcut_button) == "快捷键"
-        assert page_of(dialog.show_window_shortcut_button) == "快捷键"
-        assert page_of(dialog.chk_back_translation) == "翻译"
+        assert page_of(dialog.chk_enabled) == "General"
+        assert page_of(dialog.chk_startup) == "General"
+        assert page_of(dialog.chk_completion_notifications) == "General"
+        assert page_of(dialog.shortcut_button) == "Shortcuts"
+        assert page_of(dialog.show_window_shortcut_button) == "Shortcuts"
+        assert page_of(dialog.chk_back_translation) == "Translation"
         for widget in (
             dialog.api_provider_combo,
             dialog.api_key_input,
@@ -327,15 +327,15 @@ def test_settings_dialog_groups_options_into_pages(app, qapp):
             dialog.disable_thinking_checkbox,
             dialog.status_label,
         ):
-            assert page_of(widget) == "API 接口"
+            assert page_of(widget) == "API"
 
         assert dialog.pages.currentIndex() == 0
-        dialog.page_list.setCurrentRow(names.index("翻译"))
-        assert dialog.pages.currentIndex() == names.index("翻译")
+        dialog.page_list.setCurrentRow(names.index("Translation"))
+        assert dialog.pages.currentIndex() == names.index("Translation")
 
         dialog.shortcut_button.capture_error.emit("无法识别该按键")
         assert dialog.shortcut_status_label.text() == "无法识别该按键"
-        assert page_of(dialog.shortcut_status_label) == "快捷键"
+        assert page_of(dialog.shortcut_status_label) == "Shortcuts"
 
         assert not dialog.chk_back_translation.isChecked()
         dialog.chk_back_translation.setChecked(True)
@@ -395,7 +395,7 @@ def test_settings_dialog_lists_api_providers_and_returns_stable_id(
             == provider_id
         )
         provider = get_api_provider(provider_id)
-        assert ("不支持图片 OCR" in dialog.status_label.text()) is (
+        assert ("image OCR isn't available" in dialog.status_label.text()) is (
             not provider.supports_vision
         )
         assert provider.environment_variable in dialog.status_label.text()
@@ -1152,7 +1152,7 @@ def test_interrupted_stream_shows_every_received_chunk(
 
     if interruption == "failure":
         workers[-1].finished.emit(False, "network down")
-        expected = "Partial translation\n\n[翻译出错: network down]"
+        expected = "Partial translation\n\n[Translation error: network down]"
     else:
         window.btn_edit_origin.click()
         expected = "Partial translation"
@@ -1347,7 +1347,7 @@ def test_history_entry_locates_the_counterpart_text(
 
     _select_text(window.txt_origin, "Second sentence.", app)
     assert not window.btn_align_selection.isHidden()
-    assert window.btn_align_selection.text() == "定位译文"
+    assert window.btn_align_selection.text() == "Locate in translation"
 
     window.btn_align_selection.click()
     AlignmentWorker.workers[-1].callback(True, {"text": "第二句。"}, "")
@@ -1360,7 +1360,7 @@ def test_history_entry_locates_the_counterpart_text(
     assert window.btn_align_selection.isHidden()
 
     _select_text(window.txt_result, "第一句。", app)
-    assert window.btn_align_selection.text() == "定位原文"
+    assert window.btn_align_selection.text() == "Locate in original"
     assert not window.btn_align_selection.isHidden()
 
 
@@ -1495,7 +1495,7 @@ def test_click_while_locating_drops_the_late_answer(
     qapp.processEvents()
     _select_text(window.txt_origin, "Second", app)
     window.btn_align_selection.click()
-    assert window.btn_align_selection.text() == "定位中..."
+    assert window.btn_align_selection.text() == "Locating..."
 
     QTest.mouseClick(
         window.txt_result.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(4, 4)
@@ -1581,8 +1581,8 @@ def test_back_translation_follows_a_completed_translation_when_enabled(
         ("This is a test sentence.", "简体中文")
     ]
     assert not window.back_translation_panel.isHidden()
-    assert window.lbl_back_translation.text() == "BACK TRANSLATION · 中文"
-    assert window.txt_back_translation.toPlainText() == "正在回译…"
+    assert window.lbl_back_translation.text() == "BACK TRANSLATION · Chinese"
+    assert window.txt_back_translation.toPlainText() == "Back-translating…"
     assert back_workers[0] in window.translation_threads
 
     back_workers[0].complete("这是一个测试的句子。")
@@ -1619,7 +1619,7 @@ def test_back_translation_reports_failures_and_same_language_results(
     _translate_manually(window, workers, "这是一个测试句子。", "This is a test.")
     back_workers[-1].complete("这是一", success=False, error="timeout")
 
-    assert window.txt_back_translation.toPlainText() == "这是一\n\n[回译出错: timeout]"
+    assert window.txt_back_translation.toPlainText() == "这是一\n\n[Back-translation error: timeout]"
 
     window.cbo_dictionary_target.setCurrentIndex(
         window.cbo_dictionary_target.findData("en")
@@ -1628,7 +1628,10 @@ def test_back_translation_reports_failures_and_same_language_results(
 
     assert len(back_workers) == 1
     assert not window.back_translation_panel.isHidden()
-    assert window.txt_back_translation.toPlainText() == "原文与译文为同一语言，无需回译。"
+    assert window.txt_back_translation.toPlainText() == (
+        "The source and the translation are in the same language; there's "
+        "nothing to back-translate."
+    )
 
 
 def test_new_request_cancels_the_back_translation_and_drops_its_output(
@@ -1707,7 +1710,7 @@ def test_failed_save_reverts_the_back_translation_toggle(
 
     assert not window.btn_back_translation.isChecked()
     assert window.app_settings.back_translation is False
-    assert warnings == ["设置保存失败"]
+    assert warnings == ["Couldn't save settings"]
     assert back_workers == []
 
 
@@ -1982,7 +1985,7 @@ def test_tray_menu_hover_style_has_explicit_foreground_and_background(
     window = app.TranslationWindow(_app_paths(tmp_path), object())
     try:
         assert window.tray_icon.toolTip() == app.APP_DISPLAY_NAME
-        assert window.toggle_translation_action.text() == "禁用"
+        assert window.toggle_translation_action.text() == "Disable"
         assert window.toggle_translation_action.isCheckable()
         assert not window.toggle_translation_action.isChecked()
         compact_style = "".join(window.tray_menu.styleSheet().split()).lower()
@@ -2004,8 +2007,8 @@ def test_tray_menu_hover_style_has_explicit_foreground_and_background(
     ("enabled", "installed", "expected_icon", "tooltip_fragment"),
     (
         (True, True, "enabled", "XButton1"),
-        (True, False, "disabled", "快捷键未激活"),
-        (False, False, "disabled", "全局划词翻译已禁用"),
+        (True, False, "disabled", "Shortcut inactive"),
+        (False, False, "disabled", "Global selection translation is off"),
     ),
 )
 def test_tray_icon_tracks_actual_shortcut_state(
@@ -2125,7 +2128,7 @@ def test_empty_shortcut_selection_does_not_open_main_window(
     app.TranslationWindow.translate_current_selection(window)
 
     assert len(messages) == 1
-    assert "未检测到选中文字" in messages[0][1]
+    assert "No selected text found" in messages[0][1]
     assert window.selection_capture_busy is False
     assert [delay for delay, _callback in scheduled] == [150]
 
@@ -2740,7 +2743,7 @@ def test_apply_settings_rolls_shortcut_back_when_save_fails(
     assert window.app_settings == previous
     assert not settings_path.exists()
     assert refreshes == [settings_path]
-    assert warnings and warnings[-1][1] == "设置保存失败"
+    assert warnings and warnings[-1][1] == "Couldn't save settings"
 
 
 def test_apply_settings_rolls_translation_back_when_show_hotkey_is_unavailable(
@@ -2781,7 +2784,7 @@ def test_apply_settings_rolls_translation_back_when_show_hotkey_is_unavailable(
         (candidate.show_window_shortcut, True)
     ]
     assert refreshes == [window.settings_path]
-    assert warnings and warnings[-1][1] == "显示窗口快捷键不可用"
+    assert warnings and warnings[-1][1] == "Show-window shortcut unavailable"
 
 
 def test_apply_settings_rejects_duplicate_shortcuts_before_registration(
@@ -2809,7 +2812,7 @@ def test_apply_settings_rejects_duplicate_shortcuts_before_registration(
     assert manager.calls == []
     assert show_window_manager.calls == []
     assert refreshes == []
-    assert warnings and warnings[-1][1] == "快捷键冲突"
+    assert warnings and warnings[-1][1] == "Shortcut conflict"
 
 
 @pytest.mark.parametrize(
@@ -2927,7 +2930,7 @@ def test_provider_switch_is_deferred_while_cancelled_thread_is_still_running(
     assert manager.calls == []
     assert refreshes == []
     assert not (tmp_path / "settings.json").exists()
-    assert warnings and warnings[-1][1] == "接口暂未切换"
+    assert warnings and warnings[-1][1] == "Provider not switched"
 
 
 @pytest.mark.parametrize("provider_id", [DEEPSEEK_API_PROVIDER, OPENROUTER_API_PROVIDER])
@@ -3024,7 +3027,7 @@ def test_apply_settings_replaces_client_only_after_credential_write_succeeds(
         assert result is False
         assert app.client is old_client
         assert events == [app.AppEvent.CREDENTIAL_UNAVAILABLE]
-        assert warnings and warnings[-1][1] == "API Key 保存失败"
+        assert warnings and warnings[-1][1] == "Couldn't save API key"
 
 
 def test_disable_while_suspended_prevents_delayed_resume_from_reinstalling(
@@ -3102,7 +3105,7 @@ def test_stop_keeps_the_partial_translation_and_drops_later_output(edit_window):
     assert window.btn_translate.text() == "Translate (Ctrl+Enter)"
     assert window.btn_copy.isEnabled()
     assert window.full_translation == "This is the first sentence."
-    assert window.txt_result.toPlainText() == "This is the first sentence.\n\n[已停止]"
+    assert window.txt_result.toPlainText() == "This is the first sentence.\n\n[Stopped]"
     assert window.translation_history == []
 
     # The worker only notices at its next chunk; nothing it sends is shown.
@@ -3110,7 +3113,7 @@ def test_stop_keeps_the_partial_translation_and_drops_later_output(edit_window):
     worker.complete()
 
     assert window.full_translation == "This is the first sentence."
-    assert window.txt_result.toPlainText() == "This is the first sentence.\n\n[已停止]"
+    assert window.txt_result.toPlainText() == "This is the first sentence.\n\n[Stopped]"
     assert worker not in window.translation_threads
     assert window.translation_history == []
 
@@ -3123,14 +3126,14 @@ def test_stop_before_any_text_arrives_resets_the_selection_view(edit_window):
     window.stop_translation()
 
     assert workers[-1].stop_requested
-    assert window.txt_result.toPlainText() == "[已停止]"
+    assert window.txt_result.toPlainText() == "[Stopped]"
     assert window.btn_copy.text() == "Copy"
     assert not window.btn_copy.isEnabled()
     assert window.btn_stop.isHidden()
 
     # Stopping again, or with nothing running, does nothing.
     window.stop_translation()
-    assert window.txt_result.toPlainText() == "[已停止]"
+    assert window.txt_result.toPlainText() == "[Stopped]"
 
 
 def test_stopping_the_back_translation_keeps_what_arrived(edit_window, back_workers):
@@ -3150,15 +3153,15 @@ def test_stopping_the_back_translation_keeps_what_arrived(edit_window, back_work
     assert worker.stop_requested
     assert window.back_thread is None
     assert window.btn_stop_back_translation.isHidden()
-    assert window.txt_back_translation.toPlainText() == "这是一\n\n[已停止回译]"
+    assert window.txt_back_translation.toPlainText() == "这是一\n\n[Back-translation stopped]"
 
     worker.complete("个测试。")
 
-    assert window.txt_back_translation.toPlainText() == "这是一\n\n[已停止回译]"
+    assert window.txt_back_translation.toPlainText() == "这是一\n\n[Back-translation stopped]"
     assert worker not in window.translation_threads
 
     window.sync_back_translation()
-    assert window.txt_back_translation.toPlainText() == "这是一\n\n[已停止回译]"
+    assert window.txt_back_translation.toPlainText() == "这是一\n\n[Back-translation stopped]"
 
     window.start_back_translation()
     back_workers[-1].complete("这是一个测试。")
@@ -3166,7 +3169,7 @@ def test_stopping_the_back_translation_keeps_what_arrived(edit_window, back_work
 
     window.start_back_translation()
     window.stop_back_translation()
-    assert window.txt_back_translation.toPlainText() == "[已停止回译]"
+    assert window.txt_back_translation.toPlainText() == "[Back-translation stopped]"
 
 
 class _ClosableStream:
@@ -3210,7 +3213,7 @@ def test_translation_thread_closes_a_stopped_stream_at_once(app, qapp):
     thread.run()
 
     assert chunks == ["First part."]
-    assert outcomes == [(False, "已取消")]
+    assert outcomes == [(False, app.CANCELLED_ERROR)]
     assert stream.closed == 1
 
 
@@ -3332,7 +3335,7 @@ def test_settings_dialog_offers_completion_notifications_on_the_general_page(
     )
     try:
         general = dialog.pages.widget(0)
-        assert dialog.page_list.item(0).text() == "常规"
+        assert dialog.page_list.item(0).text() == "General"
         assert general.isAncestorOf(dialog.chk_completion_notifications)
         assert dialog.chk_completion_notifications.isChecked()
 

@@ -92,7 +92,7 @@ _PROVIDER_SPECS = (
     ),
     ApiProviderSpec(
         provider_id=DEEPSEEK_API_PROVIDER,
-        display_name="DeepSeek 官方接口",
+        display_name="DeepSeek (official API)",
         short_name="DeepSeek",
         base_url="https://api.deepseek.com",
         model="deepseek-v4-flash",
@@ -113,8 +113,8 @@ _PROVIDER_SPECS = (
     ),
     ApiProviderSpec(
         provider_id=OPENAI_COMPATIBLE_API_PROVIDER,
-        display_name="OpenAI 兼容接口（自定义）",
-        short_name="OpenAI 兼容",
+        display_name="OpenAI-compatible (custom)",
+        short_name="OpenAI-compatible",
         base_url="https://api.openai.com/v1",
         model="",
         environment_variable="OPENAI_API_KEY",

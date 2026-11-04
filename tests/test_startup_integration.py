@@ -229,9 +229,9 @@ def test_registry_write_error_reports_partial_save_without_reapplying_settings(s
     assert settings.registry_writes == [True]
     assert settings.events.count("apply-settings") == 1
     assert len(settings.warnings) == 1
-    assert settings.warnings[0][1] == "开机启动设置失败"
-    assert "其他设置" in settings.warnings[0][2]
-    assert "保存" in settings.warnings[0][2]
+    assert settings.warnings[0][1] == "Couldn't change startup"
+    assert "other settings" in settings.warnings[0][2]
+    assert "saved" in settings.warnings[0][2]
 
 
 def test_each_settings_open_refreshes_the_registry_state(settings):

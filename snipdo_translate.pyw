@@ -54,6 +54,16 @@ from app_logging import AppEvent, PrivacyEventLogger, configure_app_logging
 from app_update_ui import UpdateNotifications
 from app_update_install import acknowledge_update_startup, consume_update_error
 from app_version import APP_VERSION
+from app_i18n import (
+    UI_LANGUAGES,
+    language_name,
+    messages,
+    native_language_name,
+    provider_name,
+    set_ui_language,
+    tr,
+    ui_language,
+)
 from app_settings import (
     DEFAULT_SETTINGS,
     SETTINGS_FILE_NAME,
@@ -554,16 +564,16 @@ def clipboard_image_to_data_url() -> str:
     clipboard = QApplication.clipboard()
     image = clipboard.image()
     if image.isNull():
-        raise RuntimeError("剪贴板中没有图片")
+        raise RuntimeError(tr("error.clipboard_no_image"))
 
     byte_array = QByteArray()
     buffer = QBuffer(byte_array)
     if not buffer.open(QIODevice.OpenModeFlag.WriteOnly):
-        raise RuntimeError("无法读取剪贴板图片")
+        raise RuntimeError(tr("error.clipboard_unreadable"))
 
     try:
         if not image.save(buffer, "PNG"):
-            raise RuntimeError("无法把剪贴板图片转换为 PNG")
+            raise RuntimeError(tr("error.clipboard_not_png"))
     finally:
         buffer.close()
 
@@ -992,10 +1002,10 @@ def resolve_auto_translation_mode(
 
 def target_label_for_mode(mode: str) -> str:
     if mode == "zh2en":
-        return "ENGLISH TRANSLATION"
+        return tr("main.label.english_translation")
     if mode == "en2zh":
-        return "CHINESE TRANSLATION"
-    return "AUTO TRANSLATION"
+        return tr("main.label.chinese_translation")
+    return tr("main.label.auto_translation")
 
 
 def translation_mode_for_target_language(target_lang: str) -> str:
@@ -1051,10 +1061,13 @@ def translation_label_for_target_language(mode: str, target_lang: str) -> str:
     if target_lang == "default":
         return target_label_for_mode(mode)
     if target_lang == "zh":
-        return "CHINESE TRANSLATION"
+        return tr("main.label.chinese_translation")
     if target_lang == "en":
-        return "ENGLISH TRANSLATION"
-    return f"{dictionary_language_label(target_lang, target=True).upper()} TRANSLATION"
+        return tr("main.label.english_translation")
+    return tr(
+        "main.label.language_translation",
+        language=dictionary_language_display(target_lang, target=True).upper(),
+    )
 
 
 DICTIONARY_SOURCE_LANGUAGES = [
@@ -1085,11 +1098,22 @@ DICTIONARY_TARGET_LANGUAGES = [
 
 
 def dictionary_language_label(code: str, target: bool = False) -> str:
+    """Language name written into model prompts; never changes with the UI."""
     options = DICTIONARY_TARGET_LANGUAGES if target else DICTIONARY_SOURCE_LANGUAGES
     return next((label for value, label in options if value == code), "Auto")
 
 
+def dictionary_language_display(code: str, target: bool = False) -> str:
+    """Language name shown in the UI language."""
+    options = DICTIONARY_TARGET_LANGUAGES if target else DICTIONARY_SOURCE_LANGUAGES
+    return language_name(code if any(value == code for value, _label in options) else "auto")
+
+
 # ================= 1. 统一后台翻译/查词线程 =================
+# Workers report a stop with this error; it is never shown to the user.
+CANCELLED_ERROR = "cancelled"
+
+
 def close_stream(response) -> None:
     """End a streamed response now instead of when it is garbage collected."""
     close = getattr(response, "close", None)
@@ -1231,11 +1255,11 @@ class TranslationThread(QThread):
         try:
             runtime = self.runtime
             if self._stop_requested:
-                self.finished.emit(False, "已取消")
+                self.finished.emit(False, CANCELLED_ERROR)
                 return
             if runtime.client is None:
                 raise RuntimeError(
-                    f"未设置 {runtime.provider.display_name} API Key"
+                    tr("error.no_api_key", provider=provider_name(runtime.provider.provider_id))
                 )
 
             prompt = self.build_prompt()
@@ -1261,7 +1285,7 @@ class TranslationThread(QThread):
                 for chunk in response:
                     if self._stop_requested:
                         log("[TranslateThread] cancelled")
-                        self.finished.emit(False, "已取消")
+                        self.finished.emit(False, CANCELLED_ERROR)
                         return
 
                     try:
@@ -1412,11 +1436,11 @@ JSON 格式：
         try:
             runtime = self.runtime
             if self._stop_requested:
-                self.finished.emit(False, {"text": ""}, "已取消")
+                self.finished.emit(False, {"text": ""}, CANCELLED_ERROR)
                 return
             if runtime.client is None:
                 raise RuntimeError(
-                    f"未设置 {runtime.provider.display_name} API Key"
+                    tr("error.no_api_key", provider=provider_name(runtime.provider.provider_id))
                 )
 
             log(f"[AlignmentThread] start, selected={repr(self.selected_text[:120])}")
@@ -1430,7 +1454,7 @@ JSON 格式：
 
             if self._stop_requested:
                 log("[AlignmentThread] cancelled")
-                self.finished.emit(False, {"text": ""}, "已取消")
+                self.finished.emit(False, {"text": ""}, CANCELLED_ERROR)
                 return
 
             content = response.choices[0].message.content or ""
@@ -1459,15 +1483,15 @@ class OcrThread(QThread):
         try:
             runtime = self.runtime
             if self._stop_requested:
-                self.finished.emit(False, "", "已取消")
+                self.finished.emit(False, "", CANCELLED_ERROR)
                 return
             if runtime.client is None:
                 raise RuntimeError(
-                    f"未设置 {runtime.provider.display_name} API Key"
+                    tr("error.no_api_key", provider=provider_name(runtime.provider.provider_id))
                 )
             if not runtime.provider.supports_vision:
                 raise RuntimeError(
-                    f"{runtime.provider.display_name} 不支持图片 OCR"
+                    tr("error.ocr_unsupported", provider=provider_name(runtime.provider.provider_id))
                 )
 
             log("[OcrThread] start")
@@ -1499,13 +1523,13 @@ class OcrThread(QThread):
 
             if self._stop_requested:
                 log("[OcrThread] cancelled")
-                self.finished.emit(False, "", "已取消")
+                self.finished.emit(False, "", CANCELLED_ERROR)
                 return
 
             content = response.choices[0].message.content or ""
             text = normalize_newlines(content).strip()
             if text.strip().upper() == "NO_TEXT_FOUND":
-                raise RuntimeError("未识别到文字")
+                raise RuntimeError(tr("error.no_text_found"))
 
             log(f"[OcrThread] finished success, text={repr(text[:200])}")
             self.finished.emit(True, text, "")
@@ -1665,8 +1689,8 @@ class ShortcutCaptureButton(QPushButton):
         self.setMinimumWidth(180)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip(
-            "点击后按下新的全局快捷键；按 Esc 移除此快捷键"
-            if allow_clear else "翻译快捷键不可移除；点击后录入新快捷键，Esc 取消修改"
+            tr("shortcut.tooltip.removable")
+            if allow_clear else tr("shortcut.tooltip.required")
         )
         self.setStyleSheet("""
             QPushButton {
@@ -1702,14 +1726,17 @@ class ShortcutCaptureButton(QPushButton):
             self._refresh_text()
 
     def _refresh_text(self) -> None:
-        self.setText(self._binding.display if self._binding is not None else "未设置")
+        self.setText(
+            self._binding.display if self._binding is not None else tr("shortcut.not_set")
+        )
 
     def begin_capture(self) -> None:
         if self._capturing:
             return
         self._capturing = True
         self.setText(
-            "请按下快捷键，Esc 移除…" if self._allow_clear else "请按下快捷键，Esc 取消…"
+            tr("shortcut.capture.removable")
+            if self._allow_clear else tr("shortcut.capture.required")
         )
         self.setFocus(Qt.FocusReason.OtherFocusReason)
         self.grabKeyboard()
@@ -1758,14 +1785,14 @@ class ShortcutCaptureButton(QPushButton):
         virtual_key = int(event.nativeVirtualKey()) or qt_key_to_virtual_key(event.key())
         display = keyboard_shortcut_display(event.key(), modifiers)
         if virtual_key is None or not display:
-            self.capture_error.emit("无法识别该按键，请换一个组合键。")
+            self.capture_error.emit(tr("shortcut.error.unknown_key"))
             event.accept()
             return
 
         try:
             binding = keyboard_shortcut(virtual_key, modifiers, display)
         except (SettingsDataError, TypeError, ValueError):
-            self.capture_error.emit("普通按键需要搭配 Ctrl、Alt、Shift 或 Win；F1–F24 可单独使用。")
+            self.capture_error.emit(tr("shortcut.error.needs_modifier"))
             event.accept()
             return
 
@@ -1781,9 +1808,11 @@ class ShortcutCaptureButton(QPushButton):
 
         button_name = self._MOUSE_BUTTONS.get(event.button())
         if button_name is None:
-            escape_hint = "Esc 移除此快捷键。" if self._allow_clear else "Esc 取消修改。"
+            escape_hint = tr(
+                "shortcut.hint.remove" if self._allow_clear else "shortcut.hint.cancel"
+            )
             self.capture_error.emit(
-                "鼠标快捷键支持 XButton1、XButton2 和中键；" + escape_hint
+                tr("shortcut.error.mouse_button", hint=escape_hint)
             )
             event.accept()
             return
@@ -1823,7 +1852,7 @@ class ModelListLoader(QObject):
             models = fetch_available_models(api_client)
         except Exception:
             # Never display response bodies or credentials from service errors.
-            error = "无法获取模型列表。请检查服务地址、API Key 和网络，或直接输入模型 ID。"
+            error = tr("settings.api.model.fetch_failed")
         finally:
             if api_client is not None:
                 try:
@@ -1862,7 +1891,7 @@ class SettingsDialog(QDialog):
         self._model_loader.completed.connect(
             self._on_models_loaded, Qt.ConnectionType.QueuedConnection
         )
-        self.setWindowTitle("设置")
+        self.setWindowTitle(tr("settings.window_title"))
         self.setModal(True)
         self.setMinimumWidth(720)
         self.setStyleSheet("""
@@ -1919,7 +1948,7 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(22, 20, 22, 18)
         layout.setSpacing(14)
 
-        title = QLabel(f"翻译工具设置 · v{APP_VERSION}")
+        title = QLabel(tr("settings.title", version=APP_VERSION))
         title.setStyleSheet("color: #303133; font-size: 18px; font-weight: 700;")
         layout.addWidget(title)
 
@@ -1935,47 +1964,60 @@ class SettingsDialog(QDialog):
         layout.addLayout(body, 1)
 
         form = self._add_page(
-            "常规",
-            "启用状态控制全局划词翻译；主窗口和 SnipDo 调用仍可继续使用。",
+            tr("settings.general"),
+            tr("settings.general.hint"),
         )
-        self.chk_enabled = QCheckBox("启用全局划词翻译")
-        self.chk_enabled.setChecked(settings.enabled)
-        form.addRow("启用工具", self.chk_enabled)
+        # First on the first page, so anyone can find it in any language.
+        self.language_combo = NoWheelComboBox()
+        for code, name in UI_LANGUAGES:
+            self.language_combo.addItem(name, code)
+        self.language_combo.setCurrentIndex(
+            max(0, self.language_combo.findData(settings.ui_language))
+        )
+        form.addRow(tr("settings.language.row"), self.language_combo)
+        language_note = QLabel(tr("settings.language.note"))
+        language_note.setWordWrap(True)
+        language_note.setStyleSheet("color: #909399; font-size: 12px;")
+        form.addRow("", language_note)
 
-        self.chk_startup = QCheckBox("登录 Windows 时自动启动（后台托盘）")
+        self.chk_enabled = QCheckBox(tr("settings.enabled.check"))
+        self.chk_enabled.setChecked(settings.enabled)
+        form.addRow(tr("settings.enabled.row"), self.chk_enabled)
+
+        self.chk_startup = QCheckBox(tr("settings.startup.check"))
         self.chk_startup.setChecked(startup_enabled)
         self.chk_startup.setEnabled(startup_available)
         self.chk_startup.setToolTip(
-            "仅对当前 Windows 用户生效。自动启动时不弹出主窗口；取消勾选可关闭。"
-            if startup_available else "无法读取开机启动设置，可继续修改其他选项。"
+            tr("settings.startup.tooltip")
+            if startup_available else tr("settings.startup.unavailable")
         )
-        form.addRow("开机启动", self.chk_startup)
+        form.addRow(tr("settings.startup.row"), self.chk_startup)
         if not startup_available:
-            startup_notice = QLabel("无法读取开机启动设置，可继续修改其他选项。")
+            startup_notice = QLabel(tr("settings.startup.unavailable"))
             startup_notice.setWordWrap(True)
             form.addRow("", startup_notice)
 
-        self.chk_completion_notifications = QCheckBox("翻译完成时显示 Windows 通知")
+        self.chk_completion_notifications = QCheckBox(
+            tr("settings.notifications.check")
+        )
         self.chk_completion_notifications.setChecked(
             settings.completion_notifications
         )
-        form.addRow("通知", self.chk_completion_notifications)
-        notification_note = QLabel(
-            "仅在主窗口不在前台时通知。关闭后不再弹出通知，"
-            "托盘图标仍会显示未读标志。"
+        form.addRow(
+            tr("settings.notifications.row"), self.chk_completion_notifications
         )
+        notification_note = QLabel(tr("settings.notifications.note"))
         notification_note.setWordWrap(True)
         notification_note.setStyleSheet("color: #909399; font-size: 12px;")
         form.addRow("", notification_note)
 
         form = self._add_page(
-            "快捷键",
-            "录入时按 Esc 可移除显示窗口快捷键；翻译快捷键不可移除，Esc 仅取消修改。"
-            "鼠标快捷键会拦截对应的后退、前进或中键动作。",
+            tr("settings.shortcuts"),
+            tr("settings.shortcuts.hint"),
         )
         self.shortcut_button = ShortcutCaptureButton(settings.shortcut)
         self.shortcut_button.capture_error.connect(self._show_capture_error)
-        form.addRow("翻译快捷键", self.shortcut_button)
+        form.addRow(tr("settings.shortcut.translate.row"), self.shortcut_button)
 
         self.show_window_shortcut_button = ShortcutCaptureButton(
             settings.show_window_shortcut, allow_clear=True
@@ -1983,48 +2025,46 @@ class SettingsDialog(QDialog):
         self.show_window_shortcut_button.capture_error.connect(
             self._show_capture_error
         )
-        form.addRow("显示窗口快捷键", self.show_window_shortcut_button)
+        form.addRow(
+            tr("settings.shortcut.show_window.row"), self.show_window_shortcut_button
+        )
         self.shortcut_status_label = QLabel()
         self.shortcut_status_label.setWordWrap(True)
         self.shortcut_status_label.setStyleSheet("color: #E6A23C; font-size: 12px;")
         form.addRow("", self.shortcut_status_label)
 
         form = self._add_page(
-            "翻译",
-            "回译会把译文再翻译回原文语言，便于核对译文是否准确传达了原意。",
+            tr("settings.translation"),
+            tr("settings.translation.hint"),
         )
-        self.chk_back_translation = QCheckBox("翻译完成后自动回译")
+        self.chk_back_translation = QCheckBox(tr("settings.back_translation.check"))
         self.chk_back_translation.setChecked(settings.back_translation)
-        form.addRow("回译", self.chk_back_translation)
-        back_translation_note = QLabel(
-            "每次翻译会额外发送一次请求；词典结果不回译。"
-            "也可点击主窗口译文标题旁的“回译”按钮快速开关。"
-        )
+        form.addRow(tr("settings.back_translation.row"), self.chk_back_translation)
+        back_translation_note = QLabel(tr("settings.back_translation.note"))
         back_translation_note.setWordWrap(True)
         back_translation_note.setStyleSheet("color: #909399; font-size: 12px;")
         form.addRow("", back_translation_note)
 
         form = self._add_page(
-            "API 接口",
-            "所有接口均使用 OpenAI Chat Completions 兼容格式；"
-            "API Key 按接口分别保存在 Windows 凭据管理器中。",
+            tr("settings.api"),
+            tr("settings.api.hint"),
         )
         self._api_page = self.pages.count() - 1
         self.api_provider_combo = NoWheelComboBox()
         for provider in api_provider_options():
             self.api_provider_combo.addItem(
-                provider.display_name,
+                provider_name(provider.provider_id),
                 provider.provider_id,
             )
         provider_index = self.api_provider_combo.findData(settings.api_provider)
         self.api_provider_combo.setCurrentIndex(max(0, provider_index))
-        form.addRow("API 接口", self.api_provider_combo)
+        form.addRow(tr("settings.api.provider.row"), self.api_provider_combo)
 
         self.api_key_input = QLineEdit()
         self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.api_key_input.setPlaceholderText("输入新 API Key（留空不修改）")
+        self.api_key_input.setPlaceholderText(tr("settings.api.key.placeholder"))
         self.api_key_input.setClearButtonEnabled(True)
-        form.addRow("API Key", self.api_key_input)
+        form.addRow(tr("settings.api.key.row"), self.api_key_input)
 
         self.base_url_input = QLineEdit()
         self.base_url_input.setPlaceholderText("https://api.example.com/v1")
@@ -2034,7 +2074,7 @@ class SettingsDialog(QDialog):
                 color: #606266;
             }
         """)
-        form.addRow("服务地址", self.base_url_input)
+        form.addRow(tr("settings.api.base_url.row"), self.base_url_input)
 
         model_row = QHBoxLayout()
         self.model_combo = NoWheelComboBox()
@@ -2042,24 +2082,26 @@ class SettingsDialog(QDialog):
         self.model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.model_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.model_combo.setMinimumContentsLength(18)
-        self.model_combo.lineEdit().setPlaceholderText("搜索、选择或输入模型 ID")
+        self.model_combo.lineEdit().setPlaceholderText(
+            tr("settings.api.model.placeholder")
+        )
         self.model_combo.completer().setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
         self.model_combo.completer().setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.model_combo.completer().setFilterMode(Qt.MatchFlag.MatchContains)
         self.model_combo.completer().setMaxVisibleItems(12)
-        self.fetch_models_button = QPushButton("获取模型")
+        self.fetch_models_button = QPushButton(tr("settings.api.model.fetch"))
         self.fetch_models_button.setAutoDefault(False)
         self.fetch_models_button.clicked.connect(self.fetch_models)
         model_row.addWidget(self.model_combo, 1)
         model_row.addWidget(self.fetch_models_button)
-        form.addRow("模型", model_row)
+        form.addRow(tr("settings.api.model.row"), model_row)
 
-        self.vision_checkbox = QCheckBox("所选模型支持图片输入（OCR）")
-        form.addRow("图片能力", self.vision_checkbox)
-        self.disable_thinking_checkbox = QCheckBox("发送禁用思考参数（仅限支持此参数的服务）")
-        form.addRow("请求选项", self.disable_thinking_checkbox)
+        self.vision_checkbox = QCheckBox(tr("settings.api.vision.check"))
+        form.addRow(tr("settings.api.vision.row"), self.vision_checkbox)
+        self.disable_thinking_checkbox = QCheckBox(tr("settings.api.thinking.check"))
+        form.addRow(tr("settings.api.thinking.row"), self.disable_thinking_checkbox)
 
-        self.model_status_label = QLabel("可从接口获取模型列表，也可直接输入模型 ID。")
+        self.model_status_label = QLabel(tr("settings.api.model.status"))
         self.model_status_label.setWordWrap(True)
         self.model_status_label.setStyleSheet("color: #909399; font-size: 12px;")
         form.addRow("", self.model_status_label)
@@ -2083,8 +2125,12 @@ class SettingsDialog(QDialog):
         )
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
-        button_box.button(QDialogButtonBox.StandardButton.Save).setText("保存")
-        button_box.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        button_box.button(QDialogButtonBox.StandardButton.Save).setText(
+            tr("settings.save")
+        )
+        button_box.button(QDialogButtonBox.StandardButton.Cancel).setText(
+            tr("settings.cancel")
+        )
         layout.addWidget(button_box)
 
     def _add_page(self, name: str, description: str) -> QFormLayout:
@@ -2144,9 +2190,12 @@ class SettingsDialog(QDialog):
         custom_provider = provider_id == OPENAI_COMPATIBLE_API_PROVIDER
         self.base_url_input.setReadOnly(not custom_provider)
         self.base_url_input.setToolTip(
-            "填写 API 根地址，包含服务要求的 /v1 等前缀，无需填写 /chat/completions。"
+            tr("settings.api.base_url.custom_tooltip")
             if custom_provider else
-            "此接口的服务地址为只读；如需自定义地址，请选择 OpenAI 兼容接口（自定义）。"
+            tr(
+                "settings.api.base_url.fixed_tooltip",
+                provider=provider_name(OPENAI_COMPATIBLE_API_PROVIDER),
+            )
         )
         config = self._initial_settings.config_for(provider_id)
         values = self._drafts.get(provider_id, (
@@ -2173,7 +2222,7 @@ class SettingsDialog(QDialog):
     def _invalidate_model_list(self, *_args):
         self._model_request_id += 1
         self._populate_models(self.model_combo.currentText())
-        self.model_status_label.setText("可从接口获取模型列表，也可直接输入模型 ID。")
+        self.model_status_label.setText(tr("settings.api.model.status"))
 
     def _on_api_key_changed(self, *_args):
         self._model_lists.clear()
@@ -2185,7 +2234,7 @@ class SettingsDialog(QDialog):
         try:
             config = ApiProviderConfig(*self._field_values())
         except ValueError:
-            self.model_status_label.setText("请填写有效的 HTTP(S) 服务地址；地址不能包含密钥、查询参数或片段。")
+            self.model_status_label.setText(tr("settings.api.model.invalid_url"))
             return
         provider_id = self.selected_api_provider()
         api_key = self.api_key()
@@ -2194,12 +2243,12 @@ class SettingsDialog(QDialog):
                 provider_id, credential_store_for_window(self.parent(), provider_id)
             )
         if is_placeholder_api_key(api_key):
-            self.model_status_label.setText("请先输入此接口的 API Key，再获取模型；也可直接输入模型 ID。")
+            self.model_status_label.setText(tr("settings.api.model.needs_key"))
             return
         self._model_request_id += 1
         self._model_request_pending = True
         self.fetch_models_button.setEnabled(False)
-        self.model_status_label.setText("正在获取模型列表…")
+        self.model_status_label.setText(tr("settings.api.model.fetching"))
         self._model_loader.start(self._model_request_id, provider_id, config, api_key)
 
     def _on_models_loaded(self, request_id, models, error):
@@ -2216,32 +2265,34 @@ class SettingsDialog(QDialog):
         )] = models
         self._populate_models(self.model_combo.currentText())
         self.model_status_label.setText(
-            f"已获取 {len(models)} 个模型。输入关键词搜索并选择；图片能力需根据所选模型确认。"
+            tr("settings.api.model.fetched", count=len(models))
         )
 
     def _refresh_api_key_status(self) -> None:
         provider = get_api_provider(self.selected_api_provider())
+        name = provider_name(provider.provider_id)
         self.api_key_input.setPlaceholderText(
-            f"输入新的 {provider.display_name} API Key（留空不修改）"
+            tr("settings.api.key.placeholder_for", provider=name)
         )
 
         if provider.provider_id != self._initial_api_provider:
-            message = (
-                f"将切换到 {provider.display_name}。留空时会使用该接口已有的凭据或"
-                f" {provider.environment_variable}；若均不存在，下次请求时会提示输入。"
+            message = tr(
+                "settings.api.status.switching",
+                provider=name,
+                variable=provider.environment_variable,
             )
         elif self._environment_key_active:
-            message = (
-                f"当前 API Key 来自 {provider.environment_variable} 环境变量；"
-                "它会在下次启动时优先于已保存的 Key。"
+            message = tr(
+                "settings.api.status.environment",
+                variable=provider.environment_variable,
             )
         elif self._api_key_configured:
-            message = "已设置 API Key。为保护密钥，输入框不会回填原值。"
+            message = tr("settings.api.status.configured")
         else:
-            message = "尚未设置 API Key；新 Key 将安全保存到 Windows 凭据管理器。"
+            message = tr("settings.api.status.missing")
 
         if not self.vision_checkbox.isChecked():
-            message += " 当前未启用图片能力，不支持图片 OCR。"
+            message += tr("settings.api.status.no_vision")
         self.status_label.setText(message)
         self.status_label.setStyleSheet("color: #909399; font-size: 12px;")
 
@@ -2265,10 +2316,8 @@ class SettingsDialog(QDialog):
                         raise ValueError("missing model")
                     configs[provider_id] = config
             except ValueError as exc:
-                provider = get_api_provider(provider_id)
                 raise SettingsDataError(
-                    f"{provider.display_name}：请填写有效的 HTTP(S) 服务地址和模型 ID。"
-                    "服务地址不能包含密钥、查询参数或片段。"
+                    tr("settings.api.invalid_config", provider=provider_name(provider_id))
                 ) from exc
         return AppSettings(
             enabled=self.chk_enabled.isChecked(),
@@ -2278,6 +2327,7 @@ class SettingsDialog(QDialog):
             api_configs=configs,
             back_translation=self.chk_back_translation.isChecked(),
             completion_notifications=self.chk_completion_notifications.isChecked(),
+            ui_language=str(self.language_combo.currentData()),
         )
 
     def accept(self) -> None:
@@ -2704,10 +2754,10 @@ class QtIpcRequestBridge(QObject):
                 RejectionReason.BUSY,
             }:
                 self._window.force_show_window()
-                message = (
-                    "[未设置 API Key，请先在窗口中发起一次翻译并输入 Key]"
+                message = tr(
+                    "message.ipc_no_key"
                     if result.reason is RejectionReason.MISSING_KEY
-                    else "[OCR 正忙，请稍后重试]"
+                    else "message.ipc_ocr_busy"
                 )
                 self._window.set_result_message(message)
         except Exception:
@@ -2742,6 +2792,7 @@ class TranslationWindow(QWidget):
             if initial_settings is not None
             else self.load_app_settings()
         )
+        set_ui_language(self.app_settings.ui_language)
 
         self.source_mode = "manual"         # manual / snipdo
         self.content_mode_override = "auto"  # auto / dictionary
@@ -2785,6 +2836,8 @@ class TranslationWindow(QWidget):
         self._live_render_due = 0.0
         self.back_thread = None
         self.back_translation_text = ""
+        self.back_translation_language_code = None
+        self.heading_mode = "auto"
         self.back_render_timer = QTimer(self)
         self.back_render_timer.setSingleShot(True)
         self.back_render_timer.setInterval(int(LIVE_RENDER_INTERVAL_SECONDS * 1000))
@@ -2868,11 +2921,11 @@ class TranslationWindow(QWidget):
             }
         """)
 
-        self.show_window_action = QAction("显示主窗口", self)
+        self.show_window_action = QAction(tr("tray.show_window"), self)
         self.show_window_action.triggered.connect(self.show_manual_window)
         tray_menu.addAction(self.show_window_action)
 
-        self.toggle_translation_action = QAction("禁用", self)
+        self.toggle_translation_action = QAction(tr("tray.disable"), self)
         self.toggle_translation_action.setCheckable(True)
         self.toggle_translation_action.setChecked(not self.app_settings.enabled)
         self.toggle_translation_action.triggered.connect(
@@ -2880,30 +2933,30 @@ class TranslationWindow(QWidget):
         )
         tray_menu.addAction(self.toggle_translation_action)
 
-        settings_action = QAction("设置…", self)
-        settings_action.triggered.connect(self.show_settings)
-        tray_menu.addAction(settings_action)
+        self.settings_action = QAction(tr("tray.settings"), self)
+        self.settings_action.triggered.connect(self.show_settings)
+        tray_menu.addAction(self.settings_action)
 
-        ocr_action = QAction("OCR 剪贴板图片", self)
-        ocr_action.triggered.connect(self.start_clipboard_ocr)
-        tray_menu.addAction(ocr_action)
+        self.ocr_action = QAction(tr("tray.ocr_clipboard"), self)
+        self.ocr_action.triggered.connect(self.start_clipboard_ocr)
+        tray_menu.addAction(self.ocr_action)
 
         tray_menu.addSeparator()
 
-        self.check_updates_action = QAction("检查更新…", self)
+        self.check_updates_action = QAction(tr("tray.check_updates"), self)
         self.check_updates_action.triggered.connect(
             lambda _checked=False: self.update_notifications.check_manually()
         )
         tray_menu.addAction(self.check_updates_action)
 
-        about_action = QAction(f"关于 SnipDo Translate（{APP_VERSION}）", self)
-        about_action.triggered.connect(self.show_about)
-        tray_menu.addAction(about_action)
+        self.about_action = QAction(tr("tray.about", version=APP_VERSION), self)
+        self.about_action.triggered.connect(self.show_about)
+        tray_menu.addAction(self.about_action)
         tray_menu.addSeparator()
 
-        quit_action = QAction("彻底退出", self)
-        quit_action.triggered.connect(self.quit_app)
-        tray_menu.addAction(quit_action)
+        self.quit_action = QAction(tr("tray.quit"), self)
+        self.quit_action.triggered.connect(self.quit_app)
+        tray_menu.addAction(self.quit_action)
 
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.activated.connect(self.on_tray_activated)
@@ -2913,9 +2966,8 @@ class TranslationWindow(QWidget):
     def show_about(self):
         QMessageBox.about(
             self,
-            f"关于 {APP_DISPLAY_NAME}",
-            f"{APP_DISPLAY_NAME}\n版本 {APP_VERSION}\n\n"
-            "自动检查新版本，也可从托盘菜单选择“检查更新”。",
+            tr("about.title", app=APP_DISPLAY_NAME),
+            tr("about.text", app=APP_DISPLAY_NAME, version=APP_VERSION),
         )
 
     def refresh_notification_visuals(self):
@@ -2935,7 +2987,7 @@ class TranslationWindow(QWidget):
 
         tooltip = self._base_tray_tooltip
         if self.translation_unread:
-            tooltip += " · 有未读译文"
+            tooltip += tr("tray.unread")
         self.tray_icon.setToolTip(tooltip)
 
     def set_translation_unread(self, unread: bool):
@@ -2966,7 +3018,7 @@ class TranslationWindow(QWidget):
             return True
         try:
             self.tray_icon.showMessage(
-                "翻译完成",
+                tr("notify.translation_finished"),
                 self.full_translation.strip(),
                 QSystemTrayIcon.MessageIcon.Information,
                 5000,
@@ -2994,7 +3046,7 @@ class TranslationWindow(QWidget):
         ):
             self.tray_icon.showMessage(
                 APP_DISPLAY_NAME,
-                "快捷键注册失败；请在设置中选择其他快捷键。",
+                tr("notify.shortcut_failed"),
                 QSystemTrayIcon.MessageIcon.Warning,
                 1800,
             )
@@ -3014,7 +3066,7 @@ class TranslationWindow(QWidget):
         ):
             self.tray_icon.showMessage(
                 APP_DISPLAY_NAME,
-                "显示窗口快捷键注册失败；请在设置中选择其他快捷键。",
+                tr("notify.show_window_shortcut_failed"),
                 QSystemTrayIcon.MessageIcon.Warning,
                 1800,
             )
@@ -3040,11 +3092,11 @@ class TranslationWindow(QWidget):
             and self.shortcut_manager.is_installed()
         )
         if not self.app_settings.enabled:
-            tooltip = f"{APP_DISPLAY_NAME} · 全局划词翻译已禁用"
+            tooltip = tr("tray.disabled", app=APP_DISPLAY_NAME)
         elif shortcut_active:
             tooltip = f"{APP_DISPLAY_NAME} · {self.app_settings.shortcut.display}"
         else:
-            tooltip = f"{APP_DISPLAY_NAME} · 快捷键未激活"
+            tooltip = tr("tray.shortcut_inactive", app=APP_DISPLAY_NAME)
         show_binding = self.app_settings.show_window_shortcut
         show_shortcut_active = bool(
             show_binding is not None
@@ -3052,10 +3104,12 @@ class TranslationWindow(QWidget):
             and self.show_window_shortcut_manager.is_installed()
         )
         if show_binding is None:
-            show_shortcut_status = "未设置"
+            show_shortcut_status = tr("shortcut.not_set")
         else:
-            show_shortcut_status = show_binding.display if show_shortcut_active else "未激活"
-        tooltip += f" · 显示窗口 {show_shortcut_status}"
+            show_shortcut_status = (
+                show_binding.display if show_shortcut_active else tr("shortcut.inactive")
+            )
+        tooltip += tr("tray.show_window_status", status=show_shortcut_status)
         icon = (
             self.enabled_app_icon
             if shortcut_active
@@ -3070,11 +3124,13 @@ class TranslationWindow(QWidget):
             )
         if hasattr(self, "btn_settings"):
             self.btn_settings.setToolTip(
-                f"设置 · 翻译快捷键：{self.app_settings.shortcut.display}\n{tooltip}"
+                tr("main.settings_tooltip", shortcut=self.app_settings.shortcut.display)
+                + f"\n{tooltip}"
             )
         if hasattr(self, "show_window_action"):
             self.show_window_action.setText(
-                f"显示主窗口（{show_binding.display}）" if show_binding is not None else "显示主窗口"
+                tr("tray.show_window_with_shortcut", shortcut=show_binding.display)
+                if show_binding is not None else tr("tray.show_window")
             )
 
     def refresh_api_status(self):
@@ -3082,12 +3138,15 @@ class TranslationWindow(QWidget):
             return
         provider = self.app_settings.resolved_provider()
         self.lbl_model_name.setText(
-            f"{provider.short_name} · {provider.model}"
+            f"{provider_name(provider.provider_id, short=True)} · {provider.model}"
         )
         self.lbl_model_name.setToolTip(
-            f"当前接口：{provider.display_name}\n"
-            f"服务地址：{provider.base_url}\n"
-            f"模型：{provider.model}"
+            tr(
+                "main.model_tooltip",
+                provider=provider_name(provider.provider_id),
+                url=provider.base_url,
+                model=provider.model,
+            )
         )
 
     def suspend_xbutton1_hook(self):
@@ -3163,7 +3222,7 @@ class TranslationWindow(QWidget):
             if time.monotonic() >= self._selection_release_deadline:
                 self.tray_icon.showMessage(
                     APP_DISPLAY_NAME,
-                    "请松开快捷键后重试划词翻译。",
+                    tr("notify.release_shortcut"),
                     QSystemTrayIcon.MessageIcon.Information,
                     1800,
                 )
@@ -3262,7 +3321,7 @@ class TranslationWindow(QWidget):
                 log("[Shortcut] no selected text captured")
                 self.tray_icon.showMessage(
                     APP_DISPLAY_NAME,
-                    "未检测到选中文字，请确认原窗口可复制文本，松开快捷键后重试。",
+                    tr("notify.no_selection"),
                     QSystemTrayIcon.MessageIcon.Information,
                     1800,
                 )
@@ -3346,8 +3405,8 @@ class TranslationWindow(QWidget):
             except StartupRegistrationError:
                 QMessageBox.warning(
                     self,
-                    "开机启动设置失败",
-                    "其他设置已保存，但无法更改开机启动设置。请稍后重试。",
+                    tr("warning.startup.title"),
+                    tr("warning.startup.text"),
                 )
 
     def toggle_global_translation(self):
@@ -3365,8 +3424,8 @@ class TranslationWindow(QWidget):
         ):
             QMessageBox.warning(
                 self,
-                "快捷键冲突",
-                "翻译快捷键和显示窗口快捷键不能相同。",
+                tr("warning.shortcut_conflict.title"),
+                tr("warning.shortcut_conflict.text"),
             )
             return False
 
@@ -3388,8 +3447,8 @@ class TranslationWindow(QWidget):
             if candidate_client is None:
                 QMessageBox.warning(
                     self,
-                    "API Key 无效",
-                    "请输入有效的 API Key；其他设置尚未更改。",
+                    tr("warning.invalid_key.title"),
+                    tr("warning.invalid_key.text"),
                 )
                 return False
         elif provider_changed:
@@ -3431,8 +3490,8 @@ class TranslationWindow(QWidget):
             if running_threads:
                 QMessageBox.warning(
                     self,
-                    "接口暂未切换",
-                    "当前请求尚未结束。请稍后再次保存接口设置。",
+                    tr("warning.provider_busy.title"),
+                    tr("warning.provider_busy.text"),
                 )
                 return False
 
@@ -3448,8 +3507,8 @@ class TranslationWindow(QWidget):
         ):
             QMessageBox.warning(
                 self,
-                "快捷键不可用",
-                "该快捷键可能已被其他程序占用。原快捷键仍保持激活。",
+                tr("warning.shortcut_unavailable.title"),
+                tr("warning.shortcut_unavailable.text"),
             )
             self.refresh_shortcut_status()
             return False
@@ -3465,8 +3524,8 @@ class TranslationWindow(QWidget):
                 )
             QMessageBox.warning(
                 self,
-                "显示窗口快捷键不可用",
-                "该快捷键可能已被其他程序占用。原快捷键仍保持激活。",
+                tr("warning.show_window_shortcut_unavailable.title"),
+                tr("warning.shortcut_unavailable.text"),
             )
             self.refresh_shortcut_status()
             return False
@@ -3486,13 +3545,20 @@ class TranslationWindow(QWidget):
                 )
             QMessageBox.warning(
                 self,
-                "设置保存失败",
-                "无法保存设置，已恢复原来的启用状态和快捷键。",
+                tr("warning.save_failed.title"),
+                tr("warning.save_failed.text"),
             )
             self.refresh_shortcut_status()
             return False
 
         self.app_settings = candidate
+        # Switch before the tray and labels below are rebuilt.
+        previous_language = ui_language()
+        set_ui_language(candidate.ui_language)
+        if candidate.ui_language != previous_language:
+            retranslate_ui = getattr(self, "retranslate_ui", None)
+            if callable(retranslate_ui):
+                retranslate_ui(previous_language)
         self.refresh_shortcut_status()
         refresh_api_status = getattr(self, "refresh_api_status", None)
         if callable(refresh_api_status):
@@ -3523,8 +3589,8 @@ class TranslationWindow(QWidget):
                 record_event(AppEvent.CREDENTIAL_UNAVAILABLE)
                 QMessageBox.warning(
                     self,
-                    "API Key 保存失败",
-                    "接口设置、启用状态和快捷键已保存，但 API Key 无法写入 Windows 凭据管理器。",
+                    tr("warning.key_not_stored.title"),
+                    tr("warning.key_not_stored.text"),
                 )
                 return False
         elif provider_changed:
@@ -3690,13 +3756,13 @@ class TranslationWindow(QWidget):
 
         header_layout = QHBoxLayout()
 
-        self.lbl_origin = QLabel("ORIGINAL (AUTO DETECT)")
+        self.lbl_origin = QLabel(tr("main.label.original_auto"))
         self.lbl_origin.setStyleSheet("color: #909399; font-size: 10px; font-weight: 700; letter-spacing: 1px;")
         header_layout.addWidget(self.lbl_origin)
 
         header_layout.addStretch()
 
-        self.btn_content_mode = QPushButton("模式: Auto")
+        self.btn_content_mode = QPushButton(tr("main.mode.auto"))
         self.btn_content_mode.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_content_mode.setStyleSheet("""
             QPushButton {
@@ -3732,10 +3798,10 @@ class TranslationWindow(QWidget):
         self.btn_settings.setIcon(create_settings_icon())
         self.btn_settings.setIconSize(QSize(20, 20))
         self.btn_settings.setFixedSize(32, 32)
-        self.btn_settings.setAccessibleName("设置")
+        self.btn_settings.setAccessibleName(tr("main.settings"))
         self.btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_settings.setToolTip(
-            f"设置 · 翻译快捷键：{self.app_settings.shortcut.display}"
+            tr("main.settings_tooltip", shortcut=self.app_settings.shortcut.display)
         )
         self.btn_settings.setStyleSheet("""
             QPushButton {
@@ -3755,9 +3821,9 @@ class TranslationWindow(QWidget):
         self.btn_settings.clicked.connect(self.show_settings)
         header_layout.addWidget(self.btn_settings)
 
-        self.lbl_dictionary_lang = QLabel("语言")
+        self.lbl_dictionary_lang = QLabel(tr("main.language"))
         self.lbl_dictionary_lang.setStyleSheet("color: #909399; font-size: 11px; font-weight: 600;")
-        self.lbl_dictionary_lang.setToolTip("原文语言与译文/释义语言")
+        self.lbl_dictionary_lang.setToolTip(tr("main.language.tooltip"))
 
         combo_style = """
             QComboBox {
@@ -3777,9 +3843,9 @@ class TranslationWindow(QWidget):
         self.cbo_dictionary_source = NoWheelComboBox()
         self.cbo_dictionary_source.setStyleSheet(combo_style)
         self.cbo_dictionary_source.setFixedWidth(82)
-        self.cbo_dictionary_source.setToolTip("原文语言")
-        for value, label in DICTIONARY_SOURCE_LANGUAGES:
-            self.cbo_dictionary_source.addItem(label, value)
+        self.cbo_dictionary_source.setToolTip(tr("main.language.source_tooltip"))
+        for value, _label in DICTIONARY_SOURCE_LANGUAGES:
+            self.cbo_dictionary_source.addItem(native_language_name(value), value)
         self.cbo_dictionary_source.currentIndexChanged.connect(self.on_dictionary_language_changed)
 
         self.lbl_dictionary_arrow = QLabel("→")
@@ -3788,9 +3854,9 @@ class TranslationWindow(QWidget):
         self.cbo_dictionary_target = NoWheelComboBox()
         self.cbo_dictionary_target.setStyleSheet(combo_style)
         self.cbo_dictionary_target.setFixedWidth(82)
-        self.cbo_dictionary_target.setToolTip("译文/释义语言")
-        for value, label in DICTIONARY_TARGET_LANGUAGES:
-            self.cbo_dictionary_target.addItem(label, value)
+        self.cbo_dictionary_target.setToolTip(tr("main.language.target_tooltip"))
+        for value, _label in DICTIONARY_TARGET_LANGUAGES:
+            self.cbo_dictionary_target.addItem(native_language_name(value), value)
         self.cbo_dictionary_target.currentIndexChanged.connect(self.on_dictionary_language_changed)
 
         card_layout.addLayout(header_layout)
@@ -3816,20 +3882,17 @@ class TranslationWindow(QWidget):
         result_header_layout.setContentsMargins(0, 2, 0, 0)
         result_header_layout.setSpacing(8)
 
-        self.lbl_result = QLabel("AUTO TRANSLATION")
+        self.lbl_result = QLabel(tr("main.label.auto_translation"))
         self.lbl_result.setStyleSheet("color: #8E44AD; font-size: 10px; font-weight: 700; letter-spacing: 1px; margin-top: 2px;")
         result_header_layout.addWidget(self.lbl_result)
 
         result_header_layout.addStretch()
 
-        self.btn_back_translation = QPushButton("回译")
+        self.btn_back_translation = QPushButton(tr("main.back_translation"))
         self.btn_back_translation.setCheckable(True)
         self.btn_back_translation.setChecked(self.app_settings.back_translation)
         self.btn_back_translation.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_back_translation.setToolTip(
-            "开启后，译文完成时自动翻译回原文语言，用于核对含义；"
-            "每次翻译额外发送一次请求，词典结果不回译"
-        )
+        self.btn_back_translation.setToolTip(tr("main.back_translation.tooltip"))
         self.btn_back_translation.setStyleSheet("""
             QPushButton {
                 background-color: transparent;
@@ -3886,13 +3949,15 @@ class TranslationWindow(QWidget):
         back_layout.setContentsMargins(0, 2, 0, 0)
         back_layout.setSpacing(6)
         back_header_layout = QHBoxLayout()
-        self.lbl_back_translation = QLabel("BACK TRANSLATION")
+        self.lbl_back_translation = QLabel(tr("main.label.back_translation"))
         self.lbl_back_translation.setStyleSheet("color: #909399; font-size: 10px; font-weight: 700; letter-spacing: 1px;")
         back_header_layout.addWidget(self.lbl_back_translation)
         back_header_layout.addStretch()
-        self.btn_stop_back_translation = QPushButton("停止")
+        self.btn_stop_back_translation = QPushButton(tr("main.stop_back_translation"))
         self.btn_stop_back_translation.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_stop_back_translation.setToolTip("停止回译，保留已收到的内容")
+        self.btn_stop_back_translation.setToolTip(
+            tr("main.stop_back_translation.tooltip")
+        )
         self.btn_stop_back_translation.setStyleSheet("""
             QPushButton {
                 background-color: transparent;
@@ -3956,13 +4021,13 @@ class TranslationWindow(QWidget):
         btn_layout.setContentsMargins(0, 10, 0, 0)
         btn_layout.setSpacing(10)
 
-        self.btn_edit_origin = QPushButton("Edit")
+        self.btn_edit_origin = QPushButton(tr("main.edit"))
         self.btn_edit_origin.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_edit_origin.setToolTip("编辑原文后重新翻译")
+        self.btn_edit_origin.setToolTip(tr("main.edit.tooltip"))
         self.btn_edit_origin.clicked.connect(self.edit_selected_text)
         btn_layout.addWidget(self.btn_edit_origin)
 
-        self.btn_clear_origin = QPushButton("Clear")
+        self.btn_clear_origin = QPushButton(tr("main.clear"))
         self.btn_clear_origin.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_clear_origin.clicked.connect(self.clear_manual_origin)
         self.btn_clear_origin.setStyleSheet("""
@@ -3985,9 +4050,9 @@ class TranslationWindow(QWidget):
         btn_layout.addWidget(self.btn_clear_origin)
         btn_layout.addStretch(1)
 
-        self.btn_ocr_clipboard = QPushButton("OCR")
+        self.btn_ocr_clipboard = QPushButton(tr("main.ocr"))
         self.btn_ocr_clipboard.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_ocr_clipboard.setToolTip("识别剪贴板图片文字，并自动翻译")
+        self.btn_ocr_clipboard.setToolTip(tr("main.ocr.tooltip"))
         self.btn_ocr_clipboard.clicked.connect(self.start_clipboard_ocr)
         self.btn_ocr_clipboard.setStyleSheet("""
             QPushButton {
@@ -4011,7 +4076,7 @@ class TranslationWindow(QWidget):
         """)
         btn_layout.addWidget(self.btn_ocr_clipboard)
 
-        self.btn_history = QPushButton("History")
+        self.btn_history = QPushButton(tr("main.history"))
         self.btn_history.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_history.clicked.connect(self.show_history_menu)
         self.btn_history.setStyleSheet("""
@@ -4032,7 +4097,7 @@ class TranslationWindow(QWidget):
         """)
         btn_layout.addWidget(self.btn_history)
 
-        self.btn_translate = QPushButton("Translate (Ctrl+Enter)")
+        self.btn_translate = QPushButton(tr("main.translate"))
         self.btn_translate.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_translate.clicked.connect(self.start_manual_translation)
         self.btn_translate.setStyleSheet("""
@@ -4062,9 +4127,9 @@ class TranslationWindow(QWidget):
         """)
         btn_layout.addWidget(self.btn_translate)
 
-        self.btn_stop = QPushButton("Stop")
+        self.btn_stop = QPushButton(tr("main.stop"))
         self.btn_stop.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_stop.setToolTip("停止翻译，保留已收到的译文")
+        self.btn_stop.setToolTip(tr("main.stop.tooltip"))
         self.btn_stop.clicked.connect(self.stop_translation)
         self.btn_stop.setStyleSheet("""
             QPushButton {
@@ -4085,7 +4150,7 @@ class TranslationWindow(QWidget):
         self.btn_stop.hide()
         btn_layout.addWidget(self.btn_stop)
 
-        self.btn_copy = QPushButton("Copy")
+        self.btn_copy = QPushButton(tr("main.copy"))
         self.btn_copy.setEnabled(False)
         self.btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_copy.clicked.connect(self.copy_to_clipboard)
@@ -4109,7 +4174,7 @@ class TranslationWindow(QWidget):
         """)
         btn_layout.addWidget(self.btn_copy)
 
-        self.btn_hide = QPushButton("Hide")
+        self.btn_hide = QPushButton(tr("main.hide"))
         self.btn_hide.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_hide.clicked.connect(lambda _checked=False: self.hide())
         self.btn_hide.setStyleSheet("""
@@ -4454,7 +4519,7 @@ class TranslationWindow(QWidget):
         """)
 
         if not self.translation_history:
-            empty_action = QAction("No history", self)
+            empty_action = QAction(tr("main.history.empty"), self)
             empty_action.setEnabled(False)
             menu.addAction(empty_action)
         else:
@@ -4465,7 +4530,7 @@ class TranslationWindow(QWidget):
                 menu.addAction(action)
 
             menu.addSeparator()
-            clear_action = QAction("Clear history", self)
+            clear_action = QAction(tr("main.history.clear"), self)
             clear_action.triggered.connect(self.clear_translation_history)
             menu.addAction(clear_action)
 
@@ -4500,7 +4565,9 @@ class TranslationWindow(QWidget):
         provider = self.app_settings.resolved_provider()
         if not provider.model:
             if allow_prompt:
-                QMessageBox.warning(self, "未选择模型", "请在设置中获取并选择模型，或输入模型 ID。")
+                QMessageBox.warning(
+                    self, tr("warning.no_model.title"), tr("warning.no_model.text")
+                )
             return False
         if (
             client is not None
@@ -4514,9 +4581,8 @@ class TranslationWindow(QWidget):
         self.force_show_window()
         api_key, ok = QInputDialog.getText(
             self,
-            f"输入 {provider.short_name} API Key",
-            f"未检测到 {provider.display_name} API Key，请手动输入"
-            "（将保存到 Windows 凭据管理器）：",
+            tr("prompt.api_key.title", provider=provider_name(provider.provider_id, short=True)),
+            tr("prompt.api_key.text", provider=provider_name(provider.provider_id)),
             QLineEdit.EchoMode.Password
         )
 
@@ -4561,7 +4627,7 @@ class TranslationWindow(QWidget):
             self.start_ocr(image_data_url, result_source_mode="manual")
         except Exception as e:
             log(f"[UI] start_clipboard_ocr error: {e}")
-            self.set_result_message(f"[OCR 出错: {e}]")
+            self.set_result_message(tr("message.ocr_error", error=e))
 
     def start_image_file_ocr(
         self,
@@ -4575,8 +4641,10 @@ class TranslationWindow(QWidget):
         if not provider.supports_vision:
             self.force_show_window()
             self.set_result_message(
-                f"[当前 {provider.short_name} 接口不支持图片 OCR；"
-                "请在设置中切换到支持图片的接口]"
+                tr(
+                    "message.ocr_unsupported",
+                    provider=provider_name(provider.provider_id, short=True),
+                )
             )
             record_event(AppEvent.OCR_FAILED)
             return ReceiveResult.reject(RejectionReason.STARTUP_FAILED)
@@ -4587,14 +4655,16 @@ class TranslationWindow(QWidget):
             record_event(AppEvent.OCR_BUSY)
             return ReceiveResult.reject(RejectionReason.BUSY)
         if not self.ensure_api_key(allow_prompt=allow_key_prompt):
-            self.set_result_message("[未设置 API Key，已取消 OCR]")
+            self.set_result_message(tr("message.ocr_no_key"))
             return ReceiveResult.reject(RejectionReason.MISSING_KEY)
 
         try:
             image_data_url = image_file_to_data_url(file_path)
         except Exception:
             self.force_show_window()
-            self.set_result_message("[OCR 出错: 无法读取图片]")
+            self.set_result_message(
+                tr("message.ocr_error", error=tr("error.cannot_read_image"))
+            )
             record_event(AppEvent.OCR_FAILED)
             return ReceiveResult.reject(RejectionReason.NOT_OWNED)
 
@@ -4623,14 +4693,16 @@ class TranslationWindow(QWidget):
         provider = api_provider_for_window(self)
         if not provider.supports_vision:
             self.set_result_message(
-                f"[当前 {provider.short_name} 接口不支持图片 OCR；"
-                "请在设置中切换到支持图片的接口]"
+                tr(
+                    "message.ocr_unsupported",
+                    provider=provider_name(provider.provider_id, short=True),
+                )
             )
             record_event(AppEvent.OCR_FAILED)
             return False
 
         if not self.ensure_api_key(allow_prompt=allow_key_prompt):
-            self.set_result_message("[未设置 API Key，已取消 OCR]")
+            self.set_result_message(tr("message.ocr_no_key"))
             return False
 
         self.cancel_current_translation()
@@ -4642,20 +4714,19 @@ class TranslationWindow(QWidget):
         self.setup_result_format()
         self.txt_origin.clear()
         self.txt_origin.setReadOnly(True)
-        self.lbl_origin.setText("OCR IMAGE")
-        self.lbl_result.setText("OCR")
-        self.btn_copy.setText("OCR...")
+        self.show_heading_labels("ocr")
+        self.btn_copy.setText(tr("main.ocr.busy"))
         self.btn_copy.setEnabled(False)
         self.btn_edit_origin.setEnabled(False)
 
         if self.source_mode == "manual":
             self.btn_clear_origin.setEnabled(False)
             self.btn_translate.setEnabled(False)
-            self.btn_translate.setText("OCR...")
+            self.btn_translate.setText(tr("main.ocr.busy"))
             self.btn_ocr_clipboard.setEnabled(False)
 
         cursor = self.txt_result.textCursor()
-        cursor.insertText("正在识别图片文字...", self.result_char_fmt)
+        cursor.insertText(tr("message.ocr_running"), self.result_char_fmt)
         self.ensure_large_window_size()
         self.force_show_window()
 
@@ -4665,7 +4736,9 @@ class TranslationWindow(QWidget):
             self.ocr_thread.start()
         except Exception:
             self.ocr_thread = None
-            self.set_result_message("[OCR 出错: 无法启动]")
+            self.set_result_message(
+                tr("message.ocr_error", error=tr("error.cannot_start"))
+            )
             record_event(AppEvent.OCR_FAILED)
             return False
 
@@ -4678,22 +4751,24 @@ class TranslationWindow(QWidget):
         if self.source_mode == "manual":
             self.btn_clear_origin.setEnabled(True)
             self.btn_translate.setEnabled(True)
-            self.btn_translate.setText("Translate (Ctrl+Enter)")
+            self.btn_translate.setText(tr("main.translate"))
             self.btn_ocr_clipboard.setEnabled(True)
 
-        self.btn_copy.setText("Copy")
+        self.btn_copy.setText(tr("main.copy"))
         self.btn_copy.setEnabled(False)
 
         if not success:
             record_event(AppEvent.OCR_FAILED)
-            if error_msg != "已取消":
-                self.set_result_message(f"[OCR 出错: {error_msg}]")
+            if error_msg != CANCELLED_ERROR:
+                self.set_result_message(tr("message.ocr_error", error=error_msg))
             return
 
         ocr_text = normalize_newlines(extracted_text).strip()
         if not ocr_text:
             record_event(AppEvent.OCR_FAILED)
-            self.set_result_message("[OCR 出错: 未识别到文字]")
+            self.set_result_message(
+                tr("message.ocr_error", error=tr("error.no_text_found"))
+            )
             return
 
         record_event(AppEvent.OCR_COMPLETED)
@@ -4728,8 +4803,8 @@ class TranslationWindow(QWidget):
         self.result_opacity_effect.setEnabled(True)
         self.btn_clear_origin.setEnabled(True)
         self.btn_translate.setEnabled(True)
-        self.btn_translate.setText("Translate (Ctrl+Enter)")
-        self.btn_copy.setText("Copy")
+        self.btn_translate.setText(tr("main.translate"))
+        self.btn_copy.setText(tr("main.copy"))
         self.btn_copy.setEnabled(False)
         self.txt_origin.setFocus()
 
@@ -4743,8 +4818,8 @@ class TranslationWindow(QWidget):
         self.full_translation = ""
         self.setup_result_format()
         self.btn_translate.setEnabled(True)
-        self.btn_translate.setText("Translate (Ctrl+Enter)")
-        self.btn_copy.setText("Copy")
+        self.btn_translate.setText(tr("main.translate"))
+        self.btn_copy.setText(tr("main.copy"))
         self.btn_copy.setEnabled(False)
         self.txt_origin.setFocus()
 
@@ -4766,7 +4841,8 @@ class TranslationWindow(QWidget):
         return source_lang, target_lang
 
     def set_dictionary_language_controls_visible(self, visible: bool):
-        self.lbl_dictionary_lang.setVisible(visible)
+        # Some languages leave the caption empty to make room for the heading.
+        self.lbl_dictionary_lang.setVisible(visible and bool(self.lbl_dictionary_lang.text()))
         self.cbo_dictionary_source.setVisible(visible)
         self.lbl_dictionary_arrow.setVisible(visible)
         self.cbo_dictionary_target.setVisible(visible)
@@ -4781,13 +4857,28 @@ class TranslationWindow(QWidget):
 
     def selected_origin_label(self) -> str:
         source_lang, _target_lang = self.current_dictionary_languages()
-        return "ORIGINAL (AUTO DETECT)" if source_lang == "auto" else "ORIGINAL"
+        return tr(
+            "main.label.original_auto" if source_lang == "auto" else "main.label.original"
+        )
+
+    def show_heading_labels(self, mode: str):
+        """Label both panes for "ocr", "dictionary" or a translation direction."""
+        self.heading_mode = mode
+        if mode == "ocr":
+            self.lbl_origin.setText(tr("main.label.ocr_image"))
+            self.lbl_result.setText(tr("main.label.ocr"))
+        elif mode == "dictionary":
+            self.lbl_origin.setText(tr("main.label.original"))
+            self.lbl_result.setText(tr("main.label.dictionary"))
+        else:
+            self.lbl_origin.setText(self.selected_origin_label())
+            self.lbl_result.setText(self.selected_translation_label(mode))
 
     def update_content_mode_button_text(self):
         if self.content_mode_override == "dictionary":
-            self.btn_content_mode.setText("模式: 词典")
+            self.btn_content_mode.setText(tr("main.mode.dictionary"))
         else:
-            self.btn_content_mode.setText("模式: Auto")
+            self.btn_content_mode.setText(tr("main.mode.auto"))
 
     def resolve_effective_mode(self, text: str) -> str:
         if self.content_mode_override == "dictionary":
@@ -4819,7 +4910,7 @@ class TranslationWindow(QWidget):
         self.cancel_current_translation()
         self.full_translation = ""
         self.setup_result_format()
-        self.btn_copy.setText("Looking up..." if effective_mode == "dictionary" else "Translating...")
+        self.btn_copy.setText(tr("main.looking_up" if effective_mode == "dictionary" else "main.translating"))
         self.btn_copy.setEnabled(False)
         self.apply_snipdo_mode_ui()
         self.start_translation(total_text, effective_mode)
@@ -4946,7 +5037,9 @@ class TranslationWindow(QWidget):
         self.alignment_selection_source = source_name
         self.alignment_selection_range = (start, end)
 
-        self.btn_align_selection.setText("定位译文" if source_name == "origin" else "定位原文")
+        self.btn_align_selection.setText(
+            tr("main.locate.translation" if source_name == "origin" else "main.locate.original")
+        )
         self.btn_align_selection.adjustSize()
 
         rect = source_widget.cursorRect(cursor)
@@ -5321,7 +5414,7 @@ class TranslationWindow(QWidget):
 
         self.cancel_current_alignment()
         self.btn_align_selection.setEnabled(False)
-        self.btn_align_selection.setText("定位中...")
+        self.btn_align_selection.setText(tr("main.locate.busy"))
         self.btn_align_selection.adjustSize()
 
         left_context, right_context = self.selection_context(source_text, selection_start, selection_end)
@@ -5414,7 +5507,11 @@ class TranslationWindow(QWidget):
             save_settings_atomic(self.settings_path, candidate)
         except (OSError, SettingsDataError):
             self.btn_back_translation.setChecked(self.app_settings.back_translation)
-            QMessageBox.warning(self, "设置保存失败", "无法保存回译设置，请稍后重试。")
+            QMessageBox.warning(
+                self,
+                tr("warning.save_failed.title"),
+                tr("warning.back_translation_save_failed.text"),
+            )
             return
         self.app_settings = candidate
         self.sync_back_translation()
@@ -5470,16 +5567,22 @@ class TranslationWindow(QWidget):
             return False
 
         language = self.back_translation_language()
+        self.back_translation_language_code = language
         self.lbl_back_translation.setText(
-            f"BACK TRANSLATION · {dictionary_language_label(language)}"
+            tr(
+                "main.label.back_translation_into",
+                language=dictionary_language_display(language),
+            )
         )
         self.back_translation_panel.show()
         _source_lang, target_lang = self.current_dictionary_languages()
         if language == translation_target_language(self.active_translation_mode, target_lang):
-            self.show_back_translation_message("原文与译文为同一语言，无需回译。")
+            self.show_back_translation_message(
+                tr("message.back_translation_same_language")
+            )
             return False
         if not self.ensure_api_key(allow_prompt=False):
-            self.show_back_translation_message("[未设置 API Key，无法回译]")
+            self.show_back_translation_message(tr("message.back_translation_no_key"))
             return False
 
         worker = None
@@ -5509,10 +5612,12 @@ class TranslationWindow(QWidget):
             if worker is not None:
                 self.translation_threads.discard(worker)
             self.back_thread = None
-            self.show_back_translation_message("[回译出错: 无法启动]")
+            self.show_back_translation_message(
+                tr("message.back_translation_error", error=tr("error.cannot_start"))
+            )
             return False
 
-        self.show_back_translation_message("正在回译…")
+        self.show_back_translation_message(tr("message.back_translation_running"))
         self.btn_stop_back_translation.show()
         return True
 
@@ -5523,12 +5628,14 @@ class TranslationWindow(QWidget):
         self.cancel_current_back_translation()
         self.back_render_timer.stop()
         if not self.back_translation_text.strip():
-            self.show_back_translation_message("[已停止回译]")
+            self.show_back_translation_message(tr("message.back_translation_stopped"))
             return
         self.render_back_translation()
         cursor = self.txt_back_translation.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertText("\n\n[已停止回译]", QTextCharFormat())
+        cursor.insertText(
+            "\n\n" + tr("message.back_translation_stopped"), QTextCharFormat()
+        )
 
     def on_back_translation_chunk(self, worker, chunk):
         if worker is not self.back_thread:
@@ -5550,10 +5657,10 @@ class TranslationWindow(QWidget):
             self.render_back_translation()
         if success:
             if not received:
-                self.show_back_translation_message("[回译结果为空]")
+                self.show_back_translation_message(tr("message.back_translation_empty"))
             return
 
-        error = f"[回译出错: {error_msg}]"
+        error = tr("message.back_translation_error", error=error_msg)
         if not received:
             self.show_back_translation_message(error)
             return
@@ -5589,14 +5696,10 @@ class TranslationWindow(QWidget):
         self.refresh_stop_button()
 
         if self.content_mode_override == "dictionary":
-            self.lbl_origin.setText("ORIGINAL")
-            self.lbl_result.setText("DICTIONARY")
-            self.txt_origin.setPlaceholderText("在此输入或粘贴需要查词的单词、短语或术语...\n按 Ctrl + Enter 开始查词")
+            self.show_heading_labels("dictionary")
         else:
-            direction_mode = self.selected_translation_mode()
-            self.lbl_origin.setText(self.selected_origin_label())
-            self.lbl_result.setText(self.selected_translation_label(direction_mode))
-            self.txt_origin.setPlaceholderText("在此输入或粘贴需要翻译的文本...\n按 Ctrl + Enter 开始翻译")
+            self.show_heading_labels(self.selected_translation_mode())
+        self.refresh_origin_placeholder()
 
         if reset_content:
             self.original_paragraphs = []
@@ -5604,8 +5707,8 @@ class TranslationWindow(QWidget):
             self.reset_origin_editor()
             self.setup_result_format()
             self.btn_translate.setEnabled(True)
-            self.btn_translate.setText("Translate (Ctrl+Enter)")
-            self.btn_copy.setText("Copy")
+            self.btn_translate.setText(tr("main.translate"))
+            self.btn_copy.setText(tr("main.copy"))
             self.btn_copy.setEnabled(False)
 
     def apply_snipdo_mode_ui(self):
@@ -5628,12 +5731,92 @@ class TranslationWindow(QWidget):
         effective_mode = self.resolve_effective_mode(total_text)
         dict_mode = effective_mode == "dictionary"
 
-        if dict_mode:
-            self.lbl_origin.setText("ORIGINAL")
-            self.lbl_result.setText("DICTIONARY")
+        self.show_heading_labels("dictionary" if dict_mode else effective_mode)
+
+    def refresh_origin_placeholder(self):
+        if self.source_mode != "manual":
+            self.txt_origin.setPlaceholderText("")
+        elif self.content_mode_override == "dictionary":
+            self.txt_origin.setPlaceholderText(tr("main.placeholder.dictionary"))
         else:
-            self.lbl_origin.setText(self.selected_origin_label())
-            self.lbl_result.setText(self.selected_translation_label(effective_mode))
+            self.txt_origin.setPlaceholderText(tr("main.placeholder.translate"))
+
+    def retranslate_ui(self, previous_language: str):
+        """Re-label what is on screen after the UI language changes.
+
+        Text already in the result panes stays as it was written.
+        """
+        previous = messages(previous_language)
+
+        def follow(widget, keys):
+            # Buttons whose text tracks their state keep that state.
+            for key in keys:
+                if widget.text() == previous[key]:
+                    widget.setText(tr(key))
+                    return
+
+        if hasattr(self, "tray_menu"):
+            self.toggle_translation_action.setText(tr("tray.disable"))
+            self.settings_action.setText(tr("tray.settings"))
+            self.ocr_action.setText(tr("tray.ocr_clipboard"))
+            self.check_updates_action.setText(tr("tray.check_updates"))
+            self.about_action.setText(tr("tray.about", version=APP_VERSION))
+            self.quit_action.setText(tr("tray.quit"))
+
+        self.btn_settings.setAccessibleName(tr("main.settings"))
+        self.update_content_mode_button_text()
+        self.lbl_dictionary_lang.setText(tr("main.language"))
+        self.lbl_dictionary_lang.setToolTip(tr("main.language.tooltip"))
+        self.set_dictionary_language_controls_visible(
+            not self.cbo_dictionary_source.isHidden()
+        )
+        self.cbo_dictionary_source.setToolTip(tr("main.language.source_tooltip"))
+        self.cbo_dictionary_target.setToolTip(tr("main.language.target_tooltip"))
+        # Languages keep their own names; only "Auto" and "Default" change.
+        for combo in (self.cbo_dictionary_source, self.cbo_dictionary_target):
+            for index in range(combo.count()):
+                combo.setItemText(index, native_language_name(combo.itemData(index)))
+        self.show_heading_labels(self.heading_mode)
+        self.refresh_origin_placeholder()
+
+        self.btn_back_translation.setText(tr("main.back_translation"))
+        self.btn_back_translation.setToolTip(tr("main.back_translation.tooltip"))
+        if self.back_translation_panel.isHidden() or not self.back_translation_language_code:
+            self.lbl_back_translation.setText(tr("main.label.back_translation"))
+        else:
+            self.lbl_back_translation.setText(
+                tr(
+                    "main.label.back_translation_into",
+                    language=dictionary_language_display(
+                        self.back_translation_language_code
+                    ),
+                )
+            )
+        self.btn_stop_back_translation.setText(tr("main.stop_back_translation"))
+        self.btn_stop_back_translation.setToolTip(
+            tr("main.stop_back_translation.tooltip")
+        )
+
+        self.btn_edit_origin.setText(tr("main.edit"))
+        self.btn_edit_origin.setToolTip(tr("main.edit.tooltip"))
+        self.btn_clear_origin.setText(tr("main.clear"))
+        self.btn_ocr_clipboard.setText(tr("main.ocr"))
+        self.btn_ocr_clipboard.setToolTip(tr("main.ocr.tooltip"))
+        self.btn_history.setText(tr("main.history"))
+        self.btn_stop.setText(tr("main.stop"))
+        self.btn_stop.setToolTip(tr("main.stop.tooltip"))
+        self.btn_hide.setText(tr("main.hide"))
+        busy_keys = ("main.translating", "main.looking_up", "main.ocr.busy")
+        follow(self.btn_translate, ("main.translate", *busy_keys))
+        follow(self.btn_copy, ("main.copy", "main.copied", *busy_keys))
+        follow(
+            self.btn_align_selection,
+            ("main.locate.translation", "main.locate.original", "main.locate.busy"),
+        )
+        self.btn_align_selection.adjustSize()
+
+        self.refresh_shortcut_status()
+        self.refresh_api_status()
 
     # ---------- 原文显示 ----------
     def populate_original_text(self):
@@ -5696,7 +5879,7 @@ class TranslationWindow(QWidget):
             effective_mode = self.resolve_effective_mode(total_text)
 
             self.full_translation = ""
-            self.btn_copy.setText("Looking up..." if effective_mode == "dictionary" else "Translating...")
+            self.btn_copy.setText(tr("main.looking_up" if effective_mode == "dictionary" else "main.translating"))
             self.btn_copy.setEnabled(False)
 
             log(f"[UI] effective_mode={effective_mode}, total_text={repr(total_text[:300])}")
@@ -5803,19 +5986,13 @@ class TranslationWindow(QWidget):
         self.setup_result_format()
         self.ensure_large_window_size()
 
-        if effective_mode == "dictionary":
-            self.set_dictionary_language_controls_visible(True)
-            self.lbl_origin.setText("ORIGINAL")
-            self.lbl_result.setText("DICTIONARY")
-        else:
-            self.set_dictionary_language_controls_visible(True)
-            self.lbl_origin.setText(self.selected_origin_label())
-            self.lbl_result.setText(self.selected_translation_label(effective_mode))
+        self.set_dictionary_language_controls_visible(True)
+        self.show_heading_labels(effective_mode)
 
         self.btn_translate.setEnabled(False)
-        self.btn_translate.setText("Looking up..." if effective_mode == "dictionary" else "Translating...")
+        self.btn_translate.setText(tr("main.looking_up" if effective_mode == "dictionary" else "main.translating"))
         self.btn_copy.setEnabled(False)
-        self.btn_copy.setText("Copy")
+        self.btn_copy.setText(tr("main.copy"))
 
         self.start_translation(
             text_to_translate,
@@ -5840,13 +6017,13 @@ class TranslationWindow(QWidget):
         if not self.ensure_api_key(allow_prompt=allow_key_prompt):
             cursor = self.txt_result.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.End)
-            cursor.insertText("[未设置 API Key，已取消翻译]", self.result_char_fmt)
+            cursor.insertText(tr("message.translation_no_key"), self.result_char_fmt)
 
             if self.source_mode == "manual":
                 self.btn_translate.setEnabled(True)
-                self.btn_translate.setText("Translate (Ctrl+Enter)")
+                self.btn_translate.setText(tr("main.translate"))
 
-            self.btn_copy.setText("Copy")
+            self.btn_copy.setText(tr("main.copy"))
             self.btn_copy.setEnabled(False)
             self.force_show_window()
             return False
@@ -5885,7 +6062,9 @@ class TranslationWindow(QWidget):
             if self.trans_thread is worker:
                 self.trans_thread = None
             self.force_show_window()
-            self.set_result_message("[翻译出错: 无法启动]")
+            self.set_result_message(
+                tr("message.translation_error", error=tr("error.cannot_start"))
+            )
             record_event(AppEvent.TRANSLATION_FAILED)
             return False
 
@@ -5959,12 +6138,15 @@ class TranslationWindow(QWidget):
         cursor.movePosition(QTextCursor.MoveOperation.End)
 
         if not success:
-            if error_msg == "已取消":
+            if error_msg == CANCELLED_ERROR:
                 record_event(AppEvent.TRANSLATION_CANCELLED)
             else:
                 record_event(AppEvent.TRANSLATION_FAILED)
                 cursor.movePosition(QTextCursor.MoveOperation.End)
-                cursor.insertText(f"\n\n[翻译出错: {error_msg}]", self.result_char_fmt)
+                cursor.insertText(
+                    "\n\n" + tr("message.translation_error", error=error_msg),
+                    self.result_char_fmt,
+                )
         elif self.full_translation.strip():
             record_event(AppEvent.TRANSLATION_COMPLETED)
             self.render_result_in_place(preview=False)
@@ -5980,9 +6162,9 @@ class TranslationWindow(QWidget):
 
         if self.source_mode == "manual":
             self.btn_translate.setEnabled(True)
-            self.btn_translate.setText("Translate (Ctrl+Enter)")
+            self.btn_translate.setText(tr("main.translate"))
 
-        self.btn_copy.setText("Copy")
+        self.btn_copy.setText(tr("main.copy"))
         self.btn_copy.setEnabled(bool(self.full_translation.strip()))
         self.refresh_stop_button()
 
@@ -6007,11 +6189,11 @@ class TranslationWindow(QWidget):
         # request at its next chunk, and its late signals are ignored.
         self.trans_thread = None
         worker.request_stop()
-        self.on_translation_finished(False, "已取消")
+        self.on_translation_finished(False, CANCELLED_ERROR)
         cursor = self.txt_result.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.insertText(
-            "\n\n[已停止]" if self.full_translation.strip() else "[已停止]",
+            ("\n\n" if self.full_translation.strip() else "") + tr("message.stopped"),
             self.result_char_fmt,
         )
 
@@ -6020,8 +6202,8 @@ class TranslationWindow(QWidget):
         clipboard = QApplication.clipboard()
         if self.full_translation:
             clipboard.setText(self.full_translation.strip())
-            self.btn_copy.setText("Copied")
-            QTimer.singleShot(900, lambda: self.btn_copy.setText("Copy"))
+            self.btn_copy.setText(tr("main.copied"))
+            QTimer.singleShot(900, lambda: self.btn_copy.setText(tr("main.copy")))
             log("[Clipboard] copied translation")
 
     # ---------- 关闭行为 ----------

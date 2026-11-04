@@ -1,133 +1,146 @@
 # SnipDo Translate
 
-SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OCR 工具。正式交付物是单文件 `SnipDoTranslate.exe`；目标电脑不需要安装 Python、PyQt6、OpenAI SDK 或项目依赖。
+**English** | [简体中文](README.zh-CN.md)
 
-## 版本与应用内更新
+SnipDoTranslate is a desktop translation, dictionary and image OCR tool for Windows 10/11 x64. It ships as a single file, `SnipDoTranslate.exe`; the target computer doesn't need Python, PyQt6, the OpenAI SDK or any project dependency.
 
-- 应用版本统一定义在 `app_version.py`，当前版本为 `12.4.1`：改进译文中的公式排版。上下标及嵌套的上下标放大到清晰可读（不小于 10 像素），公式字号与正文协调；独立成行公式中的分式不再缩小，过宽的公式在 `\quad`、`\qquad` 处分行而不是整体缩小；行内公式与正文基线对齐；独立公式前后不再出现大段空白。主窗口标题、设置标题、托盘“关于”菜单及打包 EXE 的 Windows 文件属性均显示版本。
-- 正常启动主实例 5 秒后，程序会在后台检查本项目的 [GitHub Releases](https://github.com/Ymagenuz/my_snipdo_translate/releases)。自动检查每台设备最多每 6 小时一次，重启程序不会提前检查；保持运行时也会每 6 小时检查一次。托盘菜单中的“检查更新…”可随时手动检查。
-- 只有正式版版本号更高、且已上传有效的 `SnipDoTranslate.exe` 和 `SnipDoTranslate.exe.sha256` 附件时才会提示。草稿、预发布版本、只有源码的 Release、缺少校验文件和旧版本均不会提示。
-- 提醒提供“更新并重启”“打开 GitHub 页面”“稍后”和“跳过此版本”。点击“更新并重启”后，程序直接下载更新并显示进度，无需打开浏览器；“打开 GitHub 页面”在浏览器中打开该版本的 Release 页面，可查看发行说明并手动下载，无法打开浏览器时会显示页面地址。“稍后”在本次运行期间不重复提醒同一版本；“跳过此版本”会在本机保存，手动检查仍可查看被跳过的版本。
-- 下载期间可继续使用或取消；程序核对文件大小和 SHA-256 后，等待翻译、OCR 与设置完成，再退出、替换原位置的 EXE 并重新打开。设置、历史记录、API Key 和开机启动路径会保留。下载、校验或准备失败时保持当前版本运行，可通过“检查更新…”重试；安装或新版启动失败时尝试恢复旧 EXE 并重新启动，保留恢复文件以便排查。
-- 应用内安装适用于可写目录中的正式单文件 Windows EXE；源码运行和开发用 onedir 包会给出说明，不会替换 Python 或开发环境。更新只在点击按钮后下载和安装，不请求管理员权限。程序目录不可写时，请先将单文件 EXE 放到当前用户可写的固定目录。
-- 检查失败或设备离线时，后台检查保持安静；手动检查会显示失败提示。网络检查异步执行且有超时，不阻塞翻译。检查只向 GitHub 请求公开的发行信息，不发送原文、译文、历史记录或 API Key；请求的 User-Agent 包含应用版本。
-- 已安装的旧 EXE 不会因代码推送而改变。旧版只有更新提醒功能时，需要先通过原有方式安装一次 `12.3.0` 或更新版本；之后的正式更新可直接在应用内完成。
-- `12.0.0` / `12.1.0` 的更新检查存在异常退出问题，请直接从 GitHub Releases 手动下载 `12.1.1` 或更新版本，退出旧程序后替换 EXE。
+The interface is in English by default. To switch it to Simplified Chinese, open **Settings** → **General** → **Language**, choose **简体中文** and click **Save**; menus, buttons and messages switch right away. The interface language doesn't affect the translation direction or the target language.
 
-发布新版本时：
+## Versions and in-app updates
 
-1. 修改 `app_version.py` 中的 `APP_VERSION`，采用 `主版本.次版本.修订版本` 格式，例如 `12.4.1`，每段为 `0`–`65535` 的整数。
-2. 运行下方 Windows 构建流程，得到已校验的 `dist\SnipDoTranslate.exe` 和 SHA-256 文件；构建检查会验证 EXE 中的版本资源与源码一致。
-3. 在本项目 GitHub Releases 中创建对应标签（例如 `v12.4.1`）的正式 Release，上传 `SnipDoTranslate.exe` 和 `SnipDoTranslate.exe.sha256`，填写更新说明，再发布并标记为最新版本。校验文件使用构建脚本生成的 `SHA256  SnipDoTranslate.exe` 格式。只推送代码或创建 Git 标签不会发布应用更新。
+- The app version is defined once, in `app_version.py`. The current version is `12.4.1`, which improves formula layout in translations: subscripts and superscripts, including nested ones, are enlarged to stay readable (at least 10 px) and formulas match the size of the surrounding text; fractions in display formulas are no longer shrunk, and formulas that are too wide break at `\quad` and `\qquad` instead of being scaled down; inline formulas sit on the text baseline; and display formulas no longer leave large gaps above and below. The version appears in the main window title, the Settings title, the tray menu's **About** item and the packaged EXE's Windows file properties.
+- 5 seconds after the main instance starts normally, the app checks this project's [GitHub Releases](https://github.com/Ymagenuz/my_snipdo_translate/releases) in the background. Automatic checks run at most once every 6 hours per device, and restarting the app doesn't trigger an early check; while the app keeps running it also checks every 6 hours. **Check for updates…** in the tray menu checks at any time.
+- You're only notified when a full release has a higher version number and valid `SnipDoTranslate.exe` and `SnipDoTranslate.exe.sha256` assets. Drafts, pre-releases, source-only releases, releases without the checksum file and older versions never trigger a notification.
+- The notification offers **Update and restart**, **Open GitHub page**, **Later** and **Skip this version**. **Update and restart** downloads the update inside the app and shows its progress, without opening a browser. **Open GitHub page** opens that version's release page in your browser, where you can read the release notes and download it yourself; if no browser can be opened, the page address is shown instead. **Later** doesn't remind you about the same version again during this run. **Skip this version** is remembered on this computer; a manual check still shows a skipped version.
+- You can keep working or cancel during the download. The app checks the file size and SHA-256, waits for translation, OCR and Settings to finish, then quits, replaces the EXE in place and starts it again. Settings, history, API keys and the startup entry are kept. If downloading, verifying or preparing fails, the current version keeps running and you can try again with **Check for updates…**. If installing or starting the new version fails, the app tries to restore the old EXE and start it again, keeping the recovery files for troubleshooting.
+- In-app installation works for the official single-file Windows EXE in a writable folder. Running from source and the development onedir build show an explanation and never replace Python or the development environment. Updates are only downloaded and installed after you click the button, and never ask for administrator rights. If the app's folder isn't writable, first move the single-file EXE to a fixed folder the current user can write to.
+- When a check fails or the device is offline, background checks stay silent; a manual check shows the failure. Checks run asynchronously with a timeout and never block translation. They only request public release information from GitHub and never send source text, translations, history or API keys; the request's User-Agent includes the app version.
+- An installed older EXE doesn't change when code is pushed. If your version only has update notifications, install `12.3.0` or later once the way you installed it before; after that, releases can be installed from within the app.
+- The update check in `12.0.0` / `12.1.0` can make the app exit unexpectedly. Download `12.1.1` or later from GitHub Releases yourself, quit the old app and replace the EXE.
 
-所有设备共用这个公开的发布源，无需搭建推送服务器或在设备间直接连接。EXE 内置固定的本项目检查地址；无需 GitHub Token。
+### Publishing a release
 
-## 安装与首次启动
+1. Set `APP_VERSION` in `app_version.py` in `major.minor.patch` form, for example `12.4.1`; each part is an integer from `0` to `65535`.
+2. Run the Windows build below to get the verified `dist\SnipDoTranslate.exe` and its SHA-256 file. The build checks that the EXE's version resource matches the source.
+3. On this project's GitHub Releases page, create a full release for the matching tag (for example `v12.4.1`), upload `SnipDoTranslate.exe` and `SnipDoTranslate.exe.sha256`, write the release notes, then publish it and mark it as the latest release. The checksum file uses the `SHA256  SnipDoTranslate.exe` format the build script produces. Pushing code or creating a Git tag alone doesn't publish an app update.
 
-1. 将 `SnipDoTranslate.exe` 复制到一个固定目录，例如 `C:\Tools\SnipDoTranslate\`。
-2. 双击 EXE，或在 PowerShell 中运行：
+Release titles and notes are written in English:
+
+- **Title:** `SnipDo Translate v<version>`, for example `SnipDo Translate v12.4.1`.
+- **`## What's changed`:** one bullet per user-visible change, saying what is different and why it matters.
+- **`## Upgrading`:** how to upgrade (for example, from `12.3.0` or later choose **Update and restart** in the update notification or in the tray menu's **Check for updates…**), that settings, history and API keys are kept, and whether the settings file format changed.
+- **`## Download and verification`:** a bullet for each asset — `SnipDoTranslate.exe` (the Windows x64 single-file app; no Python or project dependencies needed) and `SnipDoTranslate.exe.sha256` (the EXE's SHA-256 checksum file) — then the EXE's SHA-256 in a `text` code block, a line giving the number of automated tests that passed, confirming the packaged app passed the offline self-test and naming the build version and commit, and finally a `[Full changelog](https://github.com/Ymagenuz/my_snipdo_translate/compare/v<previous>...v<version>)` link.
+
+Releases up to `v12.4.1` were published with Chinese notes (headings 更新内容 / 升级 / 下载与校验, which correspond to the three headings above). Leave them as they are.
+
+Every device uses this public release source, so there's no push server to run and no direct connection between devices. The EXE has this project's check address built in; no GitHub token is needed.
+
+## Installation and first start
+
+1. Copy `SnipDoTranslate.exe` to a fixed folder, for example `C:\Tools\SnipDoTranslate\`.
+2. Double-click the EXE, or run it from PowerShell:
 
    ```powershell
    & "C:\Tools\SnipDoTranslate\SnipDoTranslate.exe"
    ```
 
-3. 第一次执行需要联网的翻译或 OCR 时，程序会提示输入所选接口的 API Key。Key 会按接口分别保存到当前 Windows 用户的“凭据管理器”；不会写入明文配置文件或进程环境变量。
+3. The first time you run a translation or OCR that needs the network, the app asks for the selected provider's API key. Keys are stored per provider in the current Windows user's Credential Manager; they are never written to a plain-text config file or the process environment.
 
-单文件 EXE 第一次启动可能比后续启动稍慢。程序使用单实例模式；再次运行时，请求会转发给已经运行的实例。
+The single-file EXE may start a little slower the first time. The app runs as a single instance; starting it again forwards the request to the instance that is already running.
 
-`start_snipdo_translate.cmd` 是可选启动器。把它与 `SnipDoTranslate.exe` 放在同一目录即可使用，它会原样转发所有命令行参数，不包含源码运行回退。
+`start_snipdo_translate.cmd` is an optional launcher. Put it in the same folder as `SnipDoTranslate.exe`; it passes all command-line arguments through unchanged and has no fallback to running from source.
 
 ## Windows SmartScreen
 
-当前 EXE 没有 Authenticode 代码签名，因此 Windows SmartScreen 可能显示“Windows 已保护你的电脑”。请先确认文件来自可信渠道并核对 SHA-256；确认无误后，可在提示中选择“更多信息”再选择“仍要运行”。不要对哈希不匹配或来源不明的文件绕过警告。
+The EXE currently has no Authenticode signature, so Windows SmartScreen may show "Windows protected your PC". First make sure the file came from a trusted source and check its SHA-256; once you're sure, choose **More info** and then **Run anyway**. Never bypass the warning for a file whose hash doesn't match or whose source you don't know.
 
-## 基本使用
+## Basic use
 
-- 在主窗口输入或粘贴文本后翻译；Auto 模式会在本地判断中译英或其他语言译中文，不再额外请求模型识别方向。
-- Auto 模式会在本地识别单词、短语和简短术语并直接进入词典；完整句子仍按翻译处理，也可显式切换到词典模式强制查词。
-- 词典结果使用分层 Markdown：词条标题下集中显示语言和读音，并以独立章节区分对应表达、释义、用法和双语例句。
-- 触发翻译或查词后会立即打开结果窗口，并在流式接收时实时按 Markdown 渲染内容。翻译和词典模式都停留在结果开头、不随输出向下滚动；手动滚动后保持当前位置，响应结束时也不会跳回顶部。流式期间公式先显示为 LaTeX 源码，完整响应结束后再统一排版为最终结果。
-- 翻译或查词进行中，“Translate”按钮的位置会显示“Stop”（划词结果窗口同样显示）。点击后立即停止接收，保留已收到的译文并在末尾标注“[已停止]”，可直接复制；未完成的译文不写入 History，也不会回译。正在回译时，可点击“BACK TRANSLATION”标题右侧的“停止”只停止回译。
-- 原文或译文很长时，渲染只对整篇文档排版一次，同一公式在译文中重复出现时只排版一次；选中文字时也不再重复分析全文，因此长文本在流式输出、完成渲染和拖动选择时都保持流畅。不限制原文长度。
-- 支持 LaTeX 文档和数学公式：保留命令、环境、花括号、换行、公式、注释、引用键及标签，只翻译正文、标题和文本参数中的自然语言；译文中的 `$...$`、`\(...\)`、`$$...$$`、`\[...\]` 及常见数学环境会离线排版显示，复制时仍保留原始 LaTeX，可通过 `--file` 翻译 UTF-8 `.tex` 文件。
-- 公式大小与正文协调：行内公式与正文基线对齐，字号按正文的 x 高度匹配；独立成行的公式按显示样式排版，分式的分子和分母不缩小，过宽时在顶层 `\quad`、`\qquad` 处分行，而不是整体缩小；上下标逐级缩小但不小于 10 像素，嵌套的上下标也清晰可读；独立公式与前后正文之间不留多余空行。
-- 翻译完成后，在原文或译文中选中文字，可点击浮动的“定位译文/定位原文”按钮高亮对应内容；划词结果、手动翻译结果和从 History 打开的记录都支持。手动输入框中的原文被修改后，定位会停用，直至重新翻译；词典结果不提供定位。定位后在原文或译文中任意单击即清除高亮（同时取消尚未返回的定位）；滚动原文或译文不会影响高亮。
-- 可选的回译用于核对译文：点击译文标题旁的“回译”按钮开启（也可在设置“翻译”页中勾选），之后每次翻译完成时，程序会把译文再翻译回原文语言，显示在译文下方的“BACK TRANSLATION”区域。回译请求只发送译文和本地判断出的原文语言，不包含原文，模型因此无法照抄原文；原文语言默认在本地识别，也可通过语言选择器指定。开启后从 History 打开的记录同样会回译；词典结果、原文与译文同语言时不回译。每次回译额外发送一次请求，默认关闭，开关状态会保存。
-- 主窗口不再根据文本长度或模式自适应高度；非最大化状态固定使用 `560 × 700` 的大窗口，最大化状态不会被强制缩放。在不同缩放比例的显示器之间移动后重新打开，窗口仍以 `560 × 700` 显示在主显示器中央；隐藏前已最大化的窗口重新打开时保持最大化。
-- 翻译完成时，如果主窗口已失去焦点，Windows 会弹出正文为译文内容的完成通知，托盘及窗口/任务栏图标右上角会显示红色未读标志；点击通知、点击带未读标志的托盘图标或重新聚焦窗口后会自动清除。可在设置“常规”页取消勾选“翻译完成时显示 Windows 通知”来关闭完成通知（默认开启），关闭后仍显示未读标志；快捷键注册失败、未取到选中文字等提示不受影响。
-- 将图片复制到剪贴板后使用 OCR，或通过命令行传入图片文件。
-- 点击主窗口右上角的齿轮按钮，或使用托盘菜单中的“设置…”打开设置。设置按左侧目录分页：“常规”（启用/禁用全局划词翻译、开机启动、完成通知）、“快捷键”（翻译快捷键和显示窗口快捷键）、“翻译”（回译）和“API 接口”（接口、服务地址、模型和对应的 API Key）。保存会一次应用所有页面的改动；接口配置无效时会自动切换到“API 接口”页并显示原因。悬停齿轮按钮可查看当前翻译快捷键。默认翻译快捷键为 `XButton1`，默认显示窗口快捷键为 `Ctrl+Alt+W`。
-- 翻译快捷键和显示窗口快捷键都支持键盘组合键、`XButton1`、`XButton2` 与中键，但两者不能设置为同一个按键。点击显示窗口快捷键进入录入状态后，按 `Esc` 可移除该快捷键，显示为“未设置”；保存后生效，重启后仍保持移除状态。翻译快捷键不可移除，录入时按 `Esc` 只取消修改并保留原按键。取消整个设置对话框不会保存改动。
-- 设置“常规”页中的“开机启动”提供“登录 Windows 时自动启动（后台托盘）”选项，默认关闭。勾选并保存后，下次当前用户登录 Windows 时会自动启动，驻留系统托盘且不弹出主窗口；取消勾选并保存即可关闭。已运行时不会重复启动或打断当前窗口。此选项无需管理员权限，独立于全局划词翻译的启用状态。
-- 为减少等待，每次翻译后的 15 分钟内，程序会在连接空闲约 90 秒时于后台刷新到所选接口服务地址的 HTTPS 连接，使后续翻译可复用已建立的连接，省去重新握手的时间。刷新只向服务地址发送不含正文的 `HEAD` 请求，不携带 API Key、原文或译文；空闲超过 15 分钟后停止刷新。
-- 原文含数学公式时，程序会在翻译开始时于后台加载公式排版组件，避免结果显示时界面短暂卡顿。
-- 划词翻译会等待快捷键及 Ctrl/Alt/Shift/Win 等按键松开后再复制选中文字；请在原窗口中选中文本，按下并松开快捷键。等待超过 2 秒会提示重试，期间切换窗口或禁用/修改翻译快捷键会取消本次取词。复制最多等待 1 秒，以兼容响应较慢的应用，并在结束后恢复原剪贴板。原应用仍需允许复制文本；图片和扫描件请使用 OCR。
-- 即使全局划词翻译已禁用，已配置的显示窗口快捷键仍然有效；窗口隐藏或最小化时会恢复窗口，窗口已经显示但失焦时会将它置前并切换为焦点窗口，不会清空当前内容、改变最大化状态或取消正在进行的任务。移除该快捷键后，仍可通过托盘菜单“显示主窗口”打开窗口。
-- 托盘图标使用带白色 `A`/`文` 的双向箭头，并以相同轮廓表达状态：蓝青色表示快捷键已启用并激活，灰色表示已禁用或未激活。
-- 托盘右键菜单中的“禁用”是可勾选项：勾选后立即禁用全局划词翻译，取消勾选后立即重新启用，无需打开设置窗口。
-- 鼠标快捷键会拦截对应的 XButton1/XButton2/中键原生动作，避免同时触发浏览器后退、前进或中键功能。低级鼠标回调运行在独立的 Win32 消息线程中，只投递翻译信号，不在回调内执行剪贴板、界面或网络工作。
-- 关闭主窗口通常只会隐藏到系统托盘；要完全退出，请使用托盘菜单中的退出命令。
+- Type or paste text in the main window and translate it. Auto mode decides locally between Chinese → English and other languages → Chinese, without an extra model request to detect the direction.
+- Auto mode recognizes single words, phrases and short terms locally and looks them up in the dictionary; full sentences are still translated. You can also switch explicitly to dictionary mode to force a lookup.
+- Dictionary results use layered Markdown: language and pronunciation sit under the entry's title, and corresponding expressions, definitions, usage and bilingual examples each get their own section.
+- The result window opens as soon as a translation or lookup starts and renders Markdown live while the response streams in. Both translation and dictionary mode stay at the top of the result instead of scrolling with the output; once you scroll yourself, your position is kept, and the view doesn't jump back to the top when the response finishes. While streaming, formulas appear as LaTeX source and are typeset once the full response has arrived.
+- While a translation or lookup runs, **Stop** takes the place of the **Translate** button (also in the selection-translation result window). Clicking it stops receiving at once, keeps the translation received so far and marks the end with "[Stopped]"; you can copy it right away. Unfinished translations aren't saved to **History** and aren't back-translated. During a back-translation, the **Stop** link to the right of the **BACK TRANSLATION** heading stops just the back-translation.
+- For long source texts or translations, rendering lays out the whole document only once, and a formula that appears several times in a translation is typeset only once; selecting text no longer re-analyzes the whole text. Long texts therefore stay smooth while streaming, when rendering finishes and while you drag a selection. Source text length isn't limited.
+- LaTeX documents and math are supported: commands, environments, braces, line breaks, formulas, comments, citation keys and labels are kept, and only natural language in body text, headings and text arguments is translated. `$...$`, `\(...\)`, `$$...$$`, `\[...\]` and common math environments in translations are typeset offline; copying still keeps the original LaTeX. Use `--file` to translate a UTF-8 `.tex` file.
+- Formulas match the surrounding text: inline formulas sit on the text baseline and are sized to the text's x-height. Display formulas use display style, fractions keep full-size numerators and denominators, and formulas that are too wide break at top-level `\quad` and `\qquad` instead of being scaled down. Subscripts and superscripts shrink level by level but never below 10 px, so nested ones stay readable. Display formulas leave no extra blank lines above or below.
+- After a translation, select text in the source or the translation and click the floating **Locate in translation** / **Locate in original** button to highlight the corresponding text. This works for selection-translation results, manual translations and entries opened from **History**. Once you edit the source in the manual input box, locating is disabled until you translate again; dictionary results don't offer it. After locating, a single click anywhere in the source or translation clears the highlight (and cancels a locate that hasn't returned yet); scrolling either pane doesn't affect the highlight.
+- Optional back-translation helps you check a translation. Turn it on with the **Back-translate** button next to the translation heading (or tick it on the **Translation** page in Settings). From then on, each finished translation is translated back into the source language and shown in the **BACK TRANSLATION** area below it. The back-translation request only sends the translation and the source language detected locally — never the source text — so the model can't simply copy the source. The source language is detected locally by default, or you can set it with the language selector. Entries opened from **History** are back-translated too while it's on; dictionary results, and translations in the same language as the source, aren't back-translated. Each back-translation sends one extra request. It's off by default and the setting is remembered.
+- The main window no longer adjusts its height to the text length or mode. When not maximized it always uses a large `560 × 700` window, and a maximized window is never resized. After moving between monitors with different scaling, the window reopens at `560 × 700` in the center of the primary monitor; a window that was maximized before it was hidden reopens maximized.
+- When a translation finishes while the main window isn't focused, Windows shows a completion notification containing the translation, and the tray, window and taskbar icons get a red unread badge in the top-right corner. Clicking the notification, clicking the badged tray icon or focusing the window again clears it. To turn off completion notifications (on by default), untick **Show a Windows notification when a translation finishes** on the **General** page in Settings; the unread badge still appears. Other notices, such as a shortcut that couldn't be registered or no selected text found, aren't affected.
+- For OCR, copy an image to the clipboard and use **OCR**, or pass an image file on the command line.
+- Open Settings with the gear button in the top-right corner of the main window or with **Settings…** in the tray menu. Settings is split into pages listed on the left: **General** (interface language, turning global selection translation on or off, startup, completion notifications), **Shortcuts** (translation shortcut and show-window shortcut), **Translation** (back-translation) and **API** (provider, base URL, model and the matching API key). **Save** applies the changes on every page at once; if the provider settings are invalid, Settings switches to the **API** page and shows why. Hover over the gear button to see the current translation shortcut. The default translation shortcut is `XButton1` and the default show-window shortcut is `Ctrl+Alt+W`.
+- Both the translation shortcut and the show-window shortcut accept keyboard combinations, `XButton1`, `XButton2` and the middle mouse button, but they can't be the same. Click the show-window shortcut to start recording, then press `Esc` to remove it; it then shows **Not set**. The change takes effect when you save and stays removed after a restart. The translation shortcut can't be removed; pressing `Esc` while recording it only cancels the change and keeps the previous shortcut. Cancelling the Settings dialog saves nothing.
+- **Startup** on the **General** page offers **Start when I sign in to Windows (in the tray)**, off by default. Tick it and save, and the app starts the next time the current user signs in to Windows, staying in the system tray without opening the main window; untick it and save to turn it off. An instance that is already running isn't started twice or interrupted. This option needs no administrator rights and is independent of whether global selection translation is on.
+- To cut waiting time, for 15 minutes after each translation the app refreshes its HTTPS connection to the selected provider's base URL in the background whenever the connection has been idle for about 90 seconds, so the next translation can reuse it without a new handshake. The refresh only sends a `HEAD` request with no content to the base URL, never the API key, source text or translation, and stops after 15 idle minutes.
+- When the source text contains math, the app loads the formula renderer in the background as the translation starts, so the interface doesn't stall briefly when the result appears.
+- Selection translation waits until the shortcut and Ctrl/Alt/Shift/Win are released before copying the selected text: select text in the original window, then press and release the shortcut. After 2 seconds the app asks you to try again, and switching windows or turning off or changing the translation shortcut in the meantime cancels the capture. Copying waits up to 1 second for slow applications and restores the original clipboard afterwards. The original application must still allow copying text; use OCR for images and scans.
+- The show-window shortcut keeps working even when global selection translation is off. If the window is hidden or minimized, it is restored; if it's visible but not focused, it's brought to the front and focused, without clearing its content, changing its maximized state or cancelling running work. Without that shortcut, **Show main window** in the tray menu still opens the window.
+- The tray icon is a two-way arrow with a white `A`/`文`, and its color shows the state with the same outline: teal when the shortcut is on and active, gray when it's off or inactive.
+- **Disable** in the tray menu is a checkable item: tick it to turn off global selection translation immediately, untick it to turn it back on, without opening Settings.
+- Mouse shortcuts block the native XButton1/XButton2/middle-button action, so a browser doesn't also go back, forward or middle-click. The low-level mouse callback runs on its own Win32 message thread and only posts the translation signal; it never touches the clipboard, the interface or the network.
+- Closing the main window normally just hides it in the system tray. To quit completely, use **Quit** in the tray menu.
 
-设置中的“API 接口”提供四个独立配置。所有配置都使用 OpenAI Chat Completions 兼容格式，并允许编辑模型；只有“OpenAI 兼容接口（自定义）”允许编辑服务地址（Base URL），其他接口的服务地址为只读：
+The **API** page in Settings has four independent configurations. All of them use the OpenAI Chat Completions format and let you edit the model; only **OpenAI-compatible (custom)** lets you edit the base URL — the other providers' base URLs are read-only:
 
-| 接口 | 初始 Base URL | 预设模型 | 可选环境变量 | Windows 凭据目标 |
+| Provider | Initial base URL | Preset model | Optional environment variable | Windows credential target |
 | --- | --- | --- | --- | --- |
 | GPTSAPI | `https://api.gptsapi.net/v1` | `gpt-5.4-nano` | `GPTSAPI_API_KEY` | `SnipDoTranslate/GPTSAPI` |
-| OpenAI 兼容 | `https://api.openai.com/v1` | 留空，由用户选择或输入 | `OPENAI_API_KEY` | `SnipDoTranslate/OpenAICompatible` |
-| DeepSeek 官方接口 | `https://api.deepseek.com` | `deepseek-v4-flash` | `DEEPSEEK_API_KEY` | `SnipDoTranslate/DeepSeek` |
+| OpenAI-compatible | `https://api.openai.com/v1` | Empty; you choose or enter one | `OPENAI_API_KEY` | `SnipDoTranslate/OpenAICompatible` |
+| DeepSeek (official API) | `https://api.deepseek.com` | `deepseek-v4-flash` | `DEEPSEEK_API_KEY` | `SnipDoTranslate/DeepSeek` |
 | OpenRouter | `https://openrouter.ai/api/v1` | `openai/gpt-5.6-luna` | `OPENROUTER_API_KEY` | `SnipDoTranslate/OpenRouter` |
 
-`OpenAI 兼容` 是独立配置，可以填写 OpenAI 或其他兼容服务的地址和模型。GPTSAPI 保留原有默认配置与凭据，新安装默认仍选择 GPTSAPI。表中的模型 ID 只是应用预设；实际可用模型取决于所选服务及账号权限。
+**OpenAI-compatible** is a separate configuration for the address and model of OpenAI or any compatible service. GPTSAPI keeps its original defaults and credentials, and new installations still select GPTSAPI by default. The model IDs in the table are only the app's presets; which models you can actually use depends on the service and your account.
 
-配置或切换模型：
+To configure or switch models:
 
-1. 打开设置并选择接口，填写该服务的 API Key。使用“OpenAI 兼容接口（自定义）”时可以编辑 Base URL；其他接口的地址只读。Base URL 应为服务提供的 API 根地址，不包含 `/chat/completions` 或 `/models`。
-2. 点击“获取模型”，程序会在后台请求当前填写地址的 `/models`，优先使用当前输入的 Key；留空时使用所选接口已有的环境变量或 Windows 凭据。
-3. 获取模型后，可在模型下拉框中输入关键词搜索，按模型 ID 包含的文字匹配且不区分大小写；也可以直接选择模型或输入完整模型 ID。服务不支持模型列表或获取失败时，仍可手动输入并保存。
-4. 根据所选模型配置图片输入/OCR 能力。只有服务和模型实际支持图片输入时才启用；关闭时，程序会在执行 OCR 前拒绝请求并保留传入的源文件。DeepSeek 预设关闭图片输入。
-5. 按需设置“禁用思考”，然后保存。OpenRouter 接口会在请求中加入 `reasoning: {"effort": "none"}`，其他接口加入 `thinking: {"type": "disabled"}` 扩展，仅适用于支持此参数的服务和模型；DeepSeek 预设启用。关闭思考通常能明显缩短首字等待时间；若所选模型要求必须推理并返回错误，请取消勾选。
+1. Open Settings, choose a provider and enter that service's API key. With **OpenAI-compatible (custom)** you can edit the base URL; the other providers' URLs are read-only. The base URL is the API root the service gives you, without `/chat/completions` or `/models`.
+2. Click **Fetch models**. The app requests `/models` at the address you entered in the background, using the key you just typed if there is one, otherwise the selected provider's environment variable or Windows credential.
+3. Once models are fetched, type in the model list to search; matching is case-insensitive on any part of the model ID. You can also pick a model or type a full model ID. If the service has no model list or fetching fails, you can still enter a model by hand and save.
+4. Set **Image input** to match the selected model, and only turn it on when the service and model really accept images. When it's off, the app refuses OCR before sending anything and keeps the source file it was given. The DeepSeek preset has image input off.
+5. Under **Request options**, tick **Turn off thinking** if needed, then save. For OpenRouter the request includes `reasoning: {"effort": "none"}`; for other providers it includes the `thinking: {"type": "disabled"}` extension, which only works with services and models that support it. The DeepSeek preset has it on. Turning thinking off usually shortens the wait for the first word noticeably; if the selected model requires reasoning and returns an error, untick it.
 
-各接口分别保留服务地址、模型和能力选项，切换接口及重启后仍使用已保存的配置；更换模型无需重新打包程序。API Key 也按接口独立保存，输入框留空不会清除已有凭据；未提供 Key 且没有可用凭据时，程序会在需要请求时提示输入。获取模型只读取列表，不会自动保存当前输入的 Key。
+Each provider keeps its own base URL, model and capability options, and keeps using the saved configuration after switching providers or restarting; changing models doesn't require rebuilding the app. API keys are also stored per provider, and leaving the key field blank never clears an existing credential. If no key is given and none is available, the app asks for one when a request needs it. Fetching models only reads the list and never saves the key you typed.
 
-常用命令行入口：
+Common command-line entry points:
 
 ```powershell
-# 显示窗口；不带参数时效果相同
+# Show the window; the same as running without arguments
 & .\SnipDoTranslate.exe --show
 
-# 直接传入文本
+# Pass text directly
 & .\SnipDoTranslate.exe "Hello, world."
 
-# 读取 UTF-8 文本文件
-& .\SnipDoTranslate.exe --file "C:\路径 含空格\input.txt"
+# Read a UTF-8 text file
+& .\SnipDoTranslate.exe --file "C:\path with spaces\input.txt"
 
-# 对图片执行 OCR 后翻译
-& .\SnipDoTranslate.exe --image "C:\路径 含空格\image.png"
+# Run OCR on an image, then translate
+& .\SnipDoTranslate.exe --image "C:\path with spaces\image.png"
 ```
 
-`--file` 和 `--image` 默认保留源文件。只有确实需要处理临时文件时才添加 `--delete-after`：
+`--file` and `--image` keep the source file by default. Only add `--delete-after` when you really want a temporary file removed:
 
 ```powershell
 & .\SnipDoTranslate.exe --file "C:\Temp\selection.txt" --delete-after
 & .\SnipDoTranslate.exe --image "C:\Temp\capture.png" --delete-after
 ```
 
-删除采用安全确认语义：当前实例必须真正接收并拥有数据，或已运行的主实例必须返回明确的 `accepted` ACK，程序才会删除源文件。OCR 正忙、缺少或取消输入 Key、文件读取失败、启动失败、IPC 超时或请求被拒绝时，源文件会保留。`--delete-after` 不能单独使用。
+Deletion only happens after a confirmed handover: either this instance actually received and owns the data, or the running main instance returned an explicit `accepted` acknowledgement. The source file is kept when OCR is busy, the key is missing or its prompt was cancelled, the file can't be read, startup fails, IPC times out or the request is rejected. `--delete-after` can't be used on its own.
 
-开机启动使用 `--startup` 参数静默进入系统托盘，不会在登录时请求输入 API Key；双击 EXE 或使用 `--show` 仍正常显示窗口。启动项只保存在当前用户的 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下，名称为 `SnipDoTranslate`，不会写入 `settings.json`。如果移动了 EXE，请从新位置运行程序并重新保存开机启动选项；如果在 Windows 任务管理器中禁用了该启动项，也需要在那里重新启用。源码模式会使用同目录的 `pythonw.exe` 与脚本绝对路径注册，文件需要保持在原位置。
+Automatic startup uses the `--startup` argument to go straight to the system tray, and never asks for an API key at sign-in; double-clicking the EXE or using `--show` still shows the window as usual. The startup entry is stored only for the current user under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, named `SnipDoTranslate`, and isn't written to `settings.json`. If you move the EXE, run it from the new location and save the startup option again; if the entry was disabled in Windows Task Manager, re-enable it there as well. When running from source, the entry uses `pythonw.exe` from the same folder and the script's absolute path, so the files need to stay where they are.
 
-## SnipDo 集成
+## SnipDo integration
 
-1. 打开 `snipdo_script_powershell_code\snipdo_translate.txt`。
-2. 只修改脚本第一处 `$exePath`，使其指向你实际存放的 `SnipDoTranslate.exe`。路径可以包含空格。
-3. 将完整脚本复制到 SnipDo 的 PowerShell 动作中。
-4. 在任意应用中选中文本并触发该动作。
+1. Open `snipdo_script_powershell_code\snipdo_translate.txt`.
+2. Change only the first `$exePath` in the script so it points to where you keep `SnipDoTranslate.exe`. The path may contain spaces.
+3. Copy the whole script into a SnipDo PowerShell action.
+4. Select text in any application and trigger the action.
 
-该脚本兼容 Windows PowerShell 5.1。选中文本会写入无 BOM 的 UTF-8 临时文件，再以 `--file <临时文件> --delete-after` 启动 EXE。脚本自身不保存 Key，也不设置环境变量；若 EXE 未能启动，脚本不会主动删除临时文件，以便尽可能保留原始输入。
+The script works with Windows PowerShell 5.1. It writes the selected text to a UTF-8 temporary file without a BOM and starts the EXE with `--file <temporary file> --delete-after`. The script stores no key and sets no environment variable; if the EXE fails to start, the script doesn't delete the temporary file, so the original input is kept whenever possible.
 
-## 用户数据与隐私
+## User data and privacy
 
-所有可写运行数据位于当前用户目录：
+All writable runtime data lives in the current user's folder:
 
 ```text
 %LOCALAPPDATA%\SnipDoTranslate\
@@ -139,43 +152,43 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
     SnipDoTranslate.log.1 ... .3
 ```
 
-- `translation_history.json` 保存最多 50 条历史记录，可能包含原文和译文，请按敏感用户数据对待。
-- `settings.json` 保存工具启用状态、翻译快捷键、显示窗口快捷键、回译开关、完成通知开关、所选 API 接口，以及各接口的服务地址、模型和能力选项，不保存 API Key；旧版配置会自动补入缺失的默认设置，并保留原有接口选择。
-- `update_state.json` 只保存上次检查更新的时间和用户选择跳过的版本；删除后会恢复默认检查行为。
-- 公式排版库可能创建只含字体索引的缓存，不包含原文或译文；单文件 EXE 使用退出时清理的隔离临时目录，源码模式可能使用 `%LOCALAPPDATA%\SnipDoTranslate\matplotlib-cache\`。
-- 日志是固定事件组成的 UTF-8 JSON 行，不记录原文、译文、OCR 内容、API Key、完整路径或异常正文。
-- 日志单文件最多 512 KiB，并保留 3 个轮转备份，总上限约 2 MiB。
-- API Key 不在上述目录中，而是在 Windows Credential Manager 中按当前用户、按接口分别保存。
+- `translation_history.json` keeps up to 50 history entries, which may contain source text and translations; treat it as sensitive user data.
+- `settings.json` stores whether the tool is on, the translation shortcut, the show-window shortcut, the back-translation and completion-notification switches, the interface language, the selected API provider and each provider's base URL, model and capability options. It never stores API keys. Settings files from older versions get the missing defaults filled in (an older file opens in English) and keep their provider choice.
+- `update_state.json` only stores when updates were last checked and the version you chose to skip; deleting it restores the default checking behavior.
+- The formula renderer may create a cache that holds only a font index, never source text or translations. The single-file EXE uses an isolated temporary folder that is cleaned up on exit; running from source may use `%LOCALAPPDATA%\SnipDoTranslate\matplotlib-cache\`.
+- The log consists of fixed events as UTF-8 JSON lines and never records source text, translations, OCR content, API keys, full paths or exception messages.
+- Each log file holds at most 512 KiB, with 3 rotated backups, for a total of about 2 MiB.
+- API keys aren't in this folder; they are stored per user and per provider in Windows Credential Manager.
 
-发现旧版 `translation_history.json` 或 `.gptsapi_api_key` 时，程序只在新目标不存在时执行复制迁移。迁移不会删除、覆盖或改写旧文件，也不会用旧数据覆盖已经存在的新历史或凭据。
+If an old `translation_history.json` or `.gptsapi_api_key` is found, the app copies it over only when the new target doesn't exist yet. Migration never deletes, overwrites or edits the old files, and never overwrites existing history or credentials with old data.
 
-## 离线自检
+## Offline self-test
 
-以下自检不读取真实 Key，也不会发出翻译 API 请求：
+This self-test reads no real key and sends no translation API request:
 
 ```powershell
 & .\SnipDoTranslate.exe --self-test offline
-if ($LASTEXITCODE -ne 0) { throw "SnipDoTranslate 离线自检失败" }
+if ($LASTEXITCODE -ne 0) { throw "SnipDoTranslate offline self-test failed" }
 ```
 
-自检会验证 Windows x64 运行环境、打包资源、离线 LaTeX 公式排版、本地数据目录写入和本地 IPC 编解码。成功时退出码为 `0`，失败时为非零。
+It checks the Windows x64 runtime, the bundled resources, offline LaTeX formula rendering, writing to the local data folder and local IPC encoding. It exits with `0` on success and a non-zero code on failure.
 
-## SHA-256 验证
+## SHA-256 verification
 
-交付目录同时包含 `SnipDoTranslate.exe.sha256`。可用 Windows PowerShell 核对：
+The release also includes `SnipDoTranslate.exe.sha256`. Check it with Windows PowerShell:
 
 ```powershell
 $expected = ((Get-Content -LiteralPath .\SnipDoTranslate.exe.sha256 -TotalCount 1) -split '\s+')[0].ToLowerInvariant()
 $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath .\SnipDoTranslate.exe).Hash.ToLowerInvariant()
-if ($actual -ne $expected) { throw "SHA-256 不一致，请勿运行该文件" }
-"SHA-256 验证通过：$actual"
+if ($actual -ne $expected) { throw "SHA-256 mismatch; don't run this file" }
+"SHA-256 verified: $actual"
 ```
 
-## 开发与构建
+## Development and building
 
-最终用户不需要本节中的工具。构建电脑需要 Windows 10/11 x64、64 位 Python 和项目构建依赖；整个自动测试流程保持离线，不使用真实 Key，也不调用翻译 API。
+End users don't need the tools in this section. The build computer needs Windows 10/11 x64, 64-bit Python and the project's build dependencies. The whole automated test run stays offline, uses no real key and never calls a translation API.
 
-在本 worktree 根目录准备 `.venv` 后运行：
+Set up `.venv` in the root of this worktree, then run:
 
 ```powershell
 py -3.11 -m venv .venv
@@ -184,19 +197,21 @@ py -3.11 -m venv .venv
 PowerShell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
 ```
 
-构建脚本严格按以下顺序执行：
+The build script runs these steps strictly in order:
 
-1. 运行全部离线测试并确认构建 Python 为 x64。
-2. 构建 PyInstaller `onedir` 预检产物。
-3. 检查 onedir 的 PE x64 格式并运行 `--self-test offline`。
-4. 预检通过后才构建最终 `onefile` EXE。
-5. 检查 onefile 的 PE x64 格式、未签名状态和离线自检，并生成 SHA-256 文件。
+1. Run all offline tests and confirm the build Python is x64.
+2. Build the PyInstaller `onedir` preflight output.
+3. Check the onedir output's PE x64 format and run `--self-test offline`.
+4. Only after the preflight passes, build the final `onefile` EXE.
+5. Check the onefile EXE's PE x64 format, unsigned state and offline self-test, and write the SHA-256 file.
 
-最终产物位于：
+The final output is:
 
 ```text
 dist\SnipDoTranslate.exe
 dist\SnipDoTranslate.exe.sha256
 ```
 
-本机构建和自检不能替代在一台未安装 Python 的干净 Windows 10/11 x64 电脑上做最终人工烟测。
+Local builds and self-tests don't replace a final manual smoke test on a clean Windows 10/11 x64 computer without Python.
+
+Interface text lives in `app_i18n.py`, with one table per language. To add a language, add its code and native name to `UI_LANGUAGES` and a table with the same keys and placeholders as the English one; the tests check that every table matches. Model prompts aren't interface text and stay in `snipdo_translate.pyw`.

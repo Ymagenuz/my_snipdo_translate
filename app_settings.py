@@ -17,6 +17,7 @@ from api_providers import (
     get_api_provider,
     provider_default_config,
 )
+from app_i18n import DEFAULT_UI_LANGUAGE, UI_LANGUAGE_CODES
 
 
 SETTINGS_FILE_NAME = "settings.json"
@@ -40,7 +41,10 @@ _WINDOW_ROOT_FIELDS = frozenset(
 )
 _CONFIG_ROOT_FIELDS = _WINDOW_ROOT_FIELDS | {"api_configs"}
 _BACK_TRANSLATION_ROOT_FIELDS = _CONFIG_ROOT_FIELDS | {"back_translation"}
-_ROOT_FIELDS = _BACK_TRANSLATION_ROOT_FIELDS | {"completion_notifications"}
+_NOTIFICATION_ROOT_FIELDS = _BACK_TRANSLATION_ROOT_FIELDS | {
+    "completion_notifications"
+}
+_ROOT_FIELDS = _NOTIFICATION_ROOT_FIELDS | {"ui_language"}
 _API_CONFIG_FIELDS = frozenset(
     {"base_url", "model", "supports_vision", "disable_thinking"}
 )
@@ -187,6 +191,7 @@ class AppSettings:
     api_configs: Mapping[str, ApiProviderConfig] = field(default_factory=dict)
     back_translation: bool = False
     completion_notifications: bool = True
+    ui_language: str = DEFAULT_UI_LANGUAGE
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
@@ -195,6 +200,11 @@ class AppSettings:
             raise SettingsDataError("back_translation must be a boolean")
         if not isinstance(self.completion_notifications, bool):
             raise SettingsDataError("completion_notifications must be a boolean")
+        if (
+            not isinstance(self.ui_language, str)
+            or self.ui_language not in UI_LANGUAGE_CODES
+        ):
+            raise SettingsDataError("unsupported ui_language")
         if not isinstance(self.shortcut, ShortcutBinding):
             raise SettingsDataError("shortcut must be a ShortcutBinding")
         if self.show_window_shortcut is not None and not isinstance(
@@ -294,6 +304,7 @@ def _decode_settings(value: object) -> AppSettings:
         _WINDOW_ROOT_FIELDS,
         _CONFIG_ROOT_FIELDS,
         _BACK_TRANSLATION_ROOT_FIELDS,
+        _NOTIFICATION_ROOT_FIELDS,
         _ROOT_FIELDS,
     ):
         api_provider = value["api_provider"]
@@ -312,6 +323,13 @@ def _decode_settings(value: object) -> AppSettings:
     completion_notifications = value.get("completion_notifications", True)
     if not isinstance(completion_notifications, bool):
         raise SettingsDataError("completion_notifications must be a boolean")
+    # Files written before the language option was added load as English.
+    ui_language = value.get("ui_language", DEFAULT_UI_LANGUAGE)
+    if not isinstance(ui_language, str):
+        raise SettingsDataError("ui_language must be a string")
+    if ui_language not in UI_LANGUAGE_CODES:
+        # A language from a newer release must not discard every other setting.
+        ui_language = DEFAULT_UI_LANGUAGE
     return AppSettings(
         enabled=value["enabled"],
         shortcut=_decode_shortcut(value["shortcut"]),
@@ -320,6 +338,7 @@ def _decode_settings(value: object) -> AppSettings:
         api_configs=_decode_api_configs(value.get("api_configs", {})),
         back_translation=back_translation,
         completion_notifications=completion_notifications,
+        ui_language=ui_language,
     )
 
 
@@ -373,6 +392,7 @@ def _encode_settings(settings: AppSettings) -> dict[str, object]:
         },
         "back_translation": settings.back_translation,
         "completion_notifications": settings.completion_notifications,
+        "ui_language": settings.ui_language,
         "shortcut": {
             "kind": shortcut.kind,
             "mouse_button": shortcut.mouse_button,

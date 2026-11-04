@@ -13,6 +13,7 @@ from app_updates import (
     MAX_CHECKSUM_BYTES, MAX_EXECUTABLE_BYTES, REPOSITORY_URL,
     UPDATE_CHECKSUM, UPDATE_EXECUTABLE, ReleaseInfo, _version_parts,
 )
+from app_i18n import tr
 from app_version import APP_VERSION
 
 
@@ -20,7 +21,6 @@ CHUNK_BYTES = 64 * 1024
 INACTIVITY_TIMEOUT_MS = 30_000
 OVERALL_TIMEOUT_MS = 30 * 60 * 1000
 MAX_REDIRECTS = 5
-DOWNLOAD_FAILED_MESSAGE = "更新下载失败或校验未通过，请检查网络后重试。"
 # GitHub's documented release-asset hosts; never allow arbitrary subdomains.
 _ASSET_HOSTS = frozenset({"release-assets.githubusercontent.com", "objects.githubusercontent.com"})
 _CHECKSUM_PATTERN = re.compile(rb"([0-9a-fA-F]{64})  SnipDoTranslate\.exe(?:\r?\n)?")
@@ -100,7 +100,7 @@ class UpdateDownloader(QObject):
         if self.is_downloading:
             return False
         if not _validate_release(release):
-            self.failed.emit(DOWNLOAD_FAILED_MESSAGE)
+            self.failed.emit(tr("update.error.download"))
             return False
         try:
             # Preserve the final component: resolving a pre-existing dangling
@@ -108,7 +108,7 @@ class UpdateDownloader(QObject):
             path = Path(destination).absolute()
             handle = path.open("xb")
         except (OSError, ValueError, TypeError):
-            self.failed.emit(DOWNLOAD_FAILED_MESSAGE)
+            self.failed.emit(tr("update.error.download"))
             return False
         self._release = release
         self._destination = path
@@ -288,7 +288,7 @@ class UpdateDownloader(QObject):
         if not self.is_downloading:
             return
         self._dispose(abort=True)
-        self.failed.emit(DOWNLOAD_FAILED_MESSAGE)
+        self.failed.emit(tr("update.error.download"))
 
     def _detach_reply(self, *, abort=False) -> None:
         reply, self._reply = self._reply, None

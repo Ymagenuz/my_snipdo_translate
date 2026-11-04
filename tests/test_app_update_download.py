@@ -13,6 +13,7 @@ import pytest
 from PyQt6.QtCore import QObject, QUrl, pyqtSignal
 from PyQt6.QtNetwork import QNetworkReply, QNetworkRequest
 
+from app_i18n import tr
 import app_update_download as download
 from app_updates import ReleaseInfo, REPOSITORY_URL
 
@@ -129,7 +130,7 @@ def begin_executable(downloader, *, release=None, checksum=CHECKSUM):
 
 
 def assert_failed(downloader):
-    assert downloader.failures == [download.DOWNLOAD_FAILED_MESSAGE]
+    assert downloader.failures == [tr("update.error.download")]
     assert downloader.results == []
     assert not downloader.is_downloading
     assert not downloader.destination.exists()
@@ -207,7 +208,7 @@ def test_existing_destination_is_never_truncated_or_deleted(downloader):
     downloader.stop()
     assert downloader.destination.read_bytes() == b"existing file"
     assert downloader._manager.requests == []
-    assert downloader.failures == [download.DOWNLOAD_FAILED_MESSAGE]
+    assert downloader.failures == [tr("update.error.download")]
 
 
 @pytest.mark.parametrize("body", [
@@ -330,7 +331,7 @@ def test_timeouts_clean_up_and_old_timer_cannot_cancel_next_download(downloader,
     old_timer.timeout.emit()
     finish_body(old_reply, CHECKSUM)
     assert downloader._reply is new_reply
-    assert downloader.failures == [download.DOWNLOAD_FAILED_MESSAGE]
+    assert downloader.failures == [tr("update.error.download")]
 
 
 def test_stop_during_stream_is_quiet_and_late_callbacks_are_harmless(downloader):

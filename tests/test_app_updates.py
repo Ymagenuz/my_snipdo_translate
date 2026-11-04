@@ -11,6 +11,7 @@ import pytest
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtNetwork import QNetworkReply, QNetworkRequest
 
+from app_i18n import tr
 import app_updates
 from app_updates import ReleaseInfo, UpdateChecker, parse_release
 
@@ -292,7 +293,7 @@ def test_empty_success_response_fails_cleanly_at_eof(checker):
     reply.readyRead.emit()
     reply.finished.emit()
     assert checker.results == []
-    assert checker.failures == [app_updates.CHECK_FAILED_MESSAGE]
+    assert checker.failures == [tr("update.check_failed")]
     assert not checker.is_checking
 
 
@@ -385,7 +386,7 @@ def test_network_and_http_failures_are_sanitized(checker, status, error):
     reply.network_error = error
     reply.pending.extend(b"private server error details")
     reply.finished.emit()
-    assert checker.failures == [app_updates.CHECK_FAILED_MESSAGE]
+    assert checker.failures == [tr("update.check_failed")]
     assert checker.results == []
     assert not checker.is_checking
     assert reply.delete_scheduled
@@ -397,7 +398,7 @@ def test_invalid_json_or_metadata_fails_cleanly(checker, body):
     reply = checker._reply
     reply.pending.extend(body)
     reply.finished.emit()
-    assert checker.failures == [app_updates.CHECK_FAILED_MESSAGE]
+    assert checker.failures == [tr("update.check_failed")]
     assert checker.results == []
 
 
@@ -414,7 +415,7 @@ def test_response_size_is_bounded(checker, mode):
             reply.readyRead.emit()
         else:
             reply.finished.emit()
-    assert checker.failures == [app_updates.CHECK_FAILED_MESSAGE]
+    assert checker.failures == [tr("update.check_failed")]
     assert checker.results == []
     assert reply.aborted
     assert not checker.is_checking
@@ -426,7 +427,7 @@ def test_timeout_aborts_once_and_late_events_do_not_affect_next_request(checker)
     old_timer = checker._timer
     old_timer.timeout.emit()
     assert old_reply.aborted
-    assert checker.failures == [app_updates.CHECK_FAILED_MESSAGE]
+    assert checker.failures == [tr("update.check_failed")]
     assert checker.check()
     current_reply = checker._reply
     complete(old_reply)
@@ -435,7 +436,7 @@ def test_timeout_aborts_once_and_late_events_do_not_affect_next_request(checker)
     old_timer.timeout.emit()
     assert checker._reply is current_reply
     assert checker.results == []
-    assert checker.failures == [app_updates.CHECK_FAILED_MESSAGE]
+    assert checker.failures == [tr("update.check_failed")]
     complete(current_reply)
     assert len(checker.results) == 1
 

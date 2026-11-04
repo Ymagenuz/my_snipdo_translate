@@ -7,6 +7,7 @@ import tempfile
 from PyQt6.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QProgressDialog
 
+from app_i18n import tr
 from app_update_download import UpdateDownloader
 from app_update_install import (
     UpdateInstallError,
@@ -31,7 +32,7 @@ class _PrepareInstall(QThread):
                 self.job.cancel()
                 return
         except Exception:
-            self.error = "无法准备更新。请确认程序目录可写、磁盘空间充足，然后重试。"
+            self.error = tr("update.error.prepare")
             if self.job is not None:
                 self.job.cancel()
 
@@ -83,8 +84,14 @@ class UpdateFlow(QObject):
         self._active = True
         self._cancelled = False
         self._release = release
-        dialog = QProgressDialog("正在下载更新校验信息…", "取消", 0, 0, self.window)
-        dialog.setWindowTitle(f"更新至 {release.version}")
+        dialog = QProgressDialog(
+            tr("update.progress.checksums"),
+            tr("update.progress.cancel"),
+            0,
+            0,
+            self.window,
+        )
+        dialog.setWindowTitle(tr("update.progress.title", version=release.version))
         dialog.setWindowModality(Qt.WindowModality.NonModal)
         dialog.setMinimumDuration(0)
         dialog.setMinimumWidth(420)
@@ -99,9 +106,9 @@ class UpdateFlow(QObject):
             self._temporary = tempfile.TemporaryDirectory(prefix="download-", dir=directory)
             destination = Path(self._temporary.name) / "SnipDoTranslate.exe"
             if not self.downloader.start(release, destination) and self._active:
-                self._fail("无法开始下载更新，请稍后重试。")
+                self._fail(tr("update.error.start_download"))
         except OSError:
-            self._fail("无法保存更新文件。请检查磁盘空间与目录权限后重试。")
+            self._fail(tr("update.error.save_download"))
 
     def _progress(self, received, total):
         if not self._active or self._cancelled or self._dialog is None:
@@ -111,15 +118,18 @@ class UpdateFlow(QObject):
         # for verification and helper preparation instead.
         self._dialog.setValue(min(received, max(total - 1, 0)))
         self._dialog.setLabelText(
-            f"正在下载更新：{received / 1048576:.1f} / {total / 1048576:.1f} MB\n"
-            "校验完成后将自动重启。设置、历史记录和 API Key 会保留。"
+            tr(
+                "update.progress.download",
+                received=received / 1048576,
+                total=total / 1048576,
+            )
         )
 
     def _downloaded(self, path, digest):
         if not self._active or self._cancelled or self._stopped:
             return
         self._dialog.setRange(0, 0)
-        self._dialog.setLabelText("下载校验完成，正在准备更新…")
+        self._dialog.setLabelText(tr("update.progress.verified"))
         worker = _PrepareInstall(path, digest, self._release.version, self)
         self._worker = worker
         worker.finished.connect(self._prepared)
@@ -137,7 +147,7 @@ class UpdateFlow(QObject):
         elif error:
             self._fail(error)
         else:
-            self._dialog.setLabelText("正在准备重启…")
+            self._dialog.setLabelText(tr("update.progress.restarting"))
             self._poll.start()
 
     def _busy(self):
@@ -155,7 +165,7 @@ class UpdateFlow(QObject):
             return
         try:
             if self._busy():
-                self._dialog.setLabelText("更新已就绪，等待翻译、OCR 或设置完成后重启…")
+                self._dialog.setLabelText(tr("update.progress.waiting"))
                 return
             if not self._helper_started:
                 self._job.start()
@@ -167,11 +177,11 @@ class UpdateFlow(QObject):
             self._handed_off = True
             self._poll.stop()
             self._dialog.setCancelButton(None)
-            self._dialog.setLabelText("正在安装更新并重启…")
+            self._dialog.setLabelText(tr("update.progress.installing"))
             self.window.quit_app()
         except (UpdateInstallError, OSError, ValueError, RuntimeError):
             self._handed_off = False
-            self._fail("无法启动更新安装，当前版本已保留。请稍后重试。")
+            self._fail(tr("update.error.launch"))
 
     def cancel(self):
         if self._handed_off:

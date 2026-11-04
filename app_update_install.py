@@ -1,7 +1,8 @@
 """Detached, rollback-capable replacement of the running Windows onefile app.
 
-This module intentionally imports only the standard library so the copied app
-can dispatch --apply-update before importing Qt or opening its normal IPC server.
+This module intentionally imports only the standard library (and the
+standard-library-only app_i18n) so the copied app can dispatch --apply-update
+before importing Qt or opening its normal IPC server.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ import sys
 import threading
 import time
 
+from app_i18n import UI_LANGUAGE_CODES, set_ui_language, tr, ui_language
+
 
 STAGE_PREFIX = ".snipdo-update-"
 MANIFEST_NAME = "install.json"
@@ -28,6 +31,8 @@ UPDATE_NAME = "update.exe"
 BACKUP_NAME = "original.exe"
 ENV_MANIFEST = "SNIPDO_UPDATE_MANIFEST"
 ENV_TOKEN = "SNIPDO_UPDATE_TOKEN"
+# The helper never reads settings, so it is told the UI language.
+ENV_LANGUAGE = "SNIPDO_UI_LANGUAGE"
 ENV_ERROR = "SNIPDO_UPDATE_ERROR"
 READY_TIMEOUT = 120.0
 SHUTDOWN_TIMEOUT = 120.0
@@ -74,13 +79,13 @@ def _regular_file(path: Path) -> bool:
 
 def _runtime_target() -> Path:
     if os.name != "nt" or not getattr(sys, "frozen", False):
-        raise UpdateInstallError("直接安装更新需要运行 Windows 单文件发行版；Python 源码运行方式不支持自动替换。")
+        raise UpdateInstallError(tr("update.error.source_run"))
     target = Path(sys.executable).absolute()
     bundle = Path(getattr(sys, "_MEIPASS", target.parent)).resolve()
     if bundle == target.parent or target.parent in bundle.parents or not bundle.name.startswith("_MEI"):
-        raise UpdateInstallError("直接安装更新仅支持单文件发行版；文件夹发行版不能只替换可执行文件。")
+        raise UpdateInstallError(tr("update.error.folder_build"))
     if target.suffix.lower() != ".exe" or target.resolve() != target or not _regular_file(target):
-        raise UpdateInstallError("当前程序必须是位于固定位置的普通 Windows .exe 文件。")
+        raise UpdateInstallError(tr("update.error.not_regular_exe"))
     return target
 
 
@@ -88,7 +93,7 @@ def install_unavailable_reason() -> str:
     try:
         target = _runtime_target()
         if not os.access(target.parent, os.W_OK):
-            return "当前程序所在文件夹不可写。请将程序移到有写入权限的文件夹后重试。"
+            return tr("update.error.folder_not_writable")
     except (OSError, UpdateInstallError) as exc:
         return str(exc)
     return ""
@@ -195,7 +200,7 @@ def _marked(directory: Path, name: str, token: str) -> bool:
 
 def _child_env(directory: Path | None = None, token: str | None = None, *, error=False):
     env = dict(os.environ)
-    for key in (ENV_MANIFEST, ENV_TOKEN, ENV_ERROR):
+    for key in (ENV_MANIFEST, ENV_TOKEN, ENV_ERROR, ENV_LANGUAGE):
         env.pop(key, None)
     env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     bundle = getattr(sys, "_MEIPASS", None)
@@ -210,6 +215,8 @@ def _child_env(directory: Path | None = None, token: str | None = None, *, error
         env[ENV_TOKEN] = token
         if error:
             env[ENV_ERROR] = "1"
+    else:
+        env[ENV_LANGUAGE] = ui_language()
     return env
 
 
@@ -248,7 +255,7 @@ def _notify_install_failure(message: str):
         api = ctypes.WinDLL("user32", use_last_error=True)
         api.MessageBoxW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint]
         api.MessageBoxW.restype = ctypes.c_int
-        api.MessageBoxW(None, message, "SnipDo Translate 更新失败", 0x10 | 0x10000)
+        api.MessageBoxW(None, message, tr("update.failed.title"), 0x10 | 0x10000)
     except (AttributeError, OSError):
         pass
 
@@ -472,6 +479,8 @@ def _replace_with_retry(source: Path, target: Path):
 
 def run_apply_update(manifest_path: str | Path) -> int:
     """Internal helper dispatch. Never call this from the GUI process."""
+    if os.environ.get(ENV_LANGUAGE) in UI_LANGUAGE_CODES:
+        set_ui_language(os.environ[ENV_LANGUAGE])
     parent = None
     manifest = directory = target = None
     child = None
@@ -555,7 +564,10 @@ def run_apply_update(manifest_path: str | Path) -> int:
                 except OSError:
                     pass
             if needs_relaunch:
-                _notify_install_failure(message + f"\n\n程序路径：{target}\n备份位置：{directory / BACKUP_NAME}")
+                _notify_install_failure(
+                    message
+                    + tr("update.failed.paths", target=target, backup=directory / BACKUP_NAME)
+                )
         return 1
     finally:
         if parent is not None:
