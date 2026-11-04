@@ -88,6 +88,7 @@ def test_automatic_checks_are_delayed_and_throttled_across_restarts(notification
     assert controller._schedule.interval() == 5000
     controller._check_automatically()
     assert checker.calls == 1
+    assert controller._schedule.interval() == 6 * 60 * 60 * 1000
     checker.complete(None)
     assert controller._status_dialog is None
     last_check, skipped = ui.load_update_state(controller._path)

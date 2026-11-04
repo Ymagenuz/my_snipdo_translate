@@ -17,7 +17,7 @@ from app_update_flow import UpdateFlow
 from app_version import APP_VERSION
 
 
-CHECK_INTERVAL_SECONDS = 24 * 60 * 60
+CHECK_INTERVAL_SECONDS = 6 * 60 * 60
 STATE_FILE_NAME = "update_state.json"
 
 
