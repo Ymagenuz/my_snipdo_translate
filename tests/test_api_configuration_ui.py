@@ -165,12 +165,15 @@ def test_invalid_configuration_keeps_settings_open_with_error(dialog, qapp, fiel
         dialog.base_url_input.setText(value)
     else:
         dialog.model_combo.setCurrentText(value)
+    dialog.page_list.setCurrentRow(0)
     dialog.show()
     qapp.processEvents()
 
     dialog.accept()
 
     assert accepted == []
+    assert dialog.page_list.currentItem().text() == "API 接口"
+    assert dialog.pages.currentWidget().isAncestorOf(dialog.status_label)
     assert dialog.result() != QDialog.DialogCode.Accepted
     assert dialog.isVisible()
     assert "HTTP(S)" in dialog.status_label.text()

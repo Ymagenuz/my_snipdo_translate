@@ -605,6 +605,7 @@ def test_completed_stream_is_reparsed_as_full_markdown(app, monkeypatch):
     history = []
     size_requests = []
     notifications = []
+    back_translations = []
     monkeypatch.setattr(app, "record_event", events.append)
     markdown = "# 译文\n\n- 第一项\n- 第二项"
 
@@ -624,6 +625,7 @@ def test_completed_stream_is_reparsed_as_full_markdown(app, monkeypatch):
         render_markdown_text=render_markdown_text,
         add_history_entry=lambda *args: history.append(args),
         notify_translation_completed=lambda: notifications.append(True),
+        start_back_translation=lambda: back_translations.append(True),
         ensure_large_window_size=lambda: size_requests.append(True),
         live_render_timer=SimpleNamespace(stop=lambda: None),
     )
@@ -643,6 +645,7 @@ def test_completed_stream_is_reparsed_as_full_markdown(app, monkeypatch):
     ]
     assert size_requests == [True]
     assert notifications == [True]
+    assert back_translations == [True]
     assert events == [app.AppEvent.TRANSLATION_COMPLETED]
 
 

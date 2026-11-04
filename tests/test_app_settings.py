@@ -92,6 +92,7 @@ def test_missing_settings_returns_enabled_xbutton1_default(tmp_path: Path):
             ),
             api_provider=DEEPSEEK_API_PROVIDER,
         ),
+        AppSettings(back_translation=True),
     ],
 )
 def test_settings_round_trip_is_utf8_and_canonical(
@@ -109,8 +110,10 @@ def test_settings_round_trip_is_utf8_and_canonical(
         "show_window_shortcut",
         "api_provider",
         "api_configs",
+        "back_translation",
     }
     assert payload["api_provider"] == settings.api_provider
+    assert payload["back_translation"] is settings.back_translation
     assert set(payload["api_configs"]) == set(settings.api_configs)
     assert set(payload["shortcut"]) == {
         "kind",
@@ -512,6 +515,7 @@ def test_load_migrates_window_shortcut_payload_without_configs(tmp_path: Path):
     save_settings_atomic(path, AppSettings(api_provider=DEEPSEEK_API_PROVIDER))
     payload = json.loads(path.read_text(encoding="utf-8"))
     del payload["api_configs"]
+    del payload["back_translation"]
     _write_json(path, payload)
 
     settings = load_settings(path)
@@ -582,3 +586,30 @@ def test_loading_configuration_normalizes_fields(tmp_path: Path):
     assert provider.base_url == "https://example.org/v1"
     assert provider.model == "custom-model"
     assert provider.credential_target == "SnipDoTranslate/OpenAICompatible"
+
+
+def test_load_migrates_config_payload_with_back_translation_off(tmp_path: Path):
+    path = tmp_path / "settings.json"
+    save_settings_atomic(path, AppSettings(api_provider=DEEPSEEK_API_PROVIDER))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["back_translation"]
+    _write_json(path, payload)
+
+    settings = load_settings(path)
+
+    assert settings.api_provider == DEEPSEEK_API_PROVIDER
+    assert settings.back_translation is False
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "true", []])
+def test_back_translation_must_be_a_boolean(tmp_path: Path, value: object):
+    path = tmp_path / "settings.json"
+    save_settings_atomic(path, AppSettings())
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["back_translation"] = value
+    _write_json(path, payload)
+
+    with pytest.raises(SettingsDataError, match="back_translation"):
+        load_settings(path)
+    with pytest.raises(SettingsDataError, match="back_translation"):
+        AppSettings(back_translation=value)  # type: ignore[arg-type]

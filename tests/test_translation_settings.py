@@ -12,8 +12,10 @@ from types import SimpleNamespace
 import pytest
 import httpx
 from openai import OpenAI as SdkOpenAI
-from PyQt6.QtCore import QPoint, QSize
-from PyQt6.QtGui import QResizeEvent
+from PyQt6.QtCore import QPoint, QPointF, QSize, Qt
+from PyQt6.QtGui import QResizeEvent, QWheelEvent
+from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QApplication
 
 from app_paths import AppPaths
 from api_providers import (
@@ -286,6 +288,79 @@ def test_main_settings_gear_and_dialog_display_shortcuts(
     finally:
         dialog.deleteLater()
         window.deleteLater()
+        qapp.processEvents()
+
+
+def test_settings_dialog_groups_options_into_pages(app, qapp):
+    dialog = app.SettingsDialog(
+        DEFAULT_SETTINGS,
+        api_key_configured=False,
+        environment_key_active=False,
+    )
+    try:
+        names = [
+            dialog.page_list.item(index).text()
+            for index in range(dialog.page_list.count())
+        ]
+        assert names == ["常规", "快捷键", "翻译", "API 接口"]
+        assert dialog.pages.count() == len(names)
+
+        def page_of(widget):
+            return next(
+                names[index]
+                for index in range(dialog.pages.count())
+                if dialog.pages.widget(index).isAncestorOf(widget)
+            )
+
+        assert page_of(dialog.chk_enabled) == "常规"
+        assert page_of(dialog.chk_startup) == "常规"
+        assert page_of(dialog.shortcut_button) == "快捷键"
+        assert page_of(dialog.show_window_shortcut_button) == "快捷键"
+        assert page_of(dialog.chk_back_translation) == "翻译"
+        for widget in (
+            dialog.api_provider_combo,
+            dialog.api_key_input,
+            dialog.base_url_input,
+            dialog.model_combo,
+            dialog.vision_checkbox,
+            dialog.disable_thinking_checkbox,
+            dialog.status_label,
+        ):
+            assert page_of(widget) == "API 接口"
+
+        assert dialog.pages.currentIndex() == 0
+        dialog.page_list.setCurrentRow(names.index("翻译"))
+        assert dialog.pages.currentIndex() == names.index("翻译")
+
+        dialog.shortcut_button.capture_error.emit("无法识别该按键")
+        assert dialog.shortcut_status_label.text() == "无法识别该按键"
+        assert page_of(dialog.shortcut_status_label) == "快捷键"
+
+        assert not dialog.chk_back_translation.isChecked()
+        dialog.chk_back_translation.setChecked(True)
+        assert dialog.candidate_settings() == replace(
+            DEFAULT_SETTINGS, back_translation=True
+        )
+    finally:
+        dialog.deleteLater()
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize("back_translation", [False, True])
+def test_settings_dialog_shows_saved_back_translation_choice(
+    app, qapp, back_translation
+):
+    settings = replace(DEFAULT_SETTINGS, back_translation=back_translation)
+    dialog = app.SettingsDialog(
+        settings,
+        api_key_configured=False,
+        environment_key_active=False,
+    )
+    try:
+        assert dialog.chk_back_translation.isChecked() is back_translation
+        assert dialog.candidate_settings() == settings
+    finally:
+        dialog.deleteLater()
         qapp.processEvents()
 
 
@@ -1308,6 +1383,392 @@ def test_locate_is_unavailable_once_history_source_is_edited(edit_window):
     assert not window.alignment_feature_enabled()
 
 
+@pytest.fixture
+def alignment_workers(app, monkeypatch):
+    workers = []
+
+    class AlignmentWorker:
+        def __init__(self, *_args):
+            self.finished = SimpleNamespace(connect=self.connect)
+            self.running = True
+            self.stop_requested = False
+            workers.append(self)
+
+        def connect(self, callback):
+            self.callback = callback
+
+        def start(self):
+            return None
+
+        def isRunning(self):
+            return self.running
+
+        def request_stop(self):
+            self.stop_requested = True
+
+        def wait(self, _timeout):
+            return True
+
+        def answer(self, text):
+            self.running = False
+            self.callback(True, {"text": text}, "")
+
+    monkeypatch.setattr(app, "AlignmentThread", AlignmentWorker)
+    return workers
+
+
+def _locate_history_counterpart(app, window, workers, qapp, result):
+    window.show()
+    window.load_history_entry({
+        "mode": "en2zh",
+        "source": "First sentence. Second sentence.",
+        "result": result,
+    })
+    qapp.processEvents()
+    _select_text(window.txt_origin, "Second", app)
+    window.btn_align_selection.click()
+    workers[-1].answer("第二句")
+    assert [
+        item.cursor.selectedText() for item in window.txt_result.extraSelections()
+    ] == ["第二句"]
+
+
+@pytest.mark.parametrize("clicked", ["txt_origin", "txt_result"])
+def test_click_in_either_text_clears_the_located_highlight(
+    app, edit_window, alignment_workers, qapp, clicked
+):
+    window, _workers = edit_window
+    _locate_history_counterpart(app, window, alignment_workers, qapp, "第一句。第二句。")
+    assert window.txt_origin.textCursor().hasSelection()
+
+    QTest.mouseClick(
+        getattr(window, clicked).viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(4, 4),
+    )
+
+    assert window.txt_result.extraSelections() == []
+    assert window.txt_origin.extraSelections() == []
+    assert not window.txt_origin.textCursor().hasSelection()
+    assert window.btn_align_selection.isHidden()
+
+
+def test_scrolling_keeps_the_located_highlight(
+    app, edit_window, alignment_workers, qapp
+):
+    window, _workers = edit_window
+    filler = "\n\n".join(f"第{index}段。" for index in range(80))
+    _locate_history_counterpart(
+        app, window, alignment_workers, qapp, f"第一句。第二句。\n\n{filler}",
+    )
+    viewport = window.txt_result.viewport()
+    scroll_bar = window.txt_result.verticalScrollBar()
+    assert scroll_bar.maximum() > 0
+
+    QApplication.sendEvent(viewport, QWheelEvent(
+        QPointF(10, 10), QPointF(viewport.mapToGlobal(QPoint(10, 10))),
+        QPoint(), QPoint(0, -120), Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False,
+    ))
+    QTest.mouseClick(scroll_bar, Qt.MouseButton.LeftButton)
+    scroll_bar.setValue(scroll_bar.maximum())
+    qapp.processEvents()
+
+    assert scroll_bar.value() > 0
+    assert [
+        item.cursor.selectedText() for item in window.txt_result.extraSelections()
+    ] == ["第二句"]
+    assert window.txt_origin.textCursor().hasSelection()
+
+
+def test_click_while_locating_drops_the_late_answer(
+    app, edit_window, alignment_workers, qapp
+):
+    window, _workers = edit_window
+    window.show()
+    window.load_history_entry({
+        "mode": "en2zh",
+        "source": "First sentence. Second sentence.",
+        "result": "第一句。第二句。",
+    })
+    qapp.processEvents()
+    _select_text(window.txt_origin, "Second", app)
+    window.btn_align_selection.click()
+    assert window.btn_align_selection.text() == "定位中..."
+
+    QTest.mouseClick(
+        window.txt_result.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(4, 4)
+    )
+    alignment_workers[-1].answer("第二句")
+
+    assert alignment_workers[-1].stop_requested
+    assert window.txt_result.extraSelections() == []
+    assert window.btn_align_selection.isHidden()
+    assert window.btn_align_selection.isEnabled()
+
+
+@pytest.fixture
+def back_workers(app, monkeypatch):
+    class Signal:
+        def __init__(self):
+            self.callbacks = []
+
+        def connect(self, callback):
+            self.callbacks.append(callback)
+
+        def emit(self, *args):
+            for callback in self.callbacks:
+                callback(*args)
+
+    workers = []
+
+    class BackTranslationWorker:
+        def __init__(self, text, language):
+            self.text = text
+            self.language = language
+            self.running = False
+            self.stop_requested = False
+            self.chunk_received = Signal()
+            self.finished = Signal()
+            workers.append(self)
+
+        def start(self):
+            self.running = True
+
+        def isRunning(self):
+            return self.running
+
+        def request_stop(self):
+            self.stop_requested = True
+
+        def wait(self, _timeout):
+            self.running = False
+            return True
+
+        def complete(self, text="", success=True, error=""):
+            if text:
+                self.chunk_received.emit(text)
+            self.running = False
+            self.finished.emit(success, error)
+
+    monkeypatch.setattr(app, "BackTranslationThread", BackTranslationWorker)
+    return workers
+
+
+def _translate_manually(window, workers, source, result):
+    window.txt_origin.setPlainText(source)
+    window.start_manual_translation()
+    workers[-1].chunk_received.emit(result)
+    workers[-1].complete()
+
+
+def test_back_translation_follows_a_completed_translation_when_enabled(
+    edit_window, back_workers
+):
+    window, workers = edit_window
+    window.app_settings = replace(window.app_settings, back_translation=True)
+    window.txt_origin.setPlainText("这是一个测试句子。")
+    window.start_manual_translation()
+    workers[-1].chunk_received.emit("This is a test sentence.")
+
+    assert back_workers == []
+    assert window.back_translation_panel.isHidden()
+
+    workers[-1].complete()
+
+    assert [(worker.text, worker.language) for worker in back_workers] == [
+        ("This is a test sentence.", "简体中文")
+    ]
+    assert not window.back_translation_panel.isHidden()
+    assert window.lbl_back_translation.text() == "BACK TRANSLATION · 中文"
+    assert window.txt_back_translation.toPlainText() == "正在回译…"
+    assert back_workers[0] in window.translation_threads
+
+    back_workers[0].complete("这是一个测试的句子。")
+
+    assert window.txt_back_translation.toPlainText() == "这是一个测试的句子。"
+    assert back_workers[0] not in window.translation_threads
+    assert window.full_translation == "This is a test sentence."
+    assert window.alignment_feature_enabled()
+
+
+def test_back_translation_is_off_by_default_and_skips_dictionary_results(
+    edit_window, back_workers
+):
+    window, workers = edit_window
+    assert window.app_settings.back_translation is False
+    assert not window.btn_back_translation.isChecked()
+    _translate_manually(window, workers, "这是一个测试句子。", "This is a test.")
+    assert back_workers == []
+    assert window.back_translation_panel.isHidden()
+
+    window.app_settings = replace(window.app_settings, back_translation=True)
+    _translate_manually(window, workers, "serendipity", "# serendipity\n\n意外发现")
+
+    assert workers[-1].mode == "dictionary"
+    assert back_workers == []
+    assert window.back_translation_panel.isHidden()
+
+
+def test_back_translation_reports_failures_and_same_language_results(
+    edit_window, back_workers
+):
+    window, workers = edit_window
+    window.app_settings = replace(window.app_settings, back_translation=True)
+    _translate_manually(window, workers, "这是一个测试句子。", "This is a test.")
+    back_workers[-1].complete("这是一", success=False, error="timeout")
+
+    assert window.txt_back_translation.toPlainText() == "这是一\n\n[回译出错: timeout]"
+
+    window.cbo_dictionary_target.setCurrentIndex(
+        window.cbo_dictionary_target.findData("en")
+    )
+    _translate_manually(window, workers, "This sentence is English.", "This is English.")
+
+    assert len(back_workers) == 1
+    assert not window.back_translation_panel.isHidden()
+    assert window.txt_back_translation.toPlainText() == "原文与译文为同一语言，无需回译。"
+
+
+def test_new_request_cancels_the_back_translation_and_drops_its_output(
+    edit_window, back_workers
+):
+    window, workers = edit_window
+    window.app_settings = replace(window.app_settings, back_translation=True)
+    _translate_manually(window, workers, "这是一个测试句子。", "This is a test.")
+    stale = back_workers[-1]
+
+    window.txt_origin.setPlainText("另一个句子。")
+    window.start_manual_translation()
+
+    assert stale.stop_requested
+    assert window.back_translation_panel.isHidden()
+    stale.complete("过期的回译")
+    assert window.txt_back_translation.toPlainText() == ""
+    assert stale not in window.translation_threads
+
+
+def test_back_translation_toggle_persists_and_applies_to_the_shown_result(
+    edit_window, back_workers
+):
+    window, _workers = edit_window
+    window.load_history_entry({
+        "mode": "zh2en",
+        "source": "这是一个测试句子。",
+        "result": "This is a test sentence.",
+    })
+    assert back_workers == []
+
+    window.btn_back_translation.click()
+
+    assert window.btn_back_translation.isChecked()
+    assert window.app_settings.back_translation is True
+    assert load_settings(window.settings_path).back_translation is True
+    assert [worker.text for worker in back_workers] == ["This is a test sentence."]
+    assert not window.back_translation_panel.isHidden()
+
+    window.load_history_entry({
+        "mode": "zh2en",
+        "source": "另一个句子。",
+        "result": "Another sentence.",
+    })
+    assert back_workers[0].stop_requested
+    assert back_workers[-1].text == "Another sentence."
+
+    window.btn_back_translation.click()
+
+    assert not window.btn_back_translation.isChecked()
+    assert load_settings(window.settings_path).back_translation is False
+    assert back_workers[-1].stop_requested
+    assert window.back_translation_panel.isHidden()
+
+
+def test_failed_save_reverts_the_back_translation_toggle(
+    app, edit_window, back_workers, monkeypatch
+):
+    window, _workers = edit_window
+    warnings = []
+
+    def failing_save(_path, _settings):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(app, "save_settings_atomic", failing_save)
+    monkeypatch.setattr(
+        app.QMessageBox, "warning", lambda *args: warnings.append(args[1])
+    )
+    window.load_history_entry({
+        "mode": "zh2en",
+        "source": "这是一个测试句子。",
+        "result": "This is a test sentence.",
+    })
+
+    window.btn_back_translation.click()
+
+    assert not window.btn_back_translation.isChecked()
+    assert window.app_settings.back_translation is False
+    assert warnings == ["设置保存失败"]
+    assert back_workers == []
+
+
+def test_settings_dialog_save_starts_or_stops_back_translation(
+    app, edit_window, back_workers, monkeypatch
+):
+    window, _workers = edit_window
+    monkeypatch.setattr(window, "refresh_shortcut_status", lambda: None)
+    window.load_history_entry({
+        "mode": "zh2en",
+        "source": "这是一个测试句子。",
+        "result": "This is a test sentence.",
+    })
+
+    enabled = replace(window.app_settings, back_translation=True)
+    assert window.apply_settings(enabled)
+    assert window.btn_back_translation.isChecked()
+    assert len(back_workers) == 1
+
+    # Saving other settings leaves a running back-translation alone.
+    assert window.apply_settings(replace(enabled, enabled=False))
+    assert len(back_workers) == 1
+    assert not back_workers[0].stop_requested
+
+    assert window.apply_settings(replace(enabled, back_translation=False))
+    assert not window.btn_back_translation.isChecked()
+    assert back_workers[0].stop_requested
+    assert window.back_translation_panel.isHidden()
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("这是一个测试句子。", "zh"),
+        ("The weather is nice and the sun is out.", "en"),
+        ("これはテストです。", "ja"),
+        ("이것은 테스트입니다.", "ko"),
+        ("Это проверка связи.", "ru"),
+        ("Le chat est sur la table et il dort.", "fr"),
+        ("Der Hund ist nicht in der Küche.", "de"),
+        ("El perro está en la casa con los niños.", "es"),
+        ("Il gatto non è sul tavolo della cucina.", "it"),
+        ("12345", "en"),
+    ],
+)
+def test_source_language_for_back_translation_is_detected_locally(
+    app, text, expected
+):
+    assert app.detect_text_language(text) == expected
+
+
+def test_back_translation_prompt_sees_only_the_translation(app, qapp):
+    worker = app.BackTranslationThread("This is a test sentence.", "简体中文")
+
+    prompt = worker.build_prompt()
+
+    assert worker.mode == "back"
+    assert "翻译成简体中文" in prompt
+    assert "This is a test sentence." in prompt
+    assert "忠实直译" in prompt
+
+
 @pytest.mark.parametrize("provider_id", [DEFAULT_API_PROVIDER, OPENROUTER_API_PROVIDER])
 def test_translation_thread_streams_markdown_over_explicit_sse(
     app,
@@ -1825,6 +2286,9 @@ def test_quit_path_deactivates_shortcut_before_qapplication_quit(app, monkeypatc
         tray_icon=SimpleNamespace(hide=lambda: events.append("tray-hide")),
         cancel_current_ocr=lambda: events.append("cancel-ocr"),
         cancel_current_translation=lambda: events.append("cancel-translation"),
+        cancel_current_back_translation=lambda wait_ms=0: events.append(
+            ("cancel-back-translation", wait_ms)
+        ),
     )
     window.shutdown_translation_shortcut = lambda: (
         app.TranslationWindow.shutdown_translation_shortcut(window)
@@ -1838,6 +2302,7 @@ def test_quit_path_deactivates_shortcut_before_qapplication_quit(app, monkeypatc
     app.TranslationWindow.quit_app(window)
 
     assert window.force_quit is True
+    assert ("cancel-back-translation", 800) in events
     assert events.index("shortcut-stop") < events.index("qt-quit")
     assert events[-2:] == ["tray-hide", "qt-quit"]
 

@@ -111,7 +111,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QFrame, QGraphicsDropShadowEffect, QGraphicsOpacityEffect,
     QHBoxLayout, QSystemTrayIcon, QMenu, QInputDialog, QLineEdit,
     QComboBox, QDialog, QCheckBox, QFormLayout,
-    QDialogButtonBox, QMessageBox, QCompleter
+    QDialogButtonBox, QMessageBox, QCompleter, QListWidget, QStackedWidget
 )
 from PyQt6.QtGui import (
     QColor, QScreen, QTextCursor, QTextCharFormat,
@@ -1006,6 +1006,47 @@ def translation_mode_for_target_language(target_lang: str) -> str:
     return "auto"
 
 
+def translation_target_language(mode: str, target_lang: str) -> str:
+    """Language code of a translation's output; empty when it is unknown."""
+    if mode == "zh2en":
+        return "en"
+    if mode == "en2zh":
+        return "zh"
+    return "" if target_lang == "default" else target_lang
+
+
+# A few frequent function words per language; only scripts shared by several
+# supported languages need them.
+_LATIN_LANGUAGE_MARKERS = {
+    "en": {"the", "and", "of", "to", "is", "are", "that", "with", "for", "this"},
+    "fr": {"le", "les", "des", "est", "et", "une", "du", "pour", "dans", "pas"},
+    "de": {"der", "die", "das", "und", "ist", "nicht", "ein", "eine", "mit", "den"},
+    "es": {"el", "los", "las", "y", "es", "por", "para", "con", "una", "del"},
+    "it": {"il", "gli", "della", "che", "è", "per", "non", "sono", "una", "con"},
+}
+
+
+def detect_text_language(text: str) -> str:
+    """Name the source language locally, so back-translation never sees the source."""
+    if resolve_auto_translation_mode(text) == "zh2en":
+        return "zh"
+    sample = latex_prose_for_language_detection((text or "").strip())
+    if re.search(r'[\u3040-\u30ff]', sample):
+        return "ja"
+    if re.search(r'[\uac00-\ud7af]', sample):
+        return "ko"
+    if re.search(r'[\u0400-\u04ff]', sample):
+        return "ru"
+
+    words = re.findall(r"[^\W\d_]+", sample.lower())
+    scores = {
+        code: sum(word in markers for word in words)
+        for code, markers in _LATIN_LANGUAGE_MARKERS.items()
+    }
+    best = max(scores, key=scores.get)
+    return best if scores[best] > scores["en"] else "en"
+
+
 def translation_label_for_target_language(mode: str, target_lang: str) -> str:
     if target_lang == "default":
         return target_label_for_mode(mode)
@@ -1234,6 +1275,30 @@ class TranslationThread(QThread):
         finally:
             if warmer is not None:
                 warmer.after_request()
+
+
+class BackTranslationThread(TranslationThread):
+    """Translate a finished translation back without showing it the source."""
+
+    def __init__(self, text: str, language: str):
+        super().__init__(text, "back")
+        self.language = language
+
+    def build_prompt(self) -> str:
+        text_clean, self.latex_placeholders = protect_latex_fragments(
+            self.text.strip()
+        )
+        return f"""
+你是一个专业的回译引擎。用户要通过回译核对一段译文是否准确，请将下方文本忠实地翻译成{self.language}。
+
+规则：
+1. 忠实直译：逐句保留原意、语气、信息量和逻辑关系，不要润色、补充、删减或纠正。
+2. 遇到含糊、生硬或可能有误的表达，按字面意思译出，不要猜测作者本意。
+3. 直接输出译文，不要任何解释，不要加前缀。
+
+待回译文本：
+{text_clean}
+"""
 
 
 class AlignmentThread(QThread):
@@ -1785,10 +1850,31 @@ class SettingsDialog(QDialog):
         )
         self.setWindowTitle("设置")
         self.setModal(True)
-        self.setMinimumWidth(600)
+        self.setMinimumWidth(720)
         self.setStyleSheet("""
             QDialog {
                 background-color: #F5F7FA;
+            }
+            QListWidget {
+                background-color: transparent;
+                border: none;
+                border-right: 1px solid #E4E7ED;
+                outline: 0;
+                font-family: 'Segoe UI', 'Microsoft YaHei UI';
+                font-size: 13px;
+            }
+            QListWidget::item {
+                color: #606266;
+                padding: 8px 12px;
+                margin: 1px 10px 1px 0;
+                border-radius: 6px;
+            }
+            QListWidget::item:hover {
+                background-color: #EBEEF5;
+            }
+            QListWidget::item:selected {
+                background-color: #EDE7F6;
+                color: #8E44AD;
             }
             QLabel {
                 color: #606266;
@@ -1823,21 +1909,21 @@ class SettingsDialog(QDialog):
         title.setStyleSheet("color: #303133; font-size: 18px; font-weight: 700;")
         layout.addWidget(title)
 
-        description = QLabel(
-            "启用状态控制全局划词翻译；主窗口和 SnipDo 调用仍可继续使用。"
-            "录入时按 Esc 可移除显示窗口快捷键；翻译快捷键不可移除，Esc 仅取消修改。"
-            "鼠标快捷键会拦截对应的后退、前进或中键动作。"
+        # Each topic gets its own page so new options do not lengthen one form.
+        body = QHBoxLayout()
+        body.setSpacing(18)
+        self.page_list = QListWidget()
+        self.page_list.setFixedWidth(132)
+        self.pages = QStackedWidget()
+        self.page_list.currentRowChanged.connect(self.pages.setCurrentIndex)
+        body.addWidget(self.page_list)
+        body.addWidget(self.pages, 1)
+        layout.addLayout(body, 1)
+
+        form = self._add_page(
+            "常规",
+            "启用状态控制全局划词翻译；主窗口和 SnipDo 调用仍可继续使用。",
         )
-        description.setWordWrap(True)
-        description.setStyleSheet("color: #909399; font-size: 12px;")
-        layout.addWidget(description)
-
-        form = QFormLayout()
-        form.setContentsMargins(0, 4, 0, 0)
-        form.setHorizontalSpacing(18)
-        form.setVerticalSpacing(14)
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
         self.chk_enabled = QCheckBox("启用全局划词翻译")
         self.chk_enabled.setChecked(settings.enabled)
         form.addRow("启用工具", self.chk_enabled)
@@ -1855,6 +1941,11 @@ class SettingsDialog(QDialog):
             startup_notice.setWordWrap(True)
             form.addRow("", startup_notice)
 
+        form = self._add_page(
+            "快捷键",
+            "录入时按 Esc 可移除显示窗口快捷键；翻译快捷键不可移除，Esc 仅取消修改。"
+            "鼠标快捷键会拦截对应的后退、前进或中键动作。",
+        )
         self.shortcut_button = ShortcutCaptureButton(settings.shortcut)
         self.shortcut_button.capture_error.connect(self._show_capture_error)
         form.addRow("翻译快捷键", self.shortcut_button)
@@ -1866,7 +1957,32 @@ class SettingsDialog(QDialog):
             self._show_capture_error
         )
         form.addRow("显示窗口快捷键", self.show_window_shortcut_button)
+        self.shortcut_status_label = QLabel()
+        self.shortcut_status_label.setWordWrap(True)
+        self.shortcut_status_label.setStyleSheet("color: #E6A23C; font-size: 12px;")
+        form.addRow("", self.shortcut_status_label)
 
+        form = self._add_page(
+            "翻译",
+            "回译会把译文再翻译回原文语言，便于核对译文是否准确传达了原意。",
+        )
+        self.chk_back_translation = QCheckBox("翻译完成后自动回译")
+        self.chk_back_translation.setChecked(settings.back_translation)
+        form.addRow("回译", self.chk_back_translation)
+        back_translation_note = QLabel(
+            "每次翻译会额外发送一次请求；词典结果不回译。"
+            "也可点击主窗口译文标题旁的“回译”按钮快速开关。"
+        )
+        back_translation_note.setWordWrap(True)
+        back_translation_note.setStyleSheet("color: #909399; font-size: 12px;")
+        form.addRow("", back_translation_note)
+
+        form = self._add_page(
+            "API 接口",
+            "所有接口均使用 OpenAI Chat Completions 兼容格式；"
+            "API Key 按接口分别保存在 Windows 凭据管理器中。",
+        )
+        self._api_page = self.pages.count() - 1
         self.api_provider_combo = NoWheelComboBox()
         for provider in api_provider_options():
             self.api_provider_combo.addItem(
@@ -1920,7 +2036,6 @@ class SettingsDialog(QDialog):
         self.model_status_label.setWordWrap(True)
         self.model_status_label.setStyleSheet("color: #909399; font-size: 12px;")
         form.addRow("", self.model_status_label)
-        layout.addLayout(form)
 
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
@@ -1932,7 +2047,8 @@ class SettingsDialog(QDialog):
         self.api_key_input.textChanged.connect(self._on_api_key_changed)
         self.vision_checkbox.toggled.connect(self._refresh_api_key_status)
         self._load_provider_fields()
-        layout.addWidget(self.status_label)
+        form.addRow("", self.status_label)
+        self.page_list.setCurrentRow(0)
 
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -1944,7 +2060,36 @@ class SettingsDialog(QDialog):
         button_box.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         layout.addWidget(button_box)
 
+    def _add_page(self, name: str, description: str) -> QFormLayout:
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(8)
+        heading = QLabel(name)
+        heading.setStyleSheet("color: #303133; font-size: 15px; font-weight: 700;")
+        page_layout.addWidget(heading)
+        hint = QLabel(description)
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #909399; font-size: 12px;")
+        page_layout.addWidget(hint)
+
+        form = QFormLayout()
+        form.setContentsMargins(0, 10, 0, 0)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(14)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        page_layout.addLayout(form)
+        page_layout.addStretch(1)
+
+        self.pages.addWidget(page)
+        self.page_list.addItem(name)
+        return form
+
     def _show_capture_error(self, message: str) -> None:
+        self.shortcut_status_label.setText(message)
+
+    def _show_api_error(self, message: str) -> None:
+        self.page_list.setCurrentRow(self._api_page)
         self.status_label.setText(message)
         self.status_label.setStyleSheet("color: #E6A23C; font-size: 12px;")
 
@@ -2104,13 +2249,15 @@ class SettingsDialog(QDialog):
             show_window_shortcut=self.show_window_shortcut_button.binding,
             api_provider=self.selected_api_provider(),
             api_configs=configs,
+            back_translation=self.chk_back_translation.isChecked(),
         )
 
     def accept(self) -> None:
         try:
             self.candidate_settings()
         except SettingsDataError as exc:
-            self._show_capture_error(str(exc))
+            # Only API fields can be invalid; show them where they are fixed.
+            self._show_api_error(str(exc))
             return
         super().accept()
 
@@ -2608,6 +2755,12 @@ class TranslationWindow(QWidget):
         self.live_render_timer.setSingleShot(True)
         self.live_render_timer.timeout.connect(self.on_live_render_timer)
         self._live_render_due = 0.0
+        self.back_thread = None
+        self.back_translation_text = ""
+        self.back_render_timer = QTimer(self)
+        self.back_render_timer.setSingleShot(True)
+        self.back_render_timer.setInterval(int(LIVE_RENDER_INTERVAL_SECONDS * 1000))
+        self.back_render_timer.timeout.connect(self.render_back_translation)
 
         self.init_ui()
         self.setup_result_format()
@@ -3314,6 +3467,11 @@ class TranslationWindow(QWidget):
         refresh_api_status = getattr(self, "refresh_api_status", None)
         if callable(refresh_api_status):
             refresh_api_status()
+        sync_back_translation = getattr(self, "sync_back_translation", None)
+        if candidate.back_translation != previous.back_translation and callable(
+            sync_back_translation
+        ):
+            sync_back_translation()
 
         if normalized_key:
             try:
@@ -3365,6 +3523,7 @@ class TranslationWindow(QWidget):
         self.force_quit = True
         self.cancel_current_ocr()
         self.cancel_current_translation()
+        self.cancel_current_back_translation(wait_ms=800)
         self.shutdown_translation_shortcut()
         self.tray_icon.hide()
         QApplication.quit()
@@ -3631,6 +3790,39 @@ class TranslationWindow(QWidget):
         result_header_layout.addWidget(self.lbl_result)
 
         result_header_layout.addStretch()
+
+        self.btn_back_translation = QPushButton("回译")
+        self.btn_back_translation.setCheckable(True)
+        self.btn_back_translation.setChecked(self.app_settings.back_translation)
+        self.btn_back_translation.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_back_translation.setToolTip(
+            "开启后，译文完成时自动翻译回原文语言，用于核对含义；"
+            "每次翻译额外发送一次请求，词典结果不回译"
+        )
+        self.btn_back_translation.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #909399;
+                border: 1px solid #DCDFE6;
+                border-radius: 4px;
+                padding: 2px 8px;
+                font-size: 11px;
+                font-weight: 600;
+                min-height: 20px;
+            }
+            QPushButton:hover {
+                color: #8E44AD;
+                border-color: #C39BD3;
+            }
+            QPushButton:checked {
+                background-color: #F4ECF7;
+                color: #8E44AD;
+                border-color: #C39BD3;
+            }
+        """)
+        self.btn_back_translation.clicked.connect(self.toggle_back_translation)
+        result_header_layout.addWidget(self.btn_back_translation)
+        result_header_layout.addSpacing(4)
         result_header_layout.addWidget(self.lbl_dictionary_lang)
         result_header_layout.addWidget(self.cbo_dictionary_source)
         result_header_layout.addWidget(self.lbl_dictionary_arrow)
@@ -3652,6 +3844,41 @@ class TranslationWindow(QWidget):
         self.result_opacity_effect.setEnabled(False)
         self.txt_result.setGraphicsEffect(self.result_opacity_effect)
         card_layout.addWidget(self.txt_result)
+
+        # Source, translation and back-translation read top to bottom.
+        self.back_translation_panel = QWidget()
+        self.back_translation_panel.setObjectName("backTranslationPanel")
+        self.back_translation_panel.setStyleSheet(
+            "#backTranslationPanel { background-color: transparent; }"
+        )
+        back_layout = QVBoxLayout(self.back_translation_panel)
+        back_layout.setContentsMargins(0, 2, 0, 0)
+        back_layout.setSpacing(6)
+        back_header_layout = QHBoxLayout()
+        self.lbl_back_translation = QLabel("BACK TRANSLATION")
+        self.lbl_back_translation.setStyleSheet("color: #909399; font-size: 10px; font-weight: 700; letter-spacing: 1px;")
+        back_header_layout.addWidget(self.lbl_back_translation)
+        back_header_layout.addStretch()
+        back_layout.addLayout(back_header_layout)
+        self.txt_back_translation = InteractiveTextEdit()
+        self.txt_back_translation.setReadOnly(True)
+        self.txt_back_translation.setMaximumHeight(150)
+        back_font = QFont(self.origin_font)
+        back_font.setPixelSize(13)
+        self.txt_back_translation.setFont(back_font)
+        self.txt_back_translation.setStyleSheet("""
+            background-color: #FAFAFA;
+            border-left: 2px solid #D7BDE2;
+            padding-left: 6px;
+            color: #606266;
+        """)
+        back_layout.addWidget(self.txt_back_translation)
+        self.back_translation_panel.hide()
+        card_layout.addWidget(self.back_translation_panel)
+
+        # Mouse presses on the text itself; wheel and scroll bars stay out.
+        self.txt_origin.viewport().installEventFilter(self)
+        self.txt_result.viewport().installEventFilter(self)
 
         self.btn_align_selection = QPushButton(self.card_frame)
         self.btn_align_selection.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -3840,6 +4067,8 @@ class TranslationWindow(QWidget):
     def setup_result_format(self):
         if hasattr(self, "btn_align_selection"):
             self.reset_alignment_ui()
+        if hasattr(self, "back_translation_panel"):
+            self.reset_back_translation()
 
         self.result_opacity_effect.setEnabled(False)
         self.live_render_timer.stop()
@@ -3855,9 +4084,11 @@ class TranslationWindow(QWidget):
         self.result_char_fmt.setForeground(QColor("#2c3e50"))
 
     def apply_markdown_document_style(self, widget, source_name: str):
-        text_color = "#606266" if source_name == "origin" else "#2c3e50"
+        text_color = "#2c3e50" if source_name == "result" else "#606266"
         if source_name == "origin":
             font_pixel_size = 13 if self.source_mode == "snipdo" else 14
+        elif source_name == "back":
+            font_pixel_size = 13
         else:
             font_pixel_size = 15
         font_size = f"{font_pixel_size}px"
@@ -3938,7 +4169,7 @@ class TranslationWindow(QWidget):
 
     def apply_markdown_block_formats(self, widget, source_name: str):
         document = widget.document()
-        text_color = QColor("#606266" if source_name == "origin" else "#2C3E50")
+        text_color = QColor("#2C3E50" if source_name == "result" else "#606266")
         heading_sizes = {
             1: 20,
             2: 18,
@@ -4172,6 +4403,7 @@ class TranslationWindow(QWidget):
         if result_text:
             self.render_markdown_text(self.txt_result, result_text, "result")
             self.btn_copy.setEnabled(True)
+            self.start_back_translation()
         self.force_show_window()
 
     def ensure_api_key(self, *, allow_prompt: bool = True) -> bool:
@@ -4398,6 +4630,7 @@ class TranslationWindow(QWidget):
 
         self.cancel_current_translation()
         self.flush_live_translation()
+        self.reset_back_translation()
         self.apply_manual_mode_ui(reset_content=False)
         # Use the source, not the rendered document, to preserve Markdown/LaTeX.
         self.reset_origin_editor()
@@ -4541,6 +4774,36 @@ class TranslationWindow(QWidget):
         if hasattr(self, "txt_result"):
             self.txt_result.setExtraSelections([])
         self.alignment_highlight_source = None
+
+    def eventFilter(self, watched, event):
+        if (
+            event.type() == QEvent.Type.MouseButtonPress
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            if watched is self.txt_origin.viewport():
+                self.dismiss_alignment_highlight(self.txt_result)
+            elif watched is self.txt_result.viewport():
+                self.dismiss_alignment_highlight(self.txt_origin)
+        return super().eventFilter(watched, event)
+
+    def dismiss_alignment_highlight(self, other_widget):
+        """A click in either text drops the located pair; scrolling keeps it."""
+        if self.align_thread is not None and self.align_thread.isRunning():
+            # Do not block the click; a late answer finds no target and is dropped.
+            self.align_thread.request_stop()
+        self.alignment_target_widget = None
+        self.btn_align_selection.setEnabled(True)
+        self.btn_align_selection.hide()
+        self.clear_alignment_highlights()
+
+        # The clicked text clears its own selection; the other one keeps its view.
+        cursor = other_widget.textCursor()
+        if cursor.hasSelection():
+            scroll_bar = other_widget.verticalScrollBar()
+            position = scroll_bar.value()
+            cursor.clearSelection()
+            other_widget.setTextCursor(cursor)
+            scroll_bar.setValue(position)
 
     def alignment_feature_enabled(self):
         if self.source_mode != "snipdo":
@@ -5044,6 +5307,152 @@ class TranslationWindow(QWidget):
         self.alignment_highlight_source = "result" if target_widget is self.txt_result else "origin"
         self.btn_align_selection.hide()
 
+    # ---------- 回译 ----------
+    def toggle_back_translation(self, checked):
+        # Only this flag changes, so shortcut registration is left alone.
+        candidate = replace(self.app_settings, back_translation=bool(checked))
+        try:
+            save_settings_atomic(self.settings_path, candidate)
+        except (OSError, SettingsDataError):
+            self.btn_back_translation.setChecked(self.app_settings.back_translation)
+            QMessageBox.warning(self, "设置保存失败", "无法保存回译设置，请稍后重试。")
+            return
+        self.app_settings = candidate
+        self.sync_back_translation()
+
+    def sync_back_translation(self):
+        """Follow the saved setting: start for the shown result or put it away."""
+        enabled = self.app_settings.back_translation
+        self.btn_back_translation.setChecked(enabled)
+        if not enabled:
+            self.reset_back_translation()
+        elif self.back_translation_panel.isHidden():
+            self.start_back_translation()
+
+    def back_translation_language(self) -> str:
+        source_lang, _target_lang = self.current_dictionary_languages()
+        if source_lang != "auto":
+            return source_lang
+        return detect_text_language(self.active_translation_text)
+
+    def cancel_current_back_translation(self, wait_ms: int = 0):
+        worker = self.back_thread
+        self.back_thread = None
+        if worker and worker.isRunning():
+            log("[UI] cancel_current_back_translation")
+            # translation_threads keeps the worker alive until it stops.
+            worker.request_stop()
+            if wait_ms:
+                worker.wait(wait_ms)
+
+    def reset_back_translation(self):
+        self.cancel_current_back_translation()
+        self.back_render_timer.stop()
+        self.back_translation_text = ""
+        self.show_back_translation_message("")
+        self.back_translation_panel.hide()
+
+    def show_back_translation_message(self, message: str):
+        self.txt_back_translation.clear()
+        self.txt_back_translation.setCurrentCharFormat(QTextCharFormat())
+        self.txt_back_translation.setPlainText(message)
+
+    def start_back_translation(self) -> bool:
+        self.reset_back_translation()
+        translation = self.full_translation.strip()
+        if (
+            not self.app_settings.back_translation
+            or self.trans_thread is not None
+            or not translation
+            or self.active_translation_mode == "dictionary"
+        ):
+            return False
+
+        language = self.back_translation_language()
+        self.lbl_back_translation.setText(
+            f"BACK TRANSLATION · {dictionary_language_label(language)}"
+        )
+        self.back_translation_panel.show()
+        _source_lang, target_lang = self.current_dictionary_languages()
+        if language == translation_target_language(self.active_translation_mode, target_lang):
+            self.show_back_translation_message("原文与译文为同一语言，无需回译。")
+            return False
+        if not self.ensure_api_key(allow_prompt=False):
+            self.show_back_translation_message("[未设置 API Key，无法回译]")
+            return False
+
+        worker = None
+        try:
+            worker = BackTranslationThread(
+                translation,
+                "简体中文" if language == "zh" else dictionary_language_label(language),
+            )
+            self.back_thread = worker
+            self.translation_threads.add(worker)
+            worker.chunk_received.connect(
+                lambda chunk, active_worker=worker: self.on_back_translation_chunk(
+                    active_worker,
+                    chunk,
+                )
+            )
+            worker.finished.connect(
+                lambda success, error_msg, active_worker=worker:
+                    self.on_back_translation_finished(
+                        active_worker,
+                        success,
+                        error_msg,
+                    )
+            )
+            worker.start()
+        except Exception:
+            if worker is not None:
+                self.translation_threads.discard(worker)
+            self.back_thread = None
+            self.show_back_translation_message("[回译出错: 无法启动]")
+            return False
+
+        self.show_back_translation_message("正在回译…")
+        return True
+
+    def on_back_translation_chunk(self, worker, chunk):
+        if worker is not self.back_thread:
+            return
+        self.back_translation_text += chunk
+        if not self.back_render_timer.isActive():
+            self.back_render_timer.start()
+
+    def on_back_translation_finished(self, worker, success, error_msg):
+        self.translation_threads.discard(worker)
+        if worker is not self.back_thread:
+            return
+        self.back_thread = None
+        self.back_render_timer.stop()
+
+        received = bool(self.back_translation_text.strip())
+        if received:
+            self.render_back_translation()
+        if success:
+            if not received:
+                self.show_back_translation_message("[回译结果为空]")
+            return
+
+        error = f"[回译出错: {error_msg}]"
+        if not received:
+            self.show_back_translation_message(error)
+            return
+        cursor = self.txt_back_translation.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText(f"\n\n{error}", QTextCharFormat())
+
+    def render_back_translation(self):
+        """Render the back-translation without moving the reader's place in it."""
+        scroll_bar = self.txt_back_translation.verticalScrollBar()
+        position = scroll_bar.value()
+        self.render_markdown_text(
+            self.txt_back_translation, self.back_translation_text, "back",
+        )
+        scroll_bar.setValue(position)
+
     # ---------- 模式切换 ----------
     def apply_manual_mode_ui(self, reset_content=False):
         self.source_mode = "manual"
@@ -5442,6 +5851,7 @@ class TranslationWindow(QWidget):
                 self.active_translation_mode,
             )
             self.notify_translation_completed()
+            self.start_back_translation()
         else:
             record_event(AppEvent.TRANSLATION_FAILED)
 
