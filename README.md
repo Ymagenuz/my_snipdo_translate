@@ -8,7 +8,7 @@ The interface is in English by default. To switch it to Simplified Chinese, open
 
 ## Versions and in-app updates
 
-- The app version is defined once, in `app_version.py`. The current version is `12.4.1`, which improves formula layout in translations: subscripts and superscripts, including nested ones, are enlarged to stay readable (at least 10 px) and formulas match the size of the surrounding text; fractions in display formulas are no longer shrunk, and formulas that are too wide break at `\quad` and `\qquad` instead of being scaled down; inline formulas sit on the text baseline; and display formulas no longer leave large gaps above and below. The version appears in the main window title, the Settings title, the tray menu's **About** item and the packaged EXE's Windows file properties.
+- The app version is defined once, in `app_version.py`. The current version is `12.5.0`, which makes English the default interface language and adds a **Language** option on the **General** page in Settings to switch to Simplified Chinese; the change applies as soon as you click **Save**. The language lists in the main window show each language in its own name. The version appears in the main window title, the Settings title, the tray menu's **About** item and the packaged EXE's Windows file properties.
 - 5 seconds after the main instance starts normally, the app checks this project's [GitHub Releases](https://github.com/Ymagenuz/my_snipdo_translate/releases) in the background. Automatic checks run at most once every 6 hours per device, and restarting the app doesn't trigger an early check; while the app keeps running it also checks every 6 hours. **Check for updates…** in the tray menu checks at any time.
 - You're only notified when a full release has a higher version number and valid `SnipDoTranslate.exe` and `SnipDoTranslate.exe.sha256` assets. Drafts, pre-releases, source-only releases, releases without the checksum file and older versions never trigger a notification.
 - The notification offers **Update and restart**, **Open GitHub page**, **Later** and **Skip this version**. **Update and restart** downloads the update inside the app and shows its progress, without opening a browser. **Open GitHub page** opens that version's release page in your browser, where you can read the release notes and download it yourself; if no browser can be opened, the page address is shown instead. **Later** doesn't remind you about the same version again during this run. **Skip this version** is remembered on this computer; a manual check still shows a skipped version.
@@ -20,13 +20,13 @@ The interface is in English by default. To switch it to Simplified Chinese, open
 
 ### Publishing a release
 
-1. Set `APP_VERSION` in `app_version.py` in `major.minor.patch` form, for example `12.4.1`; each part is an integer from `0` to `65535`.
+1. Set `APP_VERSION` in `app_version.py` in `major.minor.patch` form, for example `12.5.0`; each part is an integer from `0` to `65535`.
 2. Run the Windows build below to get the verified `dist\SnipDoTranslate.exe` and its SHA-256 file. The build checks that the EXE's version resource matches the source.
-3. On this project's GitHub Releases page, create a full release for the matching tag (for example `v12.4.1`), upload `SnipDoTranslate.exe` and `SnipDoTranslate.exe.sha256`, write the release notes, then publish it and mark it as the latest release. The checksum file uses the `SHA256  SnipDoTranslate.exe` format the build script produces. Pushing code or creating a Git tag alone doesn't publish an app update.
+3. On this project's GitHub Releases page, create a full release for the matching tag (for example `v12.5.0`), upload `SnipDoTranslate.exe` and `SnipDoTranslate.exe.sha256`, write the release notes, then publish it and mark it as the latest release. The checksum file uses the `SHA256  SnipDoTranslate.exe` format the build script produces. Pushing code or creating a Git tag alone doesn't publish an app update.
 
 Release titles and notes are written in English:
 
-- **Title:** `SnipDo Translate v<version>`, for example `SnipDo Translate v12.4.1`.
+- **Title:** `SnipDo Translate v<version>`, for example `SnipDo Translate v12.5.0`.
 - **`## What's changed`:** one bullet per user-visible change, saying what is different and why it matters.
 - **`## Upgrading`:** how to upgrade (for example, from `12.3.0` or later choose **Update and restart** in the update notification or in the tray menu's **Check for updates…**), that settings, history and API keys are kept, and whether the settings file format changed.
 - **`## Download and verification`:** a bullet for each asset — `SnipDoTranslate.exe` (the Windows x64 single-file app; no Python or project dependencies needed) and `SnipDoTranslate.exe.sha256` (the EXE's SHA-256 checksum file) — then the EXE's SHA-256 in a `text` code block, a line giving the number of automated tests that passed, confirming the packaged app passed the offline self-test and naming the build version and commit, and finally a `[Full changelog](https://github.com/Ymagenuz/my_snipdo_translate/compare/v<previous>...v<version>)` link.

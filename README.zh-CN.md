@@ -8,7 +8,7 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 
 ## 版本与应用内更新
 
-- 应用版本统一定义在 `app_version.py`，当前版本为 `12.4.1`：改进译文中的公式排版。上下标及嵌套的上下标放大到清晰可读（不小于 10 像素），公式字号与正文协调；独立成行公式中的分式不再缩小，过宽的公式在 `\quad`、`\qquad` 处分行而不是整体缩小；行内公式与正文基线对齐；独立公式前后不再出现大段空白。主窗口标题、设置标题、托盘“关于”菜单及打包 EXE 的 Windows 文件属性均显示版本。
+- 应用版本统一定义在 `app_version.py`，当前版本为 `12.5.0`：界面默认改为英文，并在设置“常规”页新增“界面语言”选项，可切换为简体中文，点击“保存”后立即生效；主窗口语言列表中的各语言均以其本身的语言显示。主窗口标题、设置标题、托盘“关于”菜单及打包 EXE 的 Windows 文件属性均显示版本。
 - 正常启动主实例 5 秒后，程序会在后台检查本项目的 [GitHub Releases](https://github.com/Ymagenuz/my_snipdo_translate/releases)。自动检查每台设备最多每 6 小时一次，重启程序不会提前检查；保持运行时也会每 6 小时检查一次。托盘菜单中的“检查更新…”可随时手动检查。
 - 只有正式版版本号更高、且已上传有效的 `SnipDoTranslate.exe` 和 `SnipDoTranslate.exe.sha256` 附件时才会提示。草稿、预发布版本、只有源码的 Release、缺少校验文件和旧版本均不会提示。
 - 提醒提供“更新并重启”“打开 GitHub 页面”“稍后”和“跳过此版本”。点击“更新并重启”后，程序直接下载更新并显示进度，无需打开浏览器；“打开 GitHub 页面”在浏览器中打开该版本的 Release 页面，可查看发行说明并手动下载，无法打开浏览器时会显示页面地址。“稍后”在本次运行期间不重复提醒同一版本；“跳过此版本”会在本机保存，手动检查仍可查看被跳过的版本。
@@ -20,13 +20,13 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 
 ### 发布新版本
 
-1. 修改 `app_version.py` 中的 `APP_VERSION`，采用 `主版本.次版本.修订版本` 格式，例如 `12.4.1`，每段为 `0`–`65535` 的整数。
+1. 修改 `app_version.py` 中的 `APP_VERSION`，采用 `主版本.次版本.修订版本` 格式，例如 `12.5.0`，每段为 `0`–`65535` 的整数。
 2. 运行下方 Windows 构建流程，得到已校验的 `dist\SnipDoTranslate.exe` 和 SHA-256 文件；构建检查会验证 EXE 中的版本资源与源码一致。
-3. 在本项目 GitHub Releases 中创建对应标签（例如 `v12.4.1`）的正式 Release，上传 `SnipDoTranslate.exe` 和 `SnipDoTranslate.exe.sha256`，填写更新说明，再发布并标记为最新版本。校验文件使用构建脚本生成的 `SHA256  SnipDoTranslate.exe` 格式。只推送代码或创建 Git 标签不会发布应用更新。
+3. 在本项目 GitHub Releases 中创建对应标签（例如 `v12.5.0`）的正式 Release，上传 `SnipDoTranslate.exe` 和 `SnipDoTranslate.exe.sha256`，填写更新说明，再发布并标记为最新版本。校验文件使用构建脚本生成的 `SHA256  SnipDoTranslate.exe` 格式。只推送代码或创建 Git 标签不会发布应用更新。
 
 Release 标题和发行说明使用英文撰写：
 
-- **标题**：`SnipDo Translate v<版本号>`，例如 `SnipDo Translate v12.4.1`。
+- **标题**：`SnipDo Translate v<版本号>`，例如 `SnipDo Translate v12.5.0`。
 - **`## What's changed`**（更新内容）：每项用户可见的改动一条，说明改了什么、有什么影响。
 - **`## Upgrading`**（升级）：说明升级方式（例如已安装 `12.3.0` 或更新版本时，在更新提醒或托盘菜单“检查更新…”中选择“更新并重启”），说明设置、历史记录和 API Key 会保留，以及设置文件格式是否改变。
 - **`## Download and verification`**（下载与校验）：逐项列出附件——`SnipDoTranslate.exe`（Windows x64 单文件程序，无需安装 Python 或项目依赖）和 `SnipDoTranslate.exe.sha256`（EXE 的 SHA-256 校验文件）；随后在 `text` 代码块中给出 EXE 的 SHA-256，用一行说明通过的自动测试数量、打包程序已通过离线自检以及构建版本和对应提交，最后附上 `[Full changelog](https://github.com/Ymagenuz/my_snipdo_translate/compare/v<上一版本>...v<版本号>)` 链接。
