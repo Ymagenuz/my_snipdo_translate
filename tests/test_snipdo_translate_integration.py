@@ -671,6 +671,45 @@ def test_completed_result_renders_latex_formulas_as_images(app, qapp):
     assert "SNIPDOMATHPLACEHOLDER" not in widget.toPlainText()
 
 
+def test_plain_text_result_spaces_display_formulas_by_margins(app, qapp):
+    window = SimpleNamespace(source_mode="manual")
+    for method_name in (
+        "apply_markdown_document_style",
+        "compact_markdown_list_indents",
+        "apply_markdown_block_formats",
+        "render_markdown_text",
+    ):
+        _bind(window, app.TranslationWindow, method_name)
+
+    widget = app.InteractiveTextEdit()
+    widget.resize(500, 300)
+    source = (
+        "Why the voltage can't jump\n\n"
+        r"$$v_C = \frac{q}{C}$$" "\n\n"
+        r"$$I_s = \frac{12\ \text{V}}{2\ \text{k}\Omega}$$" "\n\n"
+        "So $i_C$ is finite."
+    )
+
+    assert window.render_markdown_text(widget, source, "result") is True
+
+    # No empty plain-text lines around the formulas: their block margins
+    # space them, and they keep a line height of their own.
+    document = widget.document()
+    blocks = [document.findBlockByNumber(n) for n in range(document.blockCount())]
+    assert [block.text() for block in blocks] == [
+        "Why the voltage can't jump",
+        "\ufffc",
+        "\ufffc",
+        "So \ufffc is finite.",
+    ]
+    assert [block.blockFormat().lineHeight() for block in blocks] == [
+        140,
+        100,
+        100,
+        140,
+    ]
+
+
 def test_large_window_size_is_fixed_unless_maximized(app):
     resizes = []
     window = SimpleNamespace(

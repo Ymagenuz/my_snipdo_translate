@@ -4254,10 +4254,15 @@ class TranslationWindow(QWidget):
 
         while block.isValid():
             block_format = block.blockFormat()
-            block_format.setLineHeight(
-                140,
-                QTextBlockFormat.LineHeightTypes.ProportionalHeight.value,
-            )
+            # Display formulas have already set their own line height.
+            if (
+                block_format.lineHeightType()
+                == QTextBlockFormat.LineHeightTypes.SingleHeight.value
+            ):
+                block_format.setLineHeight(
+                    140,
+                    QTextBlockFormat.LineHeightTypes.ProportionalHeight.value,
+                )
 
             heading_level = block_format.headingLevel()
             if heading_level:
@@ -4272,7 +4277,8 @@ class TranslationWindow(QWidget):
                 fragment_iterator = block.begin()
                 while not fragment_iterator.atEnd():
                     fragment = fragment_iterator.fragment()
-                    if fragment.isValid():
+                    # A formula image keeps the font its baseline was set by.
+                    if fragment.isValid() and not fragment.charFormat().isImageFormat():
                         heading_fragments.append((
                             fragment.position(),
                             fragment.length(),
@@ -4320,17 +4326,20 @@ class TranslationWindow(QWidget):
 
         try:
             self.apply_markdown_document_style(widget, source_name)
-            document_text = markdown_text
-            formula_fragments = []
-            if source_name == "result":
-                document_text, formula_fragments = (
-                    prepare_latex_math_for_document(markdown_text)
-                )
-
             plain_text = (
                 is_latex_text(markdown_text)
                 and not is_markdown_structured_text(markdown_text)
             )
+            document_text = markdown_text
+            formula_fragments = []
+            if source_name == "result":
+                document_text, formula_fragments = (
+                    prepare_latex_math_for_document(
+                        markdown_text,
+                        paragraph_break="\n" if plain_text else "\n\n",
+                    )
+                )
+
             if plain_text:
                 widget.setPlainText(document_text)
             else:

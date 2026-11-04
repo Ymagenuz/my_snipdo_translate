@@ -1,8 +1,11 @@
 import re
 import threading
 from io import BytesIO
+from pathlib import Path
 
+import pytest
 from PIL import Image
+from PyQt6.QtGui import QColor, QFont, QFontDatabase
 from PyQt6.QtWidgets import QTextEdit
 
 import latex_renderer
@@ -36,13 +39,13 @@ def test_math_warm_up_runs_once_off_the_calling_thread(monkeypatch):
 
 def test_math_warm_up_fills_the_result_view_render_cache(monkeypatch):
     calls = []
-    original = latex_renderer._render_math_row_png
+    original = latex_renderer._render_math_row
 
     def recording_render(*args):
         calls.append(args)
         return original(*args)
 
-    monkeypatch.setattr(latex_renderer, "_render_math_row_png", recording_render)
+    monkeypatch.setattr(latex_renderer, "_render_math_row", recording_render)
 
     latex_renderer._warm_up()
 
@@ -90,6 +93,146 @@ But $x+y$ is math.
     assert "$5 to $10" in prepared
     assert "$not_math$" in prepared
     assert "$also_not_math$" in prepared
+
+
+def test_display_formulas_get_exactly_one_paragraph_break_around_them():
+    source = "Intro\n\n$$a$$\n\n  $$b$$  \n\nAfter $c$.\n\n$$d$$ then\n"
+
+    plain, fragments = prepare_latex_math_for_document(source, paragraph_break="\n")
+    markdown, _ = prepare_latex_math_for_document(source)
+
+    a, b, c, d = (fragment.placeholder for fragment in fragments)
+    assert plain == f"Intro\n{a}\n{b}\nAfter {c}.\n{d}\nthen\n"
+    assert markdown == f"Intro\n\n{a}\n\n{b}\n\nAfter {c}.\n\n{d}\n\nthen\n"
+
+
+def test_display_style_enlarges_only_top_level_fractions():
+    expression = (
+        r"\frac{a}{b} + x^{\frac{1}{2}} + \frac{\frac{c}{d}}{\frac{e}{f}}"
+        r" + \sqrt{\frac{g}{h}}"
+    )
+
+    assert latex_renderer._use_display_fractions(expression) == (
+        r"\dfrac{a}{b} + x^{\frac{1}{2}} + \dfrac{\frac{c}{d}}{\frac{e}{f}}"
+        r" + \sqrt{\dfrac{g}{h}}"
+    )
+
+
+def test_display_formulas_draw_fractions_larger_than_inline_ones():
+    body = r"I_s = \frac{12\ \text{V}}{2\ \text{k}\Omega}"
+    inline = render_latex_fragment_png(
+        LatexMathFragment("TOKEN", f"${body}$", body, display=False)
+    )
+    display = render_latex_fragment_png(
+        LatexMathFragment("TOKEN", f"$${body}$$", body, display=True)
+    )
+
+    assert display.logical_height > inline.logical_height * 1.2
+
+
+def test_scripts_shrink_twice_for_result_text_and_then_stop():
+    math_size = 15 * latex_renderer._MATH_FONT_SCALE
+    levels = latex_renderer._script_size_levels(math_size)
+    smallest = math_size * latex_renderer._SCRIPT_SHRINK_FACTOR ** levels
+
+    # 16.7px formula text, 13px scripts, and 10px scripts on scripts, where
+    # TeX's sizes would reach 8px and keep going.
+    assert levels == 2
+    assert round(smallest) == 10
+
+
+def test_row_render_applies_script_sizes_and_restores_matplotlib(monkeypatch):
+    rc_context, font_properties, math_to_image, mathtext = (
+        latex_renderer._matplotlib_api()
+    )
+    defaults = (mathtext.SHRINK_FACTOR, mathtext.NUM_SIZE_LEVELS)
+    seen = []
+
+    def recording_math_to_image(*args, **kwargs):
+        seen.append((mathtext.SHRINK_FACTOR, mathtext.NUM_SIZE_LEVELS))
+        return math_to_image(*args, **kwargs)
+
+    monkeypatch.setattr(
+        latex_renderer,
+        "_matplotlib_api",
+        lambda: (rc_context, font_properties, recording_math_to_image, mathtext),
+    )
+
+    png, depth = latex_renderer._render_math_row("x_{1_{2_{3}}}", 15, "#123456", 96)
+
+    assert seen == [(latex_renderer._SCRIPT_SHRINK_FACTOR, 3)]
+    assert (mathtext.SHRINK_FACTOR, mathtext.NUM_SIZE_LEVELS) == defaults
+    assert Image.open(BytesIO(png)).height > 0
+    assert depth > 0
+
+
+def test_wide_display_formula_wraps_at_wide_spaces_instead_of_shrinking():
+    body = r"v_C(t) = 9\left(1 - e^{-t/\tau}\right), \qquad \tau = R_{th}C = 15\ \text{ms}"
+    fragment = LatexMathFragment("TOKEN", f"$${body}$$", body, display=True)
+
+    single = render_latex_fragment_png(fragment)
+    wrapped = render_latex_fragment_png(fragment, max_width=single.logical_width * 0.7)
+
+    assert wrapped.logical_width <= single.logical_width * 0.7
+    assert wrapped.logical_height > single.logical_height * 1.5
+
+
+def test_formulas_are_only_split_at_top_level_wide_spaces():
+    expression = r"\left(a \qquad b\right) \quad \text{if } {c \quad d}"
+
+    assert latex_renderer._split_at_wide_spaces(expression) == [
+        r"\left(a \qquad b\right)",
+        r"\text{if } {c \quad d}",
+    ]
+
+
+@pytest.fixture
+def text_font(qapp):
+    # Offscreen tests have no system fonts, and the fallback has no descent.
+    from matplotlib import get_data_path
+
+    font_path = Path(get_data_path()) / "fonts" / "ttf" / "DejaVuSans.ttf"
+    font_id = QFontDatabase.addApplicationFont(str(font_path))
+    assert font_id >= 0
+    font = QFont(QFontDatabase.applicationFontFamilies(font_id)[0])
+    font.setPixelSize(15)
+    yield font
+    QFontDatabase.removeApplicationFont(font_id)
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [r"$H$", r"$H(0^-)$", r"$H_{y_{j}}$", r"$H\frac{a}{b}$"],
+)
+def test_inline_formula_sits_on_the_text_baseline(qapp, text_font, formula):
+    widget = QTextEdit()
+    widget.resize(400, 120)
+    widget.setStyleSheet("background: white; border: none;")
+    widget.document().setDefaultFont(text_font)
+    prepared, fragments = prepare_latex_math_for_document(f"xH {formula} Hx")
+    widget.setPlainText(prepared)
+
+    stats = render_math_fragments_in_document(widget, fragments, color="#ff0000")
+    widget.show()
+    qapp.processEvents()
+    try:
+        layout = widget.document().firstBlock().layout()
+        line = layout.lineAt(0)
+        baseline = layout.position().y() + line.y() + line.ascent()
+        image = widget.viewport().grab().toImage()
+        red_columns = {}
+        for x in range(image.width()):
+            for y in range(image.height()):
+                color = QColor(image.pixel(x, y))
+                if color.red() > 150 and color.green() < 100 and color.blue() < 100:
+                    red_columns.setdefault(x, []).append(y)
+    finally:
+        widget.close()
+
+    assert stats.rendered == 1
+    # The left stem of the formula's H ends on its baseline.
+    stem = [y for x in sorted(red_columns)[:3] for y in red_columns[x]]
+    assert abs(max(stem) + 1 - baseline) <= 1
 
 
 def test_formula_renderer_outputs_transparent_high_resolution_png():
