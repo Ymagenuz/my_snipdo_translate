@@ -4,6 +4,15 @@
 
 What changed in each SnipDo Translate release. The app shows this list on the **About** page in Settings.
 
+## 12.7.0 — 2026-11-05
+
+- Scrolling glides smoothly instead of jumping, one frame per refresh of your monitor (for example 100 or 144 times a second). Locating text glides to it too. With **Animation effects** turned off in Windows, everything moves at once as before.
+- In the read-only translation, back-translation and changelog, Page Up/Page Down, Space, Home/End and the arrow keys glide as well.
+- The **Locate in translation** / **Locate in original** button and the pages in Settings fade in, and the previous translation dims gently when you click **Edit**.
+- Scroll bars are slim rounded lines that rest on the text box's own background and widen when you point at them.
+- Dropdowns show a simple chevron that turns over while the list is open, and their lists have rounded rows with the **History** menu's purple highlight.
+- Scrolling stays smooth in a large or maximized window: the window's shadow is no longer redrawn on every frame.
+
 ## 12.6.0 — 2026-11-05
 
 - Update checks no longer interrupt you with a pop-up. When a new version is available, the gear on the **Settings** button turns into a blue download icon; click it to go straight to the update.
