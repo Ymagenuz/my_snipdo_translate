@@ -143,6 +143,44 @@ def test_unrelated_assets_do_not_hide_a_valid_executable():
     assert parse_release(payload, current_version="12.0.0").version == "13.0.0"
 
 
+def test_release_notes_keep_the_changes_and_drop_download_details():
+    payload = release_payload()
+    payload["body"] = (
+        "## What's changed\r\n\r\n- Faster.\r\n\r\n## Upgrading\r\n\r\nUpdate in the app.\r\n\r\n"
+        "## Download and verification\r\n\r\n```text\r\nabc123\r\n```\r\n"
+    )
+    notes = parse_release(payload, current_version="12.0.0").notes
+    assert notes == "## What's changed\n\n- Faster.\n\n## Upgrading\n\nUpdate in the app."
+
+
+@pytest.mark.parametrize("body", [None, 12, ["notes"], {"text": "notes"}])
+def test_unusable_release_notes_do_not_hide_the_release(body):
+    payload = release_payload()
+    payload["body"] = body
+    release = parse_release(payload, current_version="12.0.0")
+    assert release.version == "13.0.0"
+    assert release.notes == ""
+
+
+@pytest.mark.parametrize(("published_at", "date"), [
+    ("2026-11-20T08:15:00Z", "2026-11-20"),
+    ("2026-11-20", ""),
+    ("yesterday", ""),
+    (None, ""),
+    (20261120, ""),
+])
+def test_release_date_is_kept_only_when_well_formed(published_at, date):
+    payload = release_payload()
+    payload["published_at"] = published_at
+    assert parse_release(payload, current_version="12.0.0").published == date
+
+
+def test_long_release_notes_are_shortened():
+    notes = app_updates.release_notes("x" * (app_updates.MAX_NOTES_CHARS + 50))
+    assert len(notes) <= app_updates.MAX_NOTES_CHARS + 3
+    assert notes.endswith("\n\n…")
+
+
 class FakeReply(QObject):
     readyRead = pyqtSignal()
     metaDataChanged = pyqtSignal()

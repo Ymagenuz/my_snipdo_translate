@@ -114,7 +114,7 @@ def test_settings_dialog_uses_the_saved_language(app, qapp):
         assert [
             dialog.page_list.item(index).text()
             for index in range(dialog.page_list.count())
-        ] == ["常规", "快捷键", "翻译", "API 接口"]
+        ] == ["常规", "快捷键", "翻译", "API 接口", "关于"]
         assert dialog.language_combo.currentData() == "zh-CN"
         assert dialog.chk_enabled.text() == "启用全局划词翻译"
         assert dialog.fetch_models_button.text() == "获取模型"

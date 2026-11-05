@@ -51,8 +51,15 @@ from app_cli import (
     prepare_request,
 )
 from app_logging import AppEvent, PrivacyEventLogger, configure_app_logging
+from app_changelog import (
+    CHANGELOG_FILES,
+    compose_changelog,
+    load_changelog,
+    render_changelog,
+)
 from app_update_ui import UpdateNotifications
 from app_update_install import acknowledge_update_startup, consume_update_error
+from app_updates import REPOSITORY_URL
 from app_version import APP_VERSION
 from app_i18n import (
     UI_LANGUAGES,
@@ -121,7 +128,8 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QFrame, QGraphicsDropShadowEffect, QGraphicsOpacityEffect,
     QHBoxLayout, QSystemTrayIcon, QMenu, QInputDialog, QLineEdit,
     QComboBox, QDialog, QCheckBox, QFormLayout,
-    QDialogButtonBox, QMessageBox, QCompleter, QListWidget, QStackedWidget
+    QDialogButtonBox, QMessageBox, QCompleter, QListWidget, QStackedWidget,
+    QTextBrowser
 )
 from PyQt6.QtGui import (
     QColor, QScreen, QTextCursor, QTextCharFormat,
@@ -499,6 +507,36 @@ def create_settings_icon() -> QIcon:
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.scale(size / 24, size / 24)
         painter.fillPath(gear, QColor("#909399"))
+        painter.end()
+        icon.addPixmap(pixmap)
+    return icon
+
+
+def create_update_icon() -> QIcon:
+    """Draw the blue download arrow the Settings button shows while an update waits."""
+    arrow = QPainterPath()
+    arrow.moveTo(12, 3)
+    arrow.lineTo(12, 14.5)
+    arrow.moveTo(7, 10)
+    arrow.lineTo(12, 15)
+    arrow.lineTo(17, 10)
+    arrow.moveTo(4, 15)
+    arrow.lineTo(4, 20)
+    arrow.lineTo(20, 20)
+    arrow.lineTo(20, 15)
+
+    pen = QPen(QColor("#409EFF"))
+    pen.setWidthF(2.4)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    icon = QIcon()
+    for size in (20, 40, 60):
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.scale(size / 24, size / 24)
+        painter.strokePath(arrow, pen)
         painter.end()
         icon.addPixmap(pixmap)
     return icon
@@ -1875,9 +1913,16 @@ class SettingsDialog(QDialog):
         environment_key_active: bool,
         startup_enabled: bool = False,
         startup_available: bool = True,
+        updates=None,
+        page: str = "",
+        changelog: str = "",
+        app_icon=None,
         parent=None,
     ):
         super().__init__(parent)
+        self._updates = updates
+        # Set when the user picks Update and restart; installed after saving.
+        self.requested_update = None
         self._initial_api_provider = settings.api_provider
         self._api_key_configured = api_key_configured
         self._environment_key_active = environment_key_active
@@ -2117,7 +2162,10 @@ class SettingsDialog(QDialog):
         self.vision_checkbox.toggled.connect(self._refresh_api_key_status)
         self._load_provider_fields()
         form.addRow("", self.status_label)
-        self.page_list.setCurrentRow(0)
+
+        self._build_about_page(updates, changelog, app_icon)
+
+        self.page_list.setCurrentRow(self._about_page if page == "about" else 0)
 
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -2133,7 +2181,210 @@ class SettingsDialog(QDialog):
         )
         layout.addWidget(button_box)
 
-    def _add_page(self, name: str, description: str) -> QFormLayout:
+    def _build_about_page(self, updates, changelog: str, app_icon) -> None:
+        # The changelog at the bottom takes the free space instead of a stretch.
+        form = self._add_page(
+            tr("settings.about"),
+            tr("settings.about.hint", app=APP_DISPLAY_NAME),
+            stretch=False,
+        )
+        self._about_page = self.pages.count() - 1
+
+        card = QFrame()
+        card.setObjectName("aboutCard")
+        # The main window's background rule reaches every child widget; as the
+        # nearer ancestor, the card keeps its text on plain white.
+        card.setStyleSheet("""
+            QFrame#aboutCard {
+                background-color: #FFFFFF;
+                border: 1px solid #E4E7ED;
+                border-radius: 8px;
+            }
+            QFrame#aboutCard QLabel {
+                background-color: transparent;
+            }
+        """)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(16, 14, 16, 14)
+        card_layout.setSpacing(10)
+
+        identity = QHBoxLayout()
+        identity.setSpacing(12)
+        if app_icon is not None and not app_icon.isNull():
+            icon_label = QLabel()
+            icon_label.setPixmap(app_icon.pixmap(44, 44))
+            icon_label.setFixedSize(44, 44)
+            identity.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        names = QVBoxLayout()
+        names.setSpacing(3)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
+        name_label = QLabel(APP_DISPLAY_NAME)
+        name_label.setStyleSheet("color: #303133; font-size: 16px; font-weight: 700;")
+        title_row.addWidget(name_label)
+        self.version_label = QLabel(tr("settings.about.version", version=APP_VERSION))
+        self.version_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.version_label.setStyleSheet("""
+            color: #8E44AD;
+            background-color: #F3ECF8;
+            border-radius: 9px;
+            padding: 1px 8px;
+            font-size: 12px;
+            font-weight: 600;
+        """)
+        title_row.addWidget(self.version_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        title_row.addStretch(1)
+        names.addLayout(title_row)
+        tagline = QLabel(tr("settings.about.tagline"))
+        tagline.setWordWrap(True)
+        tagline.setStyleSheet("color: #909399; font-size: 12px;")
+        names.addWidget(tagline)
+        identity.addLayout(names, 1)
+        project_link = QLabel(
+            f'<a href="{REPOSITORY_URL}" style="color: #409EFF; '
+            'text-decoration: none;">GitHub ↗</a>'
+        )
+        project_link.setTextFormat(Qt.TextFormat.RichText)
+        project_link.setOpenExternalLinks(True)
+        project_link.setToolTip(REPOSITORY_URL)
+        identity.addWidget(project_link, 0, Qt.AlignmentFlag.AlignTop)
+        card_layout.addLayout(identity)
+
+        if updates is not None:
+            divider = QFrame()
+            divider.setFixedHeight(1)
+            divider.setStyleSheet("background-color: #EBEEF5; border: none;")
+            card_layout.addWidget(divider)
+            status_row = QHBoxLayout()
+            status_row.setSpacing(8)
+            self.update_status_dot = QLabel()
+            self.update_status_dot.setFixedSize(10, 10)
+            status_row.addWidget(self.update_status_dot, 0, Qt.AlignmentFlag.AlignVCenter)
+            self.update_status_label = QLabel()
+            self.update_status_label.setWordWrap(True)
+            self.update_status_label.setStyleSheet("color: #303133; font-size: 13px;")
+            status_row.addWidget(self.update_status_label, 1)
+            card_layout.addLayout(status_row)
+
+            update_buttons = QHBoxLayout()
+            update_buttons.setSpacing(8)
+            self.install_update_button = QPushButton(tr("update.button.install"))
+            self.install_update_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #409EFF;
+                    color: #FFFFFF;
+                    border: 1px solid #409EFF;
+                    border-radius: 6px;
+                    padding: 6px 16px;
+                    font-size: 13px;
+                    font-weight: 600;
+                }
+                QPushButton:hover {
+                    background-color: #66B1FF;
+                    border-color: #66B1FF;
+                }
+                QPushButton:pressed {
+                    background-color: #3A8EE6;
+                    border-color: #3A8EE6;
+                }
+            """)
+            self.install_update_button.clicked.connect(self._install_update)
+            self.release_notes_button = QPushButton(tr("update.button.release_notes"))
+            self.release_notes_button.clicked.connect(self._open_release_notes)
+            self.check_updates_button = QPushButton(tr("update.button.check"))
+            self.check_updates_button.clicked.connect(
+                lambda _checked=False: updates.check_manually()
+            )
+            secondary_style = """
+                QPushButton {
+                    background-color: #FFFFFF;
+                    color: #606266;
+                    border: 1px solid #DCDFE6;
+                    border-radius: 6px;
+                    padding: 6px 14px;
+                    font-size: 13px;
+                }
+                QPushButton:hover {
+                    color: #409EFF;
+                    background-color: #ECF5FF;
+                    border-color: #C6E2FF;
+                }
+                QPushButton:disabled {
+                    color: #C0C4CC;
+                    background-color: #FFFFFF;
+                    border-color: #EBEEF5;
+                }
+            """
+            self.release_notes_button.setStyleSheet(secondary_style)
+            self.check_updates_button.setStyleSheet(secondary_style)
+            for button in (
+                self.install_update_button,
+                self.release_notes_button,
+                self.check_updates_button,
+            ):
+                button.setAutoDefault(False)
+                button.setCursor(Qt.CursorShape.PointingHandCursor)
+                update_buttons.addWidget(button)
+            update_buttons.addStretch(1)
+            card_layout.addLayout(update_buttons)
+            self.update_note_label = QLabel()
+            self.update_note_label.setWordWrap(True)
+            self.update_note_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            self.update_note_label.setStyleSheet("color: #E6A23C; font-size: 12px;")
+            self.update_note_label.hide()
+            card_layout.addWidget(self.update_note_label)
+        form.addRow(card)
+
+        about_layout = self.pages.widget(self._about_page).layout()
+        changelog_heading = QLabel(tr("settings.about.changelog"))
+        changelog_heading.setStyleSheet(
+            "color: #303133; font-size: 14px; font-weight: 700; margin-top: 10px;"
+        )
+        about_layout.addWidget(changelog_heading)
+        self.changelog_view = QTextBrowser()
+        self.changelog_view.setOpenExternalLinks(True)
+        self.changelog_view.setMinimumHeight(200)
+        self.changelog_view.setStyleSheet("""
+            QTextBrowser {
+                background-color: #FFFFFF;
+                border: 1px solid #E4E7ED;
+                border-radius: 8px;
+                font-family: 'Segoe UI', 'Microsoft YaHei UI';
+                font-size: 13px;
+            }
+            QScrollBar:vertical {
+                background: transparent;
+                width: 10px;
+                margin: 6px 2px 6px 0;
+            }
+            QScrollBar::handle:vertical {
+                background: #DCDFE6;
+                border-radius: 4px;
+                min-height: 28px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #C0C4CC;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: transparent;
+            }
+        """)
+        about_layout.addWidget(self.changelog_view, 1)
+        self._changelog = changelog
+        self._changelog_release = None
+        self._show_changelog()
+        if updates is not None:
+            updates.changed.connect(self._refresh_update_section)
+            self._refresh_update_section()
+
+    def _add_page(self, name: str, description: str, *, stretch: bool = True) -> QFormLayout:
         page = QWidget()
         page_layout = QVBoxLayout(page)
         page_layout.setContentsMargins(0, 0, 0, 0)
@@ -2152,7 +2403,8 @@ class SettingsDialog(QDialog):
         form.setVerticalSpacing(14)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         page_layout.addLayout(form)
-        page_layout.addStretch(1)
+        if stretch:
+            page_layout.addStretch(1)
 
         self.pages.addWidget(page)
         self.page_list.addItem(name)
@@ -2160,6 +2412,69 @@ class SettingsDialog(QDialog):
 
     def _show_capture_error(self, message: str) -> None:
         self.shortcut_status_label.setText(message)
+
+    def _refresh_update_section(self) -> None:
+        updates = self._updates
+        release = updates.available_release
+        if updates.is_installing:
+            text, color = tr("update.about.installing"), "#E6A23C"
+        elif updates.is_checking:
+            text, color = tr("update.about.checking"), "#E6A23C"
+        elif release is not None:
+            text = tr("update.about.available", version=release.version, current=APP_VERSION)
+            color = "#409EFF"
+        elif updates.last_result == "current":
+            text, color = tr("update.about.current"), "#67C23A"
+        elif updates.last_result == "failed":
+            text, color = tr("update.check_failed"), "#F56C6C"
+        else:
+            text, color = tr("update.about.automatic"), "#C0C4CC"
+        self.update_status_label.setText(text)
+        self.update_status_dot.setStyleSheet(
+            f"background-color: {color}; border-radius: 5px;"
+        )
+        self.install_update_button.setVisible(
+            release is not None and not updates.is_installing
+        )
+        self.release_notes_button.setVisible(release is not None)
+        self.check_updates_button.setEnabled(
+            not updates.is_checking and not updates.is_installing
+        )
+        if release != self._changelog_release:
+            self._show_changelog()
+
+    def _show_changelog(self) -> None:
+        release = self._updates.available_release if self._updates is not None else None
+        self._changelog_release = release
+        markdown = compose_changelog(self._changelog, release)
+        if not markdown:
+            self.changelog_view.setPlainText(tr("settings.about.changelog.missing"))
+            return
+        render_changelog(
+            self.changelog_view.document(),
+            markdown,
+            installed_version=APP_VERSION,
+            available_version=release.version if release is not None else "",
+        )
+        self.changelog_view.moveCursor(QTextCursor.MoveOperation.Start)
+
+    def _install_update(self) -> None:
+        release = self._updates.available_release
+        if release is None or self._updates.is_installing:
+            return
+        # Saves like the Save button, so changes made first aren't lost.
+        self.requested_update = release
+        self.accept()
+
+    def _open_release_notes(self) -> None:
+        release = self._updates.available_release
+        if release is None:
+            return
+        opened = self._updates.open_release_page(release)
+        self.update_note_label.setText(
+            "" if opened else tr("update.browser_failed", url=release.url)
+        )
+        self.update_note_label.setVisible(not opened)
 
     def _show_api_error(self, message: str) -> None:
         self.page_list.setCurrentRow(self._api_page)
@@ -2336,6 +2651,7 @@ class SettingsDialog(QDialog):
         except SettingsDataError as exc:
             # Only API fields can be invalid; show them where they are fixed.
             self._show_api_error(str(exc))
+            self.requested_update = None
             return
         super().accept()
 
@@ -2347,6 +2663,11 @@ class SettingsDialog(QDialog):
         self._model_loader.stop()
         self.shortcut_button.cancel_capture()
         self.show_window_shortcut_button.cancel_capture()
+        if self._updates is not None:
+            try:
+                self._updates.changed.disconnect(self._refresh_update_section)
+            except TypeError:
+                pass  # Already disconnected by an earlier done().
         super().done(result)
 
 
@@ -2846,6 +3167,7 @@ class TranslationWindow(QWidget):
         self.init_ui()
         self.setup_result_format()
         self.update_notifications = UpdateNotifications(self)
+        self.update_notifications.changed.connect(self.refresh_update_indicator)
         self.setup_tray_icon()
         self.setup_translation_shortcut()
         self.apply_manual_mode_ui()
@@ -2934,7 +3256,9 @@ class TranslationWindow(QWidget):
         tray_menu.addAction(self.toggle_translation_action)
 
         self.settings_action = QAction(tr("tray.settings"), self)
-        self.settings_action.triggered.connect(self.show_settings)
+        self.settings_action.triggered.connect(
+            lambda _checked=False: self.show_settings()
+        )
         tray_menu.addAction(self.settings_action)
 
         self.ocr_action = QAction(tr("tray.ocr_clipboard"), self)
@@ -2945,12 +3269,14 @@ class TranslationWindow(QWidget):
 
         self.check_updates_action = QAction(tr("tray.check_updates"), self)
         self.check_updates_action.triggered.connect(
-            lambda _checked=False: self.update_notifications.check_manually()
+            lambda _checked=False: self.check_for_updates()
         )
         tray_menu.addAction(self.check_updates_action)
 
         self.about_action = QAction(tr("tray.about", version=APP_VERSION), self)
-        self.about_action.triggered.connect(self.show_about)
+        self.about_action.triggered.connect(
+            lambda _checked=False: self.show_settings(page="about")
+        )
         tray_menu.addAction(self.about_action)
         tray_menu.addSeparator()
 
@@ -2963,11 +3289,30 @@ class TranslationWindow(QWidget):
         self.tray_icon.messageClicked.connect(self.on_tray_message_clicked)
         self.tray_icon.show()
 
-    def show_about(self):
-        QMessageBox.about(
-            self,
-            tr("about.title", app=APP_DISPLAY_NAME),
-            tr("about.text", app=APP_DISPLAY_NAME, version=APP_VERSION),
+    def check_for_updates(self):
+        """Check now and show the outcome on the About page, never in a pop-up."""
+        updates = self.update_notifications
+        updates.check_manually()
+        # While an update downloads, the check shows its progress instead.
+        if not updates.is_installing:
+            self.show_settings(page="about")
+
+    def refresh_update_indicator(self):
+        """Swap the Settings gear for a blue download icon while an update waits."""
+        release = self.update_notifications.available_release
+        self.btn_settings.setIcon(
+            self._update_icon if release is not None else self._settings_icon
+        )
+        self.btn_settings.setAccessibleName(
+            tr("main.settings_update", version=release.version)
+            if release is not None else tr("main.settings")
+        )
+        self.refresh_shortcut_status()
+
+    def on_settings_button_clicked(self):
+        # With an update waiting, the download icon leads straight to it.
+        self.show_settings(
+            page="about" if self.update_notifications.available_release else ""
         )
 
     def refresh_notification_visuals(self):
@@ -3123,10 +3468,18 @@ class TranslationWindow(QWidget):
                 not self.app_settings.enabled
             )
         if hasattr(self, "btn_settings"):
-            self.btn_settings.setToolTip(
+            button_tooltip = (
                 tr("main.settings_tooltip", shortcut=self.app_settings.shortcut.display)
                 + f"\n{tooltip}"
             )
+            updates = getattr(self, "update_notifications", None)
+            release = updates.available_release if updates is not None else None
+            if release is not None:
+                button_tooltip = (
+                    tr("main.update_tooltip", version=release.version)
+                    + f"\n{button_tooltip}"
+                )
+            self.btn_settings.setToolTip(button_tooltip)
         if hasattr(self, "show_window_action"):
             self.show_window_action.setText(
                 tr("tray.show_window_with_shortcut", shortcut=show_binding.display)
@@ -3354,7 +3707,7 @@ class TranslationWindow(QWidget):
         log("[Shortcut] show window triggered")
         self.force_show_window()
 
-    def show_settings(self):
+    def show_settings(self, page: str = ""):
         self.force_show_window()
         provider = self.app_settings.resolved_provider()
         startup_enabled = False
@@ -3375,6 +3728,10 @@ class TranslationWindow(QWidget):
             ),
             startup_enabled=startup_enabled,
             startup_available=startup_available,
+            updates=self.update_notifications,
+            page=page,
+            changelog=load_changelog(self.app_paths.bundle_dir, ui_language()),
+            app_icon=getattr(self, "enabled_app_icon", None),
             parent=self,
         )
         shortcut_managers = [
@@ -3408,6 +3765,9 @@ class TranslationWindow(QWidget):
                     tr("warning.startup.title"),
                     tr("warning.startup.text"),
                 )
+        # Settings is closed by now, so the progress window stays usable.
+        if dialog.requested_update is not None:
+            self.update_notifications.install(dialog.requested_update)
 
     def toggle_global_translation(self):
         candidate = replace(
@@ -3794,8 +4154,10 @@ class TranslationWindow(QWidget):
         self.refresh_api_status()
         header_layout.addWidget(self.lbl_model_name)
 
+        self._settings_icon = create_settings_icon()
+        self._update_icon = create_update_icon()
         self.btn_settings = QPushButton()
-        self.btn_settings.setIcon(create_settings_icon())
+        self.btn_settings.setIcon(self._settings_icon)
         self.btn_settings.setIconSize(QSize(20, 20))
         self.btn_settings.setFixedSize(32, 32)
         self.btn_settings.setAccessibleName(tr("main.settings"))
@@ -3818,7 +4180,9 @@ class TranslationWindow(QWidget):
                 border-color: #C39BD3;
             }
         """)
-        self.btn_settings.clicked.connect(self.show_settings)
+        self.btn_settings.clicked.connect(
+            lambda _checked=False: self.on_settings_button_clicked()
+        )
         header_layout.addWidget(self.btn_settings)
 
         self.lbl_dictionary_lang = QLabel(tr("main.language"))
@@ -5763,7 +6127,7 @@ class TranslationWindow(QWidget):
             self.about_action.setText(tr("tray.about", version=APP_VERSION))
             self.quit_action.setText(tr("tray.quit"))
 
-        self.btn_settings.setAccessibleName(tr("main.settings"))
+        self.refresh_update_indicator()
         self.update_content_mode_button_text()
         self.lbl_dictionary_lang.setText(tr("main.language"))
         self.lbl_dictionary_lang.setToolTip(tr("main.language.tooltip"))
@@ -6257,6 +6621,12 @@ def run_offline_self_test(paths: AppPaths) -> int:
         for icon_path in (paths.icon_path, paths.disabled_icon_path):
             if not icon_path.is_file() or QImage(str(icon_path)).isNull():
                 raise RuntimeError("bundled icon is unavailable")
+        # Every bundled changelog must describe the version being shipped.
+        for language, name in CHANGELOG_FILES.items():
+            if not (paths.bundle_dir / name).is_file() or not load_changelog(
+                paths.bundle_dir, language
+            ).startswith(f"## {APP_VERSION} "):
+                raise RuntimeError("bundled changelog is unavailable or outdated")
 
         request = AppRequest("show", request_id="offline-self-test")
         frame = encode_json_frame(request.to_dict())

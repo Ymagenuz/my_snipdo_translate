@@ -106,6 +106,7 @@ class _SettingsHarness:
         self.apply_success = True
         self.read_error = False
         self.write_error = False
+        self.requested_update = None
 
         def read_registration():
             self.events.append("registry-read")
@@ -142,6 +143,7 @@ class _SettingsHarness:
                 launch_at_startup=lambda: (
                     self.requested if options["startup_available"] else None
                 ),
+                requested_update=self.requested_update,
             )
 
         def apply_settings(settings, api_key):
@@ -163,6 +165,11 @@ class _SettingsHarness:
             show_window_shortcut_manager=manager("show"),
             refresh_shortcut_status=lambda: self.events.append("refresh-shortcuts"),
             apply_settings=apply_settings,
+            update_notifications=SimpleNamespace(
+                install=lambda release: self.events.append(("install", release)),
+            ),
+            app_paths=SimpleNamespace(bundle_dir=Path(app.__file__).resolve().parent),
+            enabled_app_icon="app-icon",
         )
         monkeypatch.setattr(app, "WindowsStartupRegistration", registration_factory)
         monkeypatch.setattr(app, "SettingsDialog", dialog_factory)
@@ -172,8 +179,8 @@ class _SettingsHarness:
         )
         self.app = app
 
-    def open_settings(self):
-        self.app.TranslationWindow.show_settings(self.window)
+    def open_settings(self, **options):
+        self.app.TranslationWindow.show_settings(self.window, **options)
 
 
 @pytest.fixture
@@ -232,6 +239,39 @@ def test_registry_write_error_reports_partial_save_without_reapplying_settings(s
     assert settings.warnings[0][1] == "Couldn't change startup"
     assert "other settings" in settings.warnings[0][2]
     assert "saved" in settings.warnings[0][2]
+
+
+def test_settings_receive_update_state_and_the_requested_page(settings):
+    settings.accepted = False
+    settings.open_settings()
+    settings.open_settings(page="about")
+
+    assert [options["page"] for options in settings.dialog_options] == ["", "about"]
+    for options in settings.dialog_options:
+        assert options["updates"] is settings.window.update_notifications
+        assert options["app_icon"] == "app-icon"
+        assert options["changelog"].startswith(f"## {settings.app.APP_VERSION} — ")
+
+
+def test_update_from_about_page_installs_after_settings_are_saved(settings):
+    settings.requested_update = "release-12.9.0"
+    settings.open_settings(page="about")
+
+    assert settings.events.index("apply-settings") < settings.events.index(
+        ("install", "release-12.9.0")
+    )
+    assert settings.events.index("translate-resume") < settings.events.index(
+        ("install", "release-12.9.0")
+    )
+
+
+def test_update_waits_when_settings_could_not_be_saved(settings):
+    settings.requested_update = "release-12.9.0"
+    settings.apply_success = False
+    settings.open_settings(page="about")
+
+    assert "apply-settings" in settings.events
+    assert ("install", "release-12.9.0") not in settings.events
 
 
 def test_each_settings_open_refreshes_the_registry_state(settings):

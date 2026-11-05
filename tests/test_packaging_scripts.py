@@ -132,6 +132,9 @@ def test_spec_supports_windowed_onedir_and_onefile(project_root: Path):
     assert 'ROOT / "snipdo_script_logo" / "SnipDoTranslate.ico"' in spec
     assert '(str(APP_IMAGE), "snipdo_script_logo")' in spec
     assert '(str(DISABLED_APP_IMAGE), "snipdo_script_logo")' in spec
+    assert 'ROOT / "CHANGELOG.md"' in spec
+    assert 'ROOT / "CHANGELOG.zh-CN.md"' in spec
+    assert '*[(str(changelog), ".") for changelog in CHANGELOGS]' in spec
     assert spec.count("icon=str(WINDOWS_ICON)") == 2
 
 

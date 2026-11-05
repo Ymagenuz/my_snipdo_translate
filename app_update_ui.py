@@ -1,4 +1,9 @@
-"""Update scheduling and user prompts, separate from translation workflows."""
+"""Update scheduling and state, separate from translation workflows.
+
+Checks never interrupt with a prompt. A newer release is kept as
+available_release; the Settings button and the About page in Settings show it
+and offer to install it.
+"""
 from __future__ import annotations
 
 import json
@@ -8,14 +13,13 @@ import tempfile
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QTimer, Qt, QUrl
+from PyQt6.QtCore import QObject, QTimer, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
-from PyQt6.QtWidgets import QApplication, QMessageBox
+from PyQt6.QtWidgets import QMessageBox
 
 from app_i18n import tr
-from app_updates import ReleaseInfo, UpdateChecker
+from app_updates import ReleaseInfo, UpdateChecker, is_newer_version
 from app_update_flow import UpdateFlow
-from app_version import APP_VERSION
 
 
 CHECK_INTERVAL_SECONDS = 6 * 60 * 60
@@ -23,6 +27,7 @@ STATE_FILE_NAME = "update_state.json"
 
 
 def load_update_state(path: Path) -> tuple[float, str]:
+    """Return when updates were last checked and the newer version found then."""
     try:
         with path.open("rb") as handle:
             raw = handle.read(4097)
@@ -30,48 +35,56 @@ def load_update_state(path: Path) -> tuple[float, str]:
             return 0.0, ""
         payload = json.loads(raw)
         last_check = payload.get("last_check", 0.0)
-        skipped_version = payload.get("skipped_version", "")
+        available_version = payload.get("available_version", "")
         if (
             isinstance(last_check, bool)
             or not isinstance(last_check, (int, float))
             or not math.isfinite(last_check)
             or last_check < 0
-            or not isinstance(skipped_version, str)
-            or len(skipped_version) > 64
+            or not isinstance(available_version, str)
+            or len(available_version) > 64
         ):
             return 0.0, ""
-        return float(last_check), skipped_version
+        return float(last_check), available_version
     except (OSError, ValueError, AttributeError, TypeError, OverflowError):
         return 0.0, ""
 
 
 class UpdateNotifications(QObject):
+    # Emitted whenever available_release, is_checking, is_installing or
+    # last_result may have changed.
+    changed = pyqtSignal()
+
     def __init__(self, window, *, checker=None, updater=None, clock=time.time):
         super().__init__(window)
         self.window = window
         self.checker = checker if checker is not None else UpdateChecker(self)
         self.updater = updater if updater is not None else UpdateFlow(window)
-        self.updater.failed.connect(self._show_status)
+        self.updater.failed.connect(self._install_failed)
         self._clock = clock
         self._path = window.app_paths.data_dir / STATE_FILE_NAME
-        self._last_check, self._skipped_version = load_update_state(self._path)
+        self._last_check, self._found_version = load_update_state(self._path)
         self._manual_requested = False
         self._stopped = False
-        self._shown_versions: set[str] = set()
-        self._pending_release: ReleaseInfo | None = None
-        self._pending_manual = False
-        self._dialog: QMessageBox | None = None
-        self._displayed_version: str | None = None
         self._status_dialog: QMessageBox | None = None
+        self.available_release: ReleaseInfo | None = None
+        # "current" or "failed" after a check that found no release, so the
+        # About page can word it in whatever language is active; "" before.
+        self.last_result = ""
 
         self._schedule = QTimer(self)
         self._schedule.setSingleShot(True)
         self._schedule.timeout.connect(self._check_automatically)
-        self._prompt_retry = QTimer(self)
-        self._prompt_retry.setSingleShot(True)
-        self._prompt_retry.timeout.connect(self._show_pending_release)
         self.checker.completed.connect(self._completed)
         self.checker.failed.connect(self._failed)
+
+    @property
+    def is_checking(self) -> bool:
+        return self.checker.is_checking
+
+    @property
+    def is_installing(self) -> bool:
+        return self.updater.is_active
 
     def start(self) -> None:
         """Call only for the primary GUI instance, after startup succeeds."""
@@ -81,14 +94,10 @@ class UpdateNotifications(QObject):
     def stop(self) -> None:
         self._stopped = True
         self._schedule.stop()
-        self._prompt_retry.stop()
-        self._pending_release = None
-        self._pending_manual = False
         self.checker.stop()
         self.updater.stop()
-        for dialog in (self._dialog, self._status_dialog):
-            if dialog is not None:
-                dialog.close()
+        if self._status_dialog is not None:
+            self._status_dialog.close()
 
     def _save_state(self) -> None:
         temporary_path = None
@@ -101,7 +110,7 @@ class UpdateNotifications(QObject):
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                 json.dump(
                     {"last_check": self._last_check,
-                     "skipped_version": self._skipped_version},
+                     "available_version": self._found_version},
                     handle,
                 )
             os.replace(temporary_path, self._path)
@@ -119,7 +128,13 @@ class UpdateNotifications(QObject):
         if self._stopped:
             return
         elapsed = self._clock() - self._last_check
-        if self._last_check and 0 <= elapsed < CHECK_INTERVAL_SECONDS:
+        # A release found before a restart is looked up again straight away,
+        # so the Settings button shows it without waiting out the interval.
+        if (
+            self._last_check
+            and 0 <= elapsed < CHECK_INTERVAL_SECONDS
+            and not is_newer_version(self._found_version)
+        ):
             self._schedule.start(max(1000, int((CHECK_INTERVAL_SECONDS - elapsed) * 1000)))
             return
         self._begin_check(manual=False)
@@ -141,37 +156,42 @@ class UpdateNotifications(QObject):
         self._save_state()
         self._schedule.start(CHECK_INTERVAL_SECONDS * 1000)
         self.checker.check()
+        self.changed.emit()
 
     def _completed(self, release: ReleaseInfo | None) -> None:
         if self._stopped:
             return
-        manual = self._manual_requested
         self._manual_requested = False
-        if release is None:
-            if manual:
-                self._show_status(tr("update.status.current", version=APP_VERSION))
-            return
-        if not manual and (
-            release.version == self._skipped_version
-            or release.version in self._shown_versions
-        ):
-            return
-        if self._dialog is not None and self._displayed_version == release.version:
-            if manual:
-                self._dialog.raise_()
-                self._dialog.activateWindow()
-            return
-        self._pending_release = release
-        self._pending_manual = manual
-        self._show_pending_release(manual=manual)
+        self.available_release = release
+        self.last_result = "" if release is not None else "current"
+        found_version = release.version if release is not None else ""
+        if found_version != self._found_version:
+            self._found_version = found_version
+            self._save_state()
+        self.changed.emit()
 
-    def _failed(self, message: str) -> None:
+    def _failed(self, _message: str) -> None:
         if self._stopped:
             return
         manual = self._manual_requested
         self._manual_requested = False
+        # Automatic failures stay quiet; a release found earlier stays usable.
         if manual:
-            self._show_status(message)
+            self.last_result = "failed"
+        self.changed.emit()
+
+    def install(self, release: ReleaseInfo) -> None:
+        """Download and install release; only ever called after the user asks."""
+        if not self._stopped:
+            self.updater.start(release)
+            self.changed.emit()
+
+    def open_release_page(self, release: ReleaseInfo) -> bool:
+        return bool(QDesktopServices.openUrl(QUrl(release.url)))
+
+    def _install_failed(self, message: str) -> None:
+        self._show_status(message)
+        self.changed.emit()
 
     def _show_status(self, message: str) -> None:
         if self._status_dialog is not None:
@@ -190,64 +210,3 @@ class UpdateNotifications(QObject):
         if self._status_dialog is dialog:
             self._status_dialog = None
         dialog.deleteLater()
-
-    def _show_pending_release(self, *, manual: bool = False) -> None:
-        release = self._pending_release
-        manual = manual or self._pending_manual
-        if self._stopped or release is None:
-            return
-        if self.updater.is_active:
-            self._pending_release = None
-            self._pending_manual = False
-            return
-        if self._dialog is not None or QApplication.activeModalWidget() is not None:
-            self._prompt_retry.start(30000)
-            return
-
-        self._pending_release = None
-        self._pending_manual = False
-        self._shown_versions.add(release.version)
-        dialog = QMessageBox(self.window)
-        dialog.setWindowTitle(tr("update.available.title"))
-        dialog.setTextFormat(Qt.TextFormat.PlainText)
-        dialog.setText(
-            tr("update.available.text", version=release.version, current=APP_VERSION)
-        )
-        dialog.setInformativeText(tr("update.available.details"))
-        update_button = dialog.addButton(
-            tr("update.button.install"), QMessageBox.ButtonRole.AcceptRole
-        )
-        github_button = dialog.addButton(
-            tr("update.button.github"), QMessageBox.ButtonRole.ActionRole
-        )
-        later_button = dialog.addButton(
-            tr("update.button.later"), QMessageBox.ButtonRole.RejectRole
-        )
-        skip_button = dialog.addButton(
-            tr("update.button.skip"), QMessageBox.ButtonRole.ActionRole
-        )
-        dialog.setDefaultButton(later_button)
-        dialog.setEscapeButton(later_button)
-        dialog.setWindowModality(Qt.WindowModality.NonModal)
-        dialog.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, not manual)
-        self._dialog = dialog
-        self._displayed_version = release.version
-
-        def finish(_result):
-            clicked = dialog.clickedButton()
-            if self._dialog is dialog:
-                self._dialog = None
-                self._displayed_version = None
-            dialog.deleteLater()
-            if not self._stopped:
-                if clicked is update_button:
-                    self.updater.start(release)
-                elif clicked is github_button:
-                    if not QDesktopServices.openUrl(QUrl(release.url)):
-                        self._show_status(tr("update.browser_failed", url=release.url))
-                elif clicked is skip_button:
-                    self._skipped_version = release.version
-                    self._save_state()
-
-        dialog.finished.connect(finish)
-        dialog.show()

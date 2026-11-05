@@ -53,6 +53,17 @@ _ENGLISH = {
         "Menus, buttons and messages switch when you click Save. This doesn't "
         "change the translation direction or target language."
     ),
+    "settings.about": "About",
+    "settings.about.hint": (
+        "{app} checks for new versions in the background and never downloads "
+        "one until you click Update and restart, which also saves your settings."
+    ),
+    "settings.about.version": "Version {version}",
+    "settings.about.tagline": "Translation, dictionary lookups and image OCR for Windows.",
+    "settings.about.changelog": "Changelog",
+    "settings.about.changelog.installed": "Installed",
+    "settings.about.changelog.available": "Available",
+    "settings.about.changelog.missing": "The changelog isn't included in this copy of the app.",
     "settings.shortcuts": "Shortcuts",
     "settings.shortcuts.hint": (
         "While recording, press Esc to remove the show-window shortcut. The "
@@ -171,11 +182,6 @@ _ENGLISH = {
     "tray.disabled": "{app} · Global selection translation is off",
     "tray.shortcut_inactive": "{app} · Shortcut inactive",
     "tray.show_window_status": " · Show window {status}",
-    "about.title": "About {app}",
-    "about.text": (
-        "{app}\nVersion {version}\n\nChecks for new versions automatically. "
-        "You can also choose “Check for updates” from the tray menu."
-    ),
     "notify.translation_finished": "Translation finished",
     "notify.shortcut_failed": (
         "Couldn't register the shortcut. Choose another one in Settings."
@@ -230,7 +236,9 @@ _ENGLISH = {
     ),
     # Main window
     "main.settings": "Settings",
+    "main.settings_update": "Settings · Version {version} is available",
     "main.settings_tooltip": "Settings · Translation shortcut: {shortcut}",
+    "main.update_tooltip": "Version {version} is available. Click to update.",
     "main.model_tooltip": "Provider: {provider}\nBase URL: {url}\nModel: {model}",
     "main.mode.auto": "Mode: Auto",
     "main.mode.dictionary": "Mode: Dictionary",
@@ -342,21 +350,17 @@ _ENGLISH = {
     "provider.openai_compatible.short": "OpenAI-compatible",
     # Updates
     "update.status.title": "Check for updates",
-    "update.status.current": "You're on version {version}; no update is available.",
     "update.check_failed": "Can't check for updates right now. Check your network and try again.",
-    "update.available.title": "A new version of SnipDo Translate is available",
-    "update.available.text": "Version {version} is available\nCurrent version: {current}",
-    "update.available.details": (
-        "Download and verify the update in the app; it then installs and "
-        "restarts automatically.\nYou can keep working or cancel during the "
-        "download; the restart waits for translation, OCR and Settings to "
-        "finish. Settings, history and API keys are kept.\nYou can also open "
-        "the GitHub page to read the release notes and download it yourself."
+    "update.about.checking": "Checking for updates…",
+    "update.about.available": "Version {version} is available. You have {current}.",
+    "update.about.installing": (
+        "Downloading the update. The app restarts by itself once it's verified."
     ),
+    "update.about.current": "You're up to date.",
+    "update.about.automatic": "Checked automatically every 6 hours.",
     "update.button.install": "Update and restart",
-    "update.button.github": "Open GitHub page",
-    "update.button.later": "Later",
-    "update.button.skip": "Skip this version",
+    "update.button.release_notes": "Release notes",
+    "update.button.check": "Check for updates",
     "update.browser_failed": "Couldn't open the browser. Visit:\n{url}",
     "update.progress.title": "Updating to {version}",
     "update.progress.cancel": "Cancel",
@@ -428,6 +432,17 @@ _SIMPLIFIED_CHINESE = {
     ),
     "settings.language.row": "界面语言",
     "settings.language.note": "点击“保存”后切换菜单、按钮和提示的语言；不影响翻译方向和目标语言。",
+    "settings.about": "关于",
+    "settings.about.hint": (
+        "{app} 会在后台检查新版本；点击“更新并重启”之前不会下载任何内容，"
+        "点击后也会同时保存当前设置。"
+    ),
+    "settings.about.version": "版本 {version}",
+    "settings.about.tagline": "适用于 Windows 的翻译、查词和图片 OCR 工具。",
+    "settings.about.changelog": "更新日志",
+    "settings.about.changelog.installed": "当前版本",
+    "settings.about.changelog.available": "可安装",
+    "settings.about.changelog.missing": "此程序副本未包含更新日志。",
     "settings.shortcuts": "快捷键",
     "settings.shortcuts.hint": (
         "录入时按 Esc 可移除显示窗口快捷键；翻译快捷键不可移除，Esc 仅取消修改。"
@@ -506,8 +521,6 @@ _SIMPLIFIED_CHINESE = {
     "tray.disabled": "{app} · 全局划词翻译已禁用",
     "tray.shortcut_inactive": "{app} · 快捷键未激活",
     "tray.show_window_status": " · 显示窗口 {status}",
-    "about.title": "关于 {app}",
-    "about.text": "{app}\n版本 {version}\n\n自动检查新版本，也可从托盘菜单选择“检查更新”。",
     "notify.translation_finished": "翻译完成",
     "notify.shortcut_failed": "快捷键注册失败；请在设置中选择其他快捷键。",
     "notify.show_window_shortcut_failed": "显示窗口快捷键注册失败；请在设置中选择其他快捷键。",
@@ -536,7 +549,9 @@ _SIMPLIFIED_CHINESE = {
     "prompt.api_key.title": "输入 {provider} API Key",
     "prompt.api_key.text": "未检测到 {provider} API Key，请手动输入（将保存到 Windows 凭据管理器）：",
     "main.settings": "设置",
+    "main.settings_update": "设置 · 新版本 {version} 可用",
     "main.settings_tooltip": "设置 · 翻译快捷键：{shortcut}",
+    "main.update_tooltip": "新版本 {version} 可用，点击查看并更新。",
     "main.model_tooltip": "当前接口：{provider}\n服务地址：{url}\n模型：{model}",
     "main.mode.auto": "模式: Auto",
     "main.mode.dictionary": "模式: 词典",
@@ -628,20 +643,15 @@ _SIMPLIFIED_CHINESE = {
     "provider.openai_compatible.name": "OpenAI 兼容接口（自定义）",
     "provider.openai_compatible.short": "OpenAI 兼容",
     "update.status.title": "检查更新",
-    "update.status.current": "当前版本为 {version}，未发现可用的更新。",
     "update.check_failed": "暂时无法检查更新，请检查网络后重试。",
-    "update.available.title": "SnipDo Translate 有新版本",
-    "update.available.text": "发现新版本 {version}\n当前版本：{current}",
-    "update.available.details": (
-        "在应用内下载并校验更新，然后自动安装并重启。\n"
-        "下载期间可继续使用或取消；重启会等待翻译、OCR 和设置完成。"
-        "设置、历史记录和 API Key 会保留。\n"
-        "也可打开 GitHub 页面查看发行说明并手动下载。"
-    ),
+    "update.about.checking": "正在检查更新…",
+    "update.about.available": "新版本 {version} 可用，当前版本为 {current}。",
+    "update.about.installing": "正在下载更新，校验通过后将自动重启。",
+    "update.about.current": "已是最新版本。",
+    "update.about.automatic": "每 6 小时自动检查一次。",
     "update.button.install": "更新并重启",
-    "update.button.github": "打开 GitHub 页面",
-    "update.button.later": "稍后",
-    "update.button.skip": "跳过此版本",
+    "update.button.release_notes": "发行说明",
+    "update.button.check": "检查更新",
     "update.browser_failed": "无法打开浏览器，请访问：\n{url}",
     "update.progress.title": "更新至 {version}",
     "update.progress.cancel": "取消",

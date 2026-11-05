@@ -51,6 +51,8 @@ ENTRY_POINT = ROOT / "snipdo_translate.pyw"
 APP_IMAGE = ROOT / "snipdo_script_logo" / "snipdo-translate-enabled.png"
 DISABLED_APP_IMAGE = ROOT / "snipdo_script_logo" / "snipdo-translate-disabled.png"
 WINDOWS_ICON = ROOT / "snipdo_script_logo" / "SnipDoTranslate.ico"
+# Shown on the About page in Settings; the app looks for them in its bundle root.
+CHANGELOGS = [ROOT / "CHANGELOG.md", ROOT / "CHANGELOG.zh-CN.md"]
 if not ENTRY_POINT.is_file():
     raise FileNotFoundError(f"Entry point not found: {ENTRY_POINT}")
 if not APP_IMAGE.is_file():
@@ -59,6 +61,9 @@ if not DISABLED_APP_IMAGE.is_file():
     raise FileNotFoundError(f"Disabled application image not found: {DISABLED_APP_IMAGE}")
 if not WINDOWS_ICON.is_file():
     raise FileNotFoundError(f"Windows icon not found: {WINDOWS_ICON}")
+for changelog in CHANGELOGS:
+    if not changelog.is_file():
+        raise FileNotFoundError(f"Changelog not found: {changelog}")
 
 # Resolve Windows-provided libraries before unrelated tools on PATH. In
 # particular, Qt uses Windows' unversioned ICU API; a third-party icuuc.dll
@@ -73,6 +78,7 @@ a = Analysis(
     datas=[
         (str(APP_IMAGE), "snipdo_script_logo"),
         (str(DISABLED_APP_IMAGE), "snipdo_script_logo"),
+        *[(str(changelog), ".") for changelog in CHANGELOGS],
     ],
     hiddenimports=collect_submodules("openai"),
     hookspath=[],

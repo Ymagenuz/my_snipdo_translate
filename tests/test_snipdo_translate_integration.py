@@ -203,10 +203,12 @@ def test_offline_self_test_never_touches_credentials_client_or_network(
 ):
     # Use the checked-in bitmap so this also exercises the entry point's
     # offline image decoder check without generating a test-only image.
-    icon = Path(app.__file__).resolve().parent / "snipdo_script_logo" / "snipdo-translate-enabled.png"
+    project = Path(app.__file__).resolve().parent
+    icon = project / "snipdo_script_logo" / "snipdo-translate-enabled.png"
     assert icon.is_file()
     paths = AppPaths(
-        bundle_dir=tmp_path,
+        # The checked-in changelogs are bundled from the project root.
+        bundle_dir=project,
         executable_dir=tmp_path,
         data_dir=tmp_path / "data",
         history_path=tmp_path / "data" / "history.json",
@@ -232,6 +234,31 @@ def test_offline_self_test_never_touches_credentials_client_or_network(
 
     assert app.run_offline_self_test(paths) == 0
     assert event_log.flushed is True
+
+
+@pytest.mark.parametrize("problem", ["missing", "outdated"])
+def test_offline_self_test_requires_current_changelogs(
+    app, monkeypatch, tmp_path: Path, problem
+):
+    project = Path(app.__file__).resolve().parent
+    for name in ("CHANGELOG.md", "CHANGELOG.zh-CN.md"):
+        (tmp_path / name).write_bytes((project / name).read_bytes())
+    if problem == "missing":
+        (tmp_path / "CHANGELOG.zh-CN.md").unlink()
+    else:
+        (tmp_path / "CHANGELOG.md").write_text("## 1.0.0 — 2020-01-01\n\n- Old.\n", encoding="utf-8")
+    paths = AppPaths(
+        bundle_dir=tmp_path,
+        executable_dir=tmp_path,
+        data_dir=tmp_path / "data",
+        history_path=tmp_path / "data" / "history.json",
+        log_dir=tmp_path / "data" / "logs",
+        icon_path=project / "snipdo_script_logo" / "snipdo-translate-enabled.png",
+        legacy_dirs=(tmp_path,),
+    )
+    monkeypatch.setattr(app, "EVENT_LOG", None)
+
+    assert app.run_offline_self_test(paths) == 1
 
 
 def test_handle_ocr_rejects_busy_before_reading_source(app, monkeypatch):

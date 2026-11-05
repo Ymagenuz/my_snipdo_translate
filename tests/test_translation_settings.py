@@ -302,7 +302,7 @@ def test_settings_dialog_groups_options_into_pages(app, qapp):
             dialog.page_list.item(index).text()
             for index in range(dialog.page_list.count())
         ]
-        assert names == ["General", "Shortcuts", "Translation", "API"]
+        assert names == ["General", "Shortcuts", "Translation", "API", "About"]
         assert dialog.pages.count() == len(names)
 
         def page_of(widget):

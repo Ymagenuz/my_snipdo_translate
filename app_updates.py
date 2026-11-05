@@ -21,8 +21,12 @@ UPDATE_CHECKSUM = f"{UPDATE_EXECUTABLE}.sha256"
 MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024
 MAX_CHECKSUM_BYTES = 4096
 MAX_RESPONSE_BYTES = 256 * 1024
+MAX_NOTES_CHARS = 16_000
 CHECK_TIMEOUT_MS = 10_000
 _VERSION_PATTERN = re.compile(r"v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", re.ASCII)
+# Release notes end with checksums and build details that only matter on GitHub.
+_DOWNLOAD_SECTION = re.compile(r"^#{1,6}[ \t]+Download and verification\b.*", re.MULTILINE | re.DOTALL)
+_PUBLISHED_AT = re.compile(r"([0-9]{4}-[0-9]{2}-[0-9]{2})T[0-9:.]+Z", re.ASCII)
 
 
 @dataclass(frozen=True)
@@ -33,6 +37,18 @@ class ReleaseInfo:
     size: int = 0
     checksum_url: str = ""
     checksum_size: int = 0
+    notes: str = ""
+    published: str = ""  # YYYY-MM-DD, or "" when GitHub didn't say.
+
+
+def release_notes(body: object) -> str:
+    """Return a release's Markdown notes for the About page, or "" if unusable."""
+    if not isinstance(body, str):
+        return ""
+    notes = _DOWNLOAD_SECTION.sub("", body.replace("\r\n", "\n")).strip()
+    if len(notes) > MAX_NOTES_CHARS:
+        notes = notes[:MAX_NOTES_CHARS].rstrip() + "\n\n…"
+    return notes
 
 
 def _version_parts(version: object) -> tuple[int, int, int]:
@@ -42,6 +58,14 @@ def _version_parts(version: object) -> tuple[int, int, int]:
     if match is None:
         raise ValueError("Invalid release version")
     return tuple(int(part) for part in match.groups())
+
+
+def is_newer_version(version: object, current_version: str = APP_VERSION) -> bool:
+    """Return whether version is a valid release number above current_version."""
+    try:
+        return _version_parts(version) > _version_parts(current_version)
+    except ValueError:
+        return False
 
 
 def parse_release(payload: object, current_version: str = APP_VERSION) -> ReleaseInfo | None:
@@ -88,7 +112,14 @@ def parse_release(payload: object, current_version: str = APP_VERSION) -> Releas
         f"{REPOSITORY_URL}/releases/tag/{tag}",
         *validated[UPDATE_EXECUTABLE],
         *validated[UPDATE_CHECKSUM],
+        release_notes(payload.get("body")),
+        _published_date(payload.get("published_at")),
     )
+
+
+def _published_date(value: object) -> str:
+    match = _PUBLISHED_AT.fullmatch(value) if isinstance(value, str) else None
+    return match.group(1) if match is not None else ""
 
 
 class UpdateChecker(QObject):
