@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PyQt6.QtCore import QObject, QPoint, pyqtSignal
+from PyQt6.QtCore import QObject, QPoint, QRect, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QPixmap, QTextCursor
 from PyQt6.QtWidgets import QDialog, QFrame, QLabel, QWidget
 
@@ -174,8 +174,15 @@ def test_card_text_sits_directly_on_the_white_card(app, qapp):
         ]
         assert len(labels) == 4  # Name, tagline, GitHub link and update status.
         for label in labels:
-            corner = label.mapTo(card, QPoint(0, 0))
-            assert image.pixelColor(corner).name() == "#ffffff", label.text()
+            # Count only the inherited grey: glyphs may cover any given pixel,
+            # and how much they cover depends on the fonts available.
+            area = QRect(label.mapTo(card, QPoint(0, 0)), label.size())
+            grey = sum(
+                image.pixelColor(x, y).name() == "#f5f7fa"
+                for x in range(area.left(), area.right() + 1)
+                for y in range(area.top(), area.bottom() + 1)
+            )
+            assert grey == 0, label.text()
     finally:
         dialog.deleteLater()
         parent.deleteLater()
