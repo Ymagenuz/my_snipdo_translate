@@ -1,22 +1,28 @@
 import gc
+from types import SimpleNamespace
 
 from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
 from PyQt6.QtGui import QColor, QEnterEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
     QApplication,
+    QListView,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionSlider,
+    QTextBrowser,
     QTextEdit,
+    QWidget,
 )
 import pytest
 
+import ui_controls
 from ui_controls import (
     DROPDOWN_STYLE,
     DropdownComboBox,
     ModernScrollBar,
     POPUP_LIST_STYLE,
+    style_popup_list,
     use_modern_scroll_bar,
 )
 
@@ -109,6 +115,47 @@ def test_scroll_bar_widens_at_once_without_animations(scroll_bar):
     assert scroll_bar.expansion() == 1
 
 
+@pytest.mark.parametrize(
+    ("view_type", "style_sheet", "background"),
+    [
+        # The source and back-translation boxes: a bare rule with a side bar,
+        # which once drew a stray line beside the scroll bar.
+        (QTextEdit, "background-color: #FAFAFA; border-left: 2px solid #D7BDE2;", "#fafafa"),
+        # The changelog: a scoped rule, which once left the scroll bar on a
+        # strip of the window's grey.
+        (
+            QTextBrowser,
+            "QTextBrowser { background-color: #FFFFFF; border: 1px solid #E4E7ED;"
+            " border-radius: 8px; }",
+            "#ffffff",
+        ),
+    ],
+)
+def test_scroll_bar_floats_on_the_text_box_background(
+    qapp, view_type, style_sheet, background
+):
+    window = QWidget()
+    # The main window's bare rule reaches every widget inside it.
+    window.setStyleSheet("background-color: #F5F7FA;")
+    view = view_type(window)
+    view.setStyleSheet(style_sheet)
+    bar = use_modern_scroll_bar(view)
+    view.setPlainText("\n".join(f"Line {number}" for number in range(300)))
+    view.setGeometry(10, 10, 300, 200)
+    window.resize(320, 220)
+    window.show()
+    qapp.processEvents()
+
+    # A row below the handle, across the column the scroll bar sits in.
+    image = view.grab().toImage()
+    left = bar.mapTo(view, QPoint(0, 0)).x()
+    row = bar.mapTo(view, QPoint(0, bar.height() - 12)).y()
+    colours = {image.pixelColor(x, row).name() for x in range(left, left + bar.width())}
+    assert colours == {background}
+    window.deleteLater()
+    qapp.processEvents()
+
+
 def test_scroll_bar_has_no_arrow_buttons_and_its_handle_can_be_grabbed(scroll_bar):
     option = QStyleOptionSlider()
     scroll_bar.initStyleOption(option)
@@ -165,6 +212,73 @@ def test_dropdown_lists_keep_their_slim_scroll_bar_through_garbage_collection(co
     gc.collect()
 
     assert isinstance(combo.view().verticalScrollBar(), ModernScrollBar)
+
+
+def _see_through_list_window(window):
+    """Mark a list window the way Qt 6.10's Windows 11 style does."""
+    window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    window.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+    window.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
+
+
+def _has_windows_border_and_shadow(window):
+    flags = window.windowFlags()
+    return not (
+        window.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        or flags & Qt.WindowType.FramelessWindowHint
+        or flags & Qt.WindowType.NoDropShadowWindowHint
+    )
+
+
+def test_dropdown_lists_keep_the_windows_border_and_shadow(combo, qapp):
+    # Qt 6.10 made the list window see-through so the style could paint a
+    # border, which the list's white rows covered: no border, no shadow.
+    window = combo.view().window()
+    _see_through_list_window(window)
+
+    combo.showPopup()
+    qapp.processEvents()
+    assert _has_windows_border_and_shadow(window)
+    combo.hidePopup()
+
+    # The style marks it again whenever it re-polishes the combo box.
+    _see_through_list_window(window)
+    combo.showPopup()
+    qapp.processEvents()
+    assert _has_windows_border_and_shadow(window)
+
+
+@pytest.fixture
+def corner_requests(monkeypatch):
+    requests = []
+
+    def set_window_attribute(hwnd, attribute, value, size):
+        requests.append((hwnd, attribute, value._obj.value, size))
+        return 0
+
+    monkeypatch.setattr(ui_controls, "_dwm_set_window_attribute", lambda: set_window_attribute)
+    monkeypatch.setattr(
+        ui_controls, "QGuiApplication", SimpleNamespace(platformName=lambda: "windows")
+    )
+    return requests
+
+
+def test_dropdown_lists_ask_windows_for_rounded_corners(combo, corner_requests):
+    combo.showPopup()
+
+    window = combo.view().window()
+    assert corner_requests == [(int(window.winId()), 33, 2, 4)]
+
+
+def test_completer_lists_ask_windows_for_rounded_corners(qapp, corner_requests):
+    view = QListView()
+    view.setWindowFlags(Qt.WindowType.Popup)
+
+    style_popup_list(view)
+
+    assert corner_requests == [(int(view.winId()), 33, 2, 4)]
+    assert _has_windows_border_and_shadow(view)
+    view.deleteLater()
 
 
 def test_dropdown_lists_get_rounded_rows_and_a_slim_scroll_bar(combo):

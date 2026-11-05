@@ -7,8 +7,12 @@ with ui_motion's Tween, so they follow the screen's refresh like the glides do.
 """
 from __future__ import annotations
 
+import ctypes
+from ctypes import wintypes
+from functools import lru_cache
+
 from PyQt6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer
-from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PyQt6.QtGui import QColor, QGuiApplication, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QAbstractScrollArea,
@@ -23,6 +27,9 @@ from PyQt6.QtWidgets import (
 from ui_motion import Tween
 
 ACCENT = QColor("#8E44AD")
+
+_DWMWA_WINDOW_CORNER_PREFERENCE = 33
+_DWMWCP_ROUND = 2
 
 # Only sizes the parts Qt uses to hit-test clicks and drags; paintEvent draws.
 SCROLL_BAR_STYLE = """
@@ -45,6 +52,18 @@ SCROLL_BAR_STYLE = """
     }
     QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
         background: none;
+    }
+"""
+
+# The widget Qt keeps a scroll area's bar in. Bare rules such as a text box's
+# "border-left: 2px solid ..." reach it too and paint it as a strip of its
+# own; clear them so the bar floats over the text box's background instead.
+SCROLL_BAR_GUTTER_STYLE = """
+    #qt_scrollarea_vcontainer {
+        background: transparent;
+        border: none;
+        padding: 0;
+        margin: 0;
     }
 """
 
@@ -199,6 +218,7 @@ def use_modern_scroll_bar(area: QAbstractScrollArea) -> ModernScrollBar:
     """Give a scroll area a ModernScrollBar that lives as long as the area."""
     bar = ModernScrollBar()
     area.setVerticalScrollBar(bar)
+    bar.parentWidget().setStyleSheet(SCROLL_BAR_GUTTER_STYLE)
     # setVerticalScrollBar() only ties the bar's Python half to the area's
     # Python wrapper. A temporary one, such as the list combo.view() returns,
     # takes it along when collected, and Qt's widget then paints like a plain
@@ -209,6 +229,46 @@ def use_modern_scroll_bar(area: QAbstractScrollArea) -> ModernScrollBar:
     return bar
 
 
+@lru_cache(maxsize=1)
+def _dwm_set_window_attribute():
+    """DwmSetWindowAttribute, or None off Windows."""
+    try:
+        call = ctypes.WinDLL("dwmapi").DwmSetWindowAttribute
+    except (AttributeError, OSError):
+        return None
+    call.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+    call.restype = ctypes.c_long  # HRESULT
+    return call
+
+
+def use_native_popup_frame(window: QWidget) -> None:
+    """Let Windows draw a list window's rounded border and shadow.
+
+    Qt 6.11 does this by itself. Qt 6.10's Windows 11 style instead makes a
+    combo box's list window see-through and frameless to paint its own
+    border, which the list's white rows cover, and leaves completer lists
+    square. Call it before the window shows.
+    """
+    window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+    # Before the native window exists, a flag change re-polishes a window
+    # under a style sheet, and the style puts the flags straight back.
+    window.winId()
+    for hint in (Qt.WindowType.FramelessWindowHint, Qt.WindowType.NoDropShadowWindowHint):
+        if window.windowFlags() & hint:
+            window.setWindowFlag(hint, False)
+    set_attribute = _dwm_set_window_attribute()
+    if set_attribute is None or QGuiApplication.platformName() != "windows":
+        return
+    preference = ctypes.c_int(_DWMWCP_ROUND)
+    # Windows 10 refuses the attribute and keeps square corners, as it should.
+    set_attribute(
+        int(window.winId()),
+        _DWMWA_WINDOW_CORNER_PREFERENCE,
+        ctypes.byref(preference),
+        ctypes.sizeof(preference),
+    )
+
+
 def style_popup_list(view: QAbstractItemView) -> None:
     """Give a list that drops down rounded rows and a slim scroll bar."""
     # Style-sheet rows need the styled delegate; combo boxes and completers
@@ -216,6 +276,11 @@ def style_popup_list(view: QAbstractItemView) -> None:
     view.setItemDelegate(QStyledItemDelegate(view))
     view.setStyleSheet(POPUP_LIST_STYLE)
     use_modern_scroll_bar(view)
+    if view.isWindow():
+        # A completer's list is a window of its own. A combo box's list sits
+        # in a window the style may change later, so DropdownComboBox sets
+        # it up each time it opens.
+        use_native_popup_frame(view)
 
 
 class DropdownComboBox(QComboBox):
@@ -240,6 +305,12 @@ class DropdownComboBox(QComboBox):
 
     def is_open(self) -> bool:
         return self._turn.target == 1.0
+
+    def showPopup(self):
+        # Qt 6.10's style marks the list window see-through whenever it
+        # polishes the combo box, so undo that right before each opening.
+        use_native_popup_frame(self.view().window())
+        super().showPopup()
 
     def eventFilter(self, watched, event):
         if watched is self.view().window():
