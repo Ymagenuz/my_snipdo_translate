@@ -123,6 +123,12 @@ from latex_renderer import (
     show_math_fragment_sources,
     warm_up_math_rendering,
 )
+from ui_controls import (
+    DROPDOWN_STYLE,
+    DropdownComboBox,
+    style_popup_list,
+    use_modern_scroll_bar,
+)
 from ui_motion import SmoothScroller, fade_in, fade_opacity
 
 from PyQt6.QtWidgets import (
@@ -1617,7 +1623,7 @@ class OcrThread(QThread):
 
 
 # ================= 3. 统一文本框：支持 Ctrl+Enter =================
-class NoWheelComboBox(QComboBox):
+class NoWheelComboBox(DropdownComboBox):
     def wheelEvent(self, event):
         event.ignore()
 
@@ -1635,25 +1641,9 @@ class InteractiveTextEdit(QTextEdit):
                 selection-background-color: #B3D8FF;
                 selection-color: #303133;
             }
-            QScrollBar:vertical {
-                border: none;
-                background: #F0F0F0;
-                width: 6px;
-                border-radius: 3px;
-            }
-            QScrollBar::handle:vertical {
-                background: #C0C4CC;
-                min-height: 20px;
-                border-radius: 3px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background: #909399;
-            }
-            QScrollBar::add-line:vertical,
-            QScrollBar::sub-line:vertical {
-                height: 0px;
-            }
         """)
+        # Its own style sheet, so the views' replacement style sheets keep it.
+        use_modern_scroll_bar(self)
         self.smooth_scroller = SmoothScroller(self)
 
     def keyPressEvent(self, event):
@@ -2175,6 +2165,7 @@ class SettingsDialog(QDialog):
         self.model_combo.completer().setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.model_combo.completer().setFilterMode(Qt.MatchFlag.MatchContains)
         self.model_combo.completer().setMaxVisibleItems(12)
+        style_popup_list(self.model_combo.completer().popup())
         self.fetch_models_button = QPushButton(tr("settings.api.model.fetch"))
         self.fetch_models_button.setAutoDefault(False)
         self.fetch_models_button.clicked.connect(self.fetch_models)
@@ -2397,26 +2388,8 @@ class SettingsDialog(QDialog):
                 font-family: 'Segoe UI', 'Microsoft YaHei UI';
                 font-size: 13px;
             }
-            QScrollBar:vertical {
-                background: transparent;
-                width: 10px;
-                margin: 6px 2px 6px 0;
-            }
-            QScrollBar::handle:vertical {
-                background: #DCDFE6;
-                border-radius: 4px;
-                min-height: 28px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background: #C0C4CC;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0;
-            }
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-                background: transparent;
-            }
         """)
+        use_modern_scroll_bar(self.changelog_view)
         SmoothScroller(self.changelog_view)
         about_layout.addWidget(self.changelog_view, 1)
         self._changelog = changelog
@@ -4248,7 +4221,7 @@ class TranslationWindow(QWidget):
         self.lbl_dictionary_lang.setStyleSheet("color: #909399; font-size: 11px; font-weight: 600;")
         self.lbl_dictionary_lang.setToolTip(tr("main.language.tooltip"))
 
-        combo_style = """
+        combo_style = DROPDOWN_STYLE + """
             QComboBox {
                 background-color: #FAFAFA;
                 color: #606266;

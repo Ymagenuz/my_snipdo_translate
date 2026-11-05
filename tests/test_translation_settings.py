@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import importlib.machinery
 import importlib.util
 import json
@@ -15,7 +16,7 @@ from openai import OpenAI as SdkOpenAI
 from PyQt6.QtCore import QPoint, QPointF, QSize, Qt
 from PyQt6.QtGui import QResizeEvent, QWheelEvent
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QStyledItemDelegate
 
 from app_paths import AppPaths
 from api_providers import (
@@ -33,6 +34,7 @@ from app_settings import (
     load_settings,
     mouse_shortcut,
 )
+from ui_controls import ModernScrollBar
 
 
 @pytest.fixture(scope="module")
@@ -1227,6 +1229,38 @@ def test_edit_selection_preserves_source_syntax_and_completed_result(
     assert window.btn_translate.isEnabled()
     assert window.btn_translate.text() == "Translate (Ctrl+Enter)"
     assert not window.btn_copy.isEnabled()
+
+
+def test_main_views_and_dropdowns_use_the_slim_controls(app, edit_window):
+    window, _workers = edit_window
+
+    for view in (window.txt_origin, window.txt_result, window.txt_back_translation):
+        # Each view replaces its style sheet; the scroll bar keeps its own.
+        assert isinstance(view.verticalScrollBar(), ModernScrollBar)
+        assert view.verticalScrollBar().styleSheet()
+    for combo in (window.cbo_dictionary_source, window.cbo_dictionary_target):
+        assert isinstance(combo, app.DropdownComboBox)
+        assert app.DROPDOWN_STYLE in combo.styleSheet()
+
+
+def test_settings_dropdowns_and_lists_use_the_slim_controls(app, qapp):
+    dialog = app.SettingsDialog(
+        DEFAULT_SETTINGS,
+        api_key_configured=False,
+        environment_key_active=False,
+    )
+    try:
+        gc.collect()  # The custom parts must outlive their temporary wrappers.
+        for combo in (dialog.language_combo, dialog.api_provider_combo, dialog.model_combo):
+            assert isinstance(combo, app.DropdownComboBox)
+            assert isinstance(combo.view().verticalScrollBar(), ModernScrollBar)
+        suggestions = dialog.model_combo.completer().popup()
+        assert isinstance(suggestions.verticalScrollBar(), ModernScrollBar)
+        assert type(suggestions.itemDelegate()) is QStyledItemDelegate
+        assert isinstance(dialog.changelog_view.verticalScrollBar(), ModernScrollBar)
+    finally:
+        dialog.deleteLater()
+        qapp.processEvents()
 
 
 def test_card_shadow_is_rendered_once_per_size_instead_of_every_frame(

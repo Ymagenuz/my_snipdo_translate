@@ -329,6 +329,67 @@ def _forget_frames(listener: Callable[[float], None]) -> None:
         _frame_clock.forget(listener)
 
 
+class Tween(QObject):
+    """A number that eases toward its target, one step per screen refresh.
+
+    changed(value) runs on every step, typically to repaint. With animations
+    off or the widget hidden, the value jumps straight to its target.
+    """
+
+    def __init__(
+        self,
+        widget: QWidget,
+        changed: Callable[[float], None],
+        value: float = 0.0,
+    ):
+        super().__init__(widget)
+        self._widget = widget
+        self._changed = changed
+        self.value = value
+        self.target = value
+        self._start = value
+        self._started_at = 0.0
+        self._duration = 0.0
+        self._running = False
+        self._easing = QEasingCurve(QEasingCurve.Type.OutCubic)
+        on_frame = self._on_frame
+        self.destroyed.connect(lambda _object=None: _forget_frames(on_frame))
+
+    def is_running(self) -> bool:
+        return self._running
+
+    def to(self, target: float, duration: int) -> None:
+        if target == self.target:
+            return
+        self.target = target
+        if not (self._widget.isVisible() and animations_enabled()):
+            self._stop()
+            self._set(target)
+            return
+        self._start = self.value
+        self._started_at = time.perf_counter()
+        self._duration = duration / 1000
+        if not self._running:
+            self._running = True
+            frame_clock().subscribe(self._on_frame, self._widget)
+
+    def _on_frame(self, now: float) -> None:
+        progress = min(1.0, max(0.0, (now - self._started_at) / self._duration))
+        eased = self._easing.valueForProgress(progress)
+        self._set(self._start + (self.target - self._start) * eased)
+        if progress >= 1.0:
+            self._stop()
+
+    def _stop(self) -> None:
+        if self._running:
+            self._running = False
+            frame_clock().unsubscribe(self._on_frame)
+
+    def _set(self, value: float) -> None:
+        self.value = value
+        self._changed(value)
+
+
 class SmoothScroller(QObject):
     """Glides a scroll area's vertical scroll bar instead of jumping it.
 

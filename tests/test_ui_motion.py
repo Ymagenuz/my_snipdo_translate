@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
 )
 
 import ui_motion
-from ui_motion import SmoothScroller, fade_in, fade_opacity
+from ui_motion import SmoothScroller, Tween, fade_in, fade_opacity
 
 
 # conftest replaces it for every test; keep the real one to test it.
@@ -307,6 +307,42 @@ def test_without_vertical_blanks_the_timer_follows_the_refresh_rate(qapp, monkey
 def test_vertical_blanks_need_the_windows_platform(qapp):
     # The tests run on Qt's offscreen platform, which has no monitors to wait on.
     assert ui_motion._display_device(QLabel()) is None
+
+
+def test_tween_eases_to_its_target_frame_by_frame(qapp, motion_on, wait_until):
+    widget = QLabel()
+    widget.show()
+    values = []
+    try:
+        tween = Tween(widget, values.append)
+        tween.to(1.0, 120)
+        assert tween.is_running()
+        assert values == []
+        wait_until(lambda: not tween.is_running())
+
+        assert len(values) > 2
+        assert values == sorted(values)
+        assert values[-1] == 1.0
+    finally:
+        widget.deleteLater()
+        qapp.processEvents()
+
+
+def test_tween_jumps_without_animations_or_when_hidden(qapp, motion_on, monkeypatch):
+    hidden = QLabel()
+    values = []
+    tween = Tween(hidden, values.append)
+
+    tween.to(1.0, 120)
+    assert values == [1.0]
+    assert not tween.is_running()
+
+    monkeypatch.setattr(ui_motion, "animations_enabled", lambda: False)
+    hidden.show()
+    tween.to(0.0, 120)
+    assert values == [1.0, 0.0]
+    hidden.deleteLater()
+    qapp.processEvents()
 
 
 def test_fade_in_ends_painting_the_widget_directly(qapp, motion_on, wait_until):
