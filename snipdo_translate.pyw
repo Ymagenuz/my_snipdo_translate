@@ -9,6 +9,7 @@ if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "--apply-upda
 
 import re
 import json
+import math
 import warnings
 import time
 import ctypes
@@ -122,6 +123,7 @@ from latex_renderer import (
     show_math_fragment_sources,
     warm_up_math_rendering,
 )
+from ui_motion import SmoothScroller, fade_in, fade_opacity
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTextEdit,
@@ -129,17 +131,17 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QSystemTrayIcon, QMenu, QInputDialog, QLineEdit,
     QComboBox, QDialog, QCheckBox, QFormLayout,
     QDialogButtonBox, QMessageBox, QCompleter, QListWidget, QStackedWidget,
-    QTextBrowser
+    QTextBrowser, QGraphicsScene, QGraphicsPathItem
 )
 from PyQt6.QtGui import (
     QColor, QScreen, QTextCursor, QTextCharFormat,
     QTextBlockFormat, QTextFormat, QFont, QAction, QIcon, QImage,
-    QKeySequence, QPainter, QPen, QPainterPath, QPixmap, QTransform
+    QKeySequence, QPainter, QPen, QPainterPath, QPixmap, QRegion, QTransform
 )
 from PyQt6.QtCore import (
     Qt, pyqtSignal, QThread, QObject, QTimer, QByteArray, QBuffer,
     QIODevice, QMimeData, QKeyCombination, QAbstractNativeEventFilter,
-    QEvent, QRectF, QSize
+    QEvent, QPoint, QRectF, QSize
 )
 
 warnings.filterwarnings("ignore")
@@ -540,6 +542,44 @@ def create_update_icon() -> QIcon:
         painter.end()
         icon.addPixmap(pixmap)
     return icon
+
+
+def render_card_shadow(size: QSize, dpr: float) -> tuple[QPixmap, QPoint]:
+    """Render the main card's soft shadow once, for the window to paint.
+
+    The card used to carry this drop shadow as a graphics effect, which redrew
+    and blurred the whole card on every repaint: each scroll frame took up to
+    ten times longer. Returns the image and its offset from the card's corner.
+    """
+    card = QRectF(0, 0, size.width(), size.height())
+    outline = QPainterPath()
+    outline.addRoundedRect(card, 12, 12)
+    face = QGraphicsPathItem(outline)
+    face.setBrush(QColor("#FFFFFF"))
+    face.setPen(QPen(Qt.PenStyle.NoPen))
+    shadow = QGraphicsDropShadowEffect()
+    shadow.setBlurRadius(20)
+    shadow.setOffset(8, 4)
+    shadow.setColor(QColor(0, 0, 0, 12))
+    face.setGraphicsEffect(shadow)
+    scene = QGraphicsScene()
+    scene.addItem(face)
+
+    bounds = shadow.boundingRectFor(card).toAlignedRect()
+    image = QImage(
+        math.ceil(bounds.width() * dpr),
+        math.ceil(bounds.height() * dpr),
+        QImage.Format.Format_ARGB32_Premultiplied,
+    )
+    image.setDevicePixelRatio(dpr)
+    image.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    scene.render(
+        painter, QRectF(0, 0, bounds.width(), bounds.height()), QRectF(bounds)
+    )
+    painter.end()
+    return QPixmap.fromImage(image), bounds.topLeft()
 
 
 def create_unread_badge_icon(base_icon: QIcon) -> QIcon:
@@ -1614,6 +1654,7 @@ class InteractiveTextEdit(QTextEdit):
                 height: 0px;
             }
         """)
+        self.smooth_scroller = SmoothScroller(self)
 
     def keyPressEvent(self, event):
         if (
@@ -2003,7 +2044,7 @@ class SettingsDialog(QDialog):
         self.page_list = QListWidget()
         self.page_list.setFixedWidth(132)
         self.pages = QStackedWidget()
-        self.page_list.currentRowChanged.connect(self.pages.setCurrentIndex)
+        self.page_list.currentRowChanged.connect(self._show_page)
         body.addWidget(self.page_list)
         body.addWidget(self.pages, 1)
         layout.addLayout(body, 1)
@@ -2376,6 +2417,7 @@ class SettingsDialog(QDialog):
                 background: transparent;
             }
         """)
+        SmoothScroller(self.changelog_view)
         about_layout.addWidget(self.changelog_view, 1)
         self._changelog = changelog
         self._changelog_release = None
@@ -2409,6 +2451,10 @@ class SettingsDialog(QDialog):
         self.pages.addWidget(page)
         self.page_list.addItem(name)
         return form
+
+    def _show_page(self, row: int) -> None:
+        self.pages.setCurrentIndex(row)
+        fade_in(self.pages.currentWidget())
 
     def _show_capture_error(self, message: str) -> None:
         self.shortcut_status_label.setText(message)
@@ -4066,6 +4112,21 @@ class TranslationWindow(QWidget):
         except Exception as e:
             log(f"[UI] force_show_window activate-only stage error: {e}")
 
+    def paintEvent(self, event):
+        card = self.card_frame.geometry()
+        key = (card.size(), self.devicePixelRatioF())
+        if key != self._card_shadow_key:
+            self._card_shadow = render_card_shadow(*key)
+            self._card_shadow_key = key
+        shadow, offset = self._card_shadow
+        painter = QPainter(self)
+        # The card covers its own middle, so skip blending the image there.
+        painter.setClipRegion(
+            QRegion(self.rect()).subtracted(QRegion(card.adjusted(12, 12, -12, -12)))
+        )
+        painter.drawPixmap(card.topLeft() + offset, shadow)
+        painter.end()
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if self._show_geometry is None or not event.spontaneous():
@@ -4104,11 +4165,9 @@ class TranslationWindow(QWidget):
             }
         """)
 
-        shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(20)
-        shadow.setYOffset(4)
-        shadow.setColor(QColor(0, 0, 0, 12))
-        self.card_frame.setGraphicsEffect(shadow)
+        # paintEvent draws the card's shadow.
+        self._card_shadow_key = None
+        self._card_shadow = None
 
         card_layout = QVBoxLayout(self.card_frame)
         card_layout.setContentsMargins(20, 20, 20, 20)
@@ -4298,7 +4357,6 @@ class TranslationWindow(QWidget):
         self.txt_result.selectionChanged.connect(lambda: self.on_text_selection_changed("result"))
         self.txt_result.setStyleSheet("background-color: transparent;")
         self.result_opacity_effect = QGraphicsOpacityEffect(self.txt_result)
-        self.result_opacity_effect.setOpacity(0.45)
         self.result_opacity_effect.setEnabled(False)
         self.txt_result.setGraphicsEffect(self.result_opacity_effect)
         card_layout.addWidget(self.txt_result)
@@ -5164,7 +5222,10 @@ class TranslationWindow(QWidget):
         # Use the source, not the rendered document, to preserve Markdown/LaTeX.
         self.reset_origin_editor()
         self.txt_origin.setPlainText(source_text)
+        # The previous result recedes while the source is being edited.
+        self.result_opacity_effect.setOpacity(1.0)
         self.result_opacity_effect.setEnabled(True)
+        fade_opacity(self.result_opacity_effect, 0.45)
         self.btn_clear_origin.setEnabled(True)
         self.btn_translate.setEnabled(True)
         self.btn_translate.setText(tr("main.translate"))
@@ -5414,9 +5475,12 @@ class TranslationWindow(QWidget):
         x = min(max(margin, pos.x() + 8), max(margin, self.card_frame.width() - self.btn_align_selection.width() - margin))
         y = min(max(margin, pos.y() - self.btn_align_selection.height() - 8), max(margin, self.card_frame.height() - self.btn_align_selection.height() - margin))
 
+        appearing = self.btn_align_selection.isHidden()
         self.btn_align_selection.move(x, y)
         self.btn_align_selection.show()
         self.btn_align_selection.raise_()
+        if appearing:
+            fade_in(self.btn_align_selection)
 
     def find_text_range(self, text, snippet, left_context="", right_context="", occurrence_index=0):
         ranges = self.find_text_ranges(text, snippet)
@@ -5712,8 +5776,10 @@ class TranslationWindow(QWidget):
 
         view_cursor = widget.textCursor()
         view_cursor.setPosition(start)
-        widget.setTextCursor(view_cursor)
-        widget.ensureCursorVisible()
+        # Glide to the located text instead of jumping to it.
+        with widget.smooth_scroller.glide():
+            widget.setTextCursor(view_cursor)
+            widget.ensureCursorVisible()
 
     def highlight_selected_counterpart(self):
         if not self.alignment_feature_enabled():

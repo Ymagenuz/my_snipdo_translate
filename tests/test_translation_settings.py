@@ -347,6 +347,33 @@ def test_settings_dialog_groups_options_into_pages(app, qapp):
         qapp.processEvents()
 
 
+def test_settings_pages_fade_in_and_the_changelog_glides(
+    app, qapp, motion_on, wait_until
+):
+    dialog = app.SettingsDialog(
+        DEFAULT_SETTINGS,
+        api_key_configured=False,
+        environment_key_active=False,
+    )
+    try:
+        # The first page is simply there when Settings opens.
+        assert dialog.pages.currentWidget().graphicsEffect() is None
+        dialog.show()
+        qapp.processEvents()
+
+        dialog.page_list.setCurrentRow(dialog._api_page)
+
+        page = dialog.pages.currentWidget()
+        assert dialog.pages.currentIndex() == dialog._api_page
+        assert page.graphicsEffect().isEnabled()
+        assert page.graphicsEffect().opacity() < 1
+        wait_until(lambda: not page.graphicsEffect().isEnabled())
+        assert dialog.changelog_view.findChild(app.SmoothScroller) is not None
+    finally:
+        dialog.deleteLater()
+        qapp.processEvents()
+
+
 @pytest.mark.parametrize("back_translation", [False, True])
 def test_settings_dialog_shows_saved_back_translation_choice(
     app, qapp, back_translation
@@ -1202,6 +1229,53 @@ def test_edit_selection_preserves_source_syntax_and_completed_result(
     assert not window.btn_copy.isEnabled()
 
 
+def test_card_shadow_is_rendered_once_per_size_instead_of_every_frame(
+    app, edit_window, monkeypatch, qapp
+):
+    window, _workers = edit_window
+    renders = []
+    render = app.render_card_shadow
+
+    def counting_render(*args):
+        renders.append(args)
+        return render(*args)
+
+    monkeypatch.setattr(app, "render_card_shadow", counting_render)
+    window.show()
+    qapp.processEvents()
+
+    # As a graphics effect, the shadow redrew and blurred the card every scroll frame.
+    assert window.card_frame.graphicsEffect() is None
+    card = window.card_frame.geometry()
+    beside_card = window.grab().toImage().pixelColor(card.right() + 4, card.center().y())
+    assert beside_card.red() < 0xF5  # Shaded, unlike the plain #F5F7FA background.
+    window.repaint()
+    window.repaint()
+    assert len(renders) == 1
+
+    window.resize(window.width() + 40, window.height())
+    window.repaint()
+    assert len(renders) == 2
+
+
+def test_editing_the_selection_fades_the_result_back(
+    edit_window, qapp, motion_on, wait_until
+):
+    window, workers = edit_window
+    assert window.handle_new_request("The selected original sentence.")
+    workers[-1].chunk_received.emit("Previous translation")
+    workers[-1].complete()
+    window.show()
+    qapp.processEvents()
+
+    window.btn_edit_origin.click()
+
+    effect = window.result_opacity_effect
+    assert effect.isEnabled()
+    assert effect.opacity() > 0.45
+    wait_until(lambda: effect.opacity() == pytest.approx(0.45))
+
+
 @pytest.mark.parametrize("submit_with_keyboard", [False, True])
 def test_edit_streaming_selection_ignores_late_worker_signals_and_submits_edits(
     app, edit_window, submit_with_keyboard
@@ -1480,6 +1554,39 @@ def test_scrolling_keeps_the_located_highlight(
         item.cursor.selectedText() for item in window.txt_result.extraSelections()
     ] == ["第二句"]
     assert window.txt_origin.textCursor().hasSelection()
+
+
+def test_locate_button_fades_in_and_the_view_glides_to_the_counterpart(
+    app, edit_window, alignment_workers, qapp, motion_on, wait_until
+):
+    window, _workers = edit_window
+    filler = "\n\n".join(f"第{index}段。" for index in range(80))
+    window.show()
+    window.load_history_entry({
+        "mode": "en2zh",
+        "source": "First sentence. Second sentence.",
+        "result": f"第一句。\n\n{filler}\n\n第二句。",
+    })
+    qapp.processEvents()
+
+    _select_text(window.txt_origin, "Second", app)
+    button_effect = window.btn_align_selection.graphicsEffect()
+    assert button_effect.isEnabled()
+    assert button_effect.opacity() < 1
+    wait_until(lambda: not button_effect.isEnabled())
+
+    window.btn_align_selection.click()
+    alignment_workers[-1].answer("第二句")
+    scroller = window.txt_result.smooth_scroller
+    assert window.txt_result.verticalScrollBar().value() == 0
+    assert scroller.is_scrolling()
+    wait_until(lambda: not scroller.is_scrolling())
+
+    highlight = window.txt_result.extraSelections()[0].cursor
+    assert highlight.selectedText() == "第二句"
+    assert window.txt_result.viewport().rect().contains(
+        window.txt_result.cursorRect(highlight).center()
+    )
 
 
 def test_click_while_locating_drops_the_late_answer(
