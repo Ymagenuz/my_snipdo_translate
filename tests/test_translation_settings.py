@@ -1181,12 +1181,11 @@ def test_interrupted_stream_shows_every_received_chunk(
 
     if interruption == "failure":
         workers[-1].finished.emit(False, "network down")
-        expected = "Partial translation\n\n[Translation error: network down]"
+        assert window.lbl_notice.text() == "Translation failed: network down"
     else:
         window.btn_edit_origin.click()
-        expected = "Partial translation"
 
-    assert window.txt_result.toPlainText() == expected
+    assert window.txt_result.toPlainText() == "Partial translation"
     assert not window.live_render_timer.isActive()
 
 
@@ -3246,7 +3245,11 @@ def test_stop_keeps_the_partial_translation_and_drops_later_output(edit_window):
     assert window.btn_translate.text() == "Translate (Ctrl+Enter)"
     assert window.btn_copy.isEnabled()
     assert window.full_translation == "This is the first sentence."
-    assert window.txt_result.toPlainText() == "This is the first sentence.\n\n[Stopped]"
+    # The stop is noted beside the text rather than added to it.
+    assert window.txt_result.toPlainText() == "This is the first sentence."
+    assert not window.result_notice.isHidden()
+    assert window.lbl_notice.text() == "Stopped"
+    assert window.btn_retry.isHidden()
     assert window.translation_history == []
 
     # The worker only notices at its next chunk; nothing it sends is shown.
@@ -3254,7 +3257,7 @@ def test_stop_keeps_the_partial_translation_and_drops_later_output(edit_window):
     worker.complete()
 
     assert window.full_translation == "This is the first sentence."
-    assert window.txt_result.toPlainText() == "This is the first sentence.\n\n[Stopped]"
+    assert window.txt_result.toPlainText() == "This is the first sentence."
     assert worker not in window.translation_threads
     assert window.translation_history == []
 
@@ -3267,14 +3270,95 @@ def test_stop_before_any_text_arrives_resets_the_selection_view(edit_window):
     window.stop_translation()
 
     assert workers[-1].stop_requested
-    assert window.txt_result.toPlainText() == "[Stopped]"
+    assert window.txt_result.toPlainText() == ""
+    assert window.lbl_notice.text() == "Stopped"
     assert window.btn_copy.text() == "Copy"
     assert not window.btn_copy.isEnabled()
     assert window.btn_stop.isHidden()
 
     # Stopping again, or with nothing running, does nothing.
     window.stop_translation()
-    assert window.txt_result.toPlainText() == "[Stopped]"
+    assert window.txt_result.toPlainText() == ""
+    assert window.lbl_notice.text() == "Stopped"
+
+
+def test_a_failed_translation_is_reported_apart_from_the_text(edit_window):
+    window, workers = edit_window
+    window.txt_origin.setPlainText("这是第一句。这是第二句。")
+    window.start_manual_translation()
+    workers[-1].chunk_received.emit("This is the first sentence.")
+
+    workers[-1].finished.emit(False, "Connection timed out")
+
+    # The part that arrived stays as it was, with the error in a notice
+    # under it that offers to try again.
+    assert window.txt_result.toPlainText() == "This is the first sentence."
+    assert not window.result_notice.isHidden()
+    assert window.lbl_notice.text() == "Translation failed: Connection timed out"
+    assert not window.btn_retry.isHidden()
+    assert window.translation_history == []
+
+    window.btn_retry.click()
+
+    assert [worker.text for worker in workers] == ["这是第一句。这是第二句。"] * 2
+    assert window.result_notice.isHidden()
+    assert window.txt_result.toPlainText() == ""
+
+
+def test_a_failed_selection_translation_can_be_tried_again(edit_window):
+    window, workers = edit_window
+    assert window.handle_new_request("A selected sentence to translate.")
+
+    workers[-1].finished.emit(False, "Rate limit reached")
+
+    assert window.lbl_notice.text() == "Translation failed: Rate limit reached"
+    window.btn_retry.click()
+
+    assert [worker.text for worker in workers] == ["A selected sentence to translate."] * 2
+    assert window.source_mode == "snipdo"
+    assert window.result_notice.isHidden()
+
+
+def test_a_missing_key_is_reported_in_the_notice(app, edit_window, monkeypatch):
+    window, workers = edit_window
+    monkeypatch.setattr(
+        app.TranslationWindow, "ensure_api_key", lambda self, **_kwargs: False
+    )
+    window.txt_origin.setPlainText("这是第一句。")
+
+    window.start_manual_translation()
+
+    assert workers == []
+    assert window.txt_result.toPlainText() == ""
+    assert window.lbl_notice.text() == (
+        "No API key is set, so the translation was cancelled."
+    )
+    assert not window.btn_retry.isHidden()
+
+
+def test_section_labels_sit_on_the_card_without_outlines(edit_window, qapp):
+    window, _workers = edit_window
+    labels = (window.lbl_origin, window.lbl_result, window.lbl_dictionary_arrow)
+    window.show()
+    qapp.processEvents()
+    # Blank labels, so every pixel they cover should be the card's own white;
+    # the card's style once drew its rounded outline around each of them.
+    for label in labels:
+        label.setText("")
+        label.setMinimumWidth(24)
+    qapp.processEvents()
+
+    image = window.card_frame.grab().toImage()
+    for label in labels:
+        assert label.isVisible()
+        rect = label.geometry()
+        colours = {
+            image.pixelColor(x, y).name()
+            for x in range(rect.left(), rect.right() + 1)
+            for y in range(rect.top(), rect.bottom() + 1)
+        }
+        assert colours == {"#ffffff"}, label.objectName() or label.text()
+    window.hide()
 
 
 def test_stopping_the_back_translation_keeps_what_arrived(edit_window, back_workers):

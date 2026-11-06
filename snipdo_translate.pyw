@@ -126,6 +126,7 @@ from latex_renderer import (
 from ui_controls import (
     DROPDOWN_STYLE,
     DropdownComboBox,
+    ModernCheckBox,
     style_popup_list,
     use_modern_scroll_bar,
 )
@@ -135,7 +136,7 @@ from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTextEdit,
     QPushButton, QLabel, QFrame, QGraphicsDropShadowEffect, QGraphicsOpacityEffect,
     QHBoxLayout, QSystemTrayIcon, QMenu, QInputDialog, QLineEdit,
-    QComboBox, QDialog, QCheckBox, QFormLayout,
+    QComboBox, QDialog, QFormLayout,
     QDialogButtonBox, QMessageBox, QCompleter, QListWidget, QStackedWidget,
     QTextBrowser, QGraphicsScene, QGraphicsPathItem
 )
@@ -2056,11 +2057,11 @@ class SettingsDialog(QDialog):
         language_note.setStyleSheet("color: #909399; font-size: 12px;")
         form.addRow("", language_note)
 
-        self.chk_enabled = QCheckBox(tr("settings.enabled.check"))
+        self.chk_enabled = ModernCheckBox(tr("settings.enabled.check"))
         self.chk_enabled.setChecked(settings.enabled)
         form.addRow(tr("settings.enabled.row"), self.chk_enabled)
 
-        self.chk_startup = QCheckBox(tr("settings.startup.check"))
+        self.chk_startup = ModernCheckBox(tr("settings.startup.check"))
         self.chk_startup.setChecked(startup_enabled)
         self.chk_startup.setEnabled(startup_available)
         self.chk_startup.setToolTip(
@@ -2073,7 +2074,7 @@ class SettingsDialog(QDialog):
             startup_notice.setWordWrap(True)
             form.addRow("", startup_notice)
 
-        self.chk_completion_notifications = QCheckBox(
+        self.chk_completion_notifications = ModernCheckBox(
             tr("settings.notifications.check")
         )
         self.chk_completion_notifications.setChecked(
@@ -2113,7 +2114,7 @@ class SettingsDialog(QDialog):
             tr("settings.translation"),
             tr("settings.translation.hint"),
         )
-        self.chk_back_translation = QCheckBox(tr("settings.back_translation.check"))
+        self.chk_back_translation = ModernCheckBox(tr("settings.back_translation.check"))
         self.chk_back_translation.setChecked(settings.back_translation)
         form.addRow(tr("settings.back_translation.row"), self.chk_back_translation)
         back_translation_note = QLabel(tr("settings.back_translation.note"))
@@ -2173,9 +2174,9 @@ class SettingsDialog(QDialog):
         model_row.addWidget(self.fetch_models_button)
         form.addRow(tr("settings.api.model.row"), model_row)
 
-        self.vision_checkbox = QCheckBox(tr("settings.api.vision.check"))
+        self.vision_checkbox = ModernCheckBox(tr("settings.api.vision.check"))
         form.addRow(tr("settings.api.vision.row"), self.vision_checkbox)
-        self.disable_thinking_checkbox = QCheckBox(tr("settings.api.thinking.check"))
+        self.disable_thinking_checkbox = ModernCheckBox(tr("settings.api.thinking.check"))
         form.addRow(tr("settings.api.thinking.row"), self.disable_thinking_checkbox)
 
         self.model_status_label = QLabel(tr("settings.api.model.status"))
@@ -3107,6 +3108,70 @@ class QtIpcRequestBridge(QObject):
             record_event(AppEvent.IPC_REQUEST_REJECTED)
         finally:
             completion.complete(result)
+
+
+def pane_message_format(error: bool = False) -> QTextCharFormat:
+    """Status text in a text pane, set apart from translated text by colour."""
+    message_format = QTextCharFormat()
+    message_format.setForeground(QColor("#C45656" if error else "#909399"))
+    return message_format
+
+
+RESULT_ERROR_NOTICE_STYLE = """
+    #resultNotice {
+        background-color: #FEF0F0;
+        border: 1px solid #FBD5D5;
+        border-radius: 8px;
+    }
+    #resultNotice QLabel {
+        background-color: transparent;
+        color: #C45656;
+        font-family: 'Segoe UI', 'Microsoft YaHei UI';
+        font-size: 12px;
+    }
+    #resultNoticeIcon {
+        background-color: #F56C6C;
+        color: #FFFFFF;
+        border-radius: 8px;
+        font-size: 11px;
+        font-weight: 700;
+    }
+    #resultNotice QPushButton {
+        background-color: #FFFFFF;
+        color: #C45656;
+        border: 1px solid #FBC4C4;
+        border-radius: 6px;
+        padding: 3px 10px;
+        font-family: 'Segoe UI', 'Microsoft YaHei UI';
+        font-size: 12px;
+        font-weight: 600;
+    }
+    #resultNotice QPushButton:hover {
+        background-color: #FDE2E2;
+        border-color: #F56C6C;
+    }
+"""
+
+RESULT_INFO_NOTICE_STYLE = """
+    #resultNotice {
+        background-color: #F4F4F5;
+        border: 1px solid #E9E9EB;
+        border-radius: 8px;
+    }
+    #resultNotice QLabel {
+        background-color: transparent;
+        color: #909399;
+        font-family: 'Segoe UI', 'Microsoft YaHei UI';
+        font-size: 12px;
+    }
+    #resultNoticeIcon {
+        background-color: #C0C4CC;
+        color: #FFFFFF;
+        border-radius: 8px;
+        font-size: 11px;
+        font-weight: 700;
+    }
+"""
 
 
 class TranslationWindow(QWidget):
@@ -4116,7 +4181,11 @@ class TranslationWindow(QWidget):
         self.setWindowTitle(f"{APP_DISPLAY_NAME} {APP_VERSION}")
         self.setMinimumSize(NORMAL_WINDOW_WIDTH, NORMAL_WINDOW_HEIGHT)
         self.resize(NORMAL_WINDOW_WIDTH, NORMAL_WINDOW_HEIGHT)
-        self.setStyleSheet("background-color: #F5F7FA;")
+        # Rules name the widget they style; a bare rule reaches every widget
+        # inside, and labels and text boxes, being frames, drew the card's
+        # outline around themselves.
+        self.setObjectName("translationWindow")
+        self.setStyleSheet("#translationWindow { background-color: #F5F7FA; }")
 
         screen = QApplication.primaryScreen()
         if screen:
@@ -4130,8 +4199,9 @@ class TranslationWindow(QWidget):
         main_layout.setSpacing(0)
 
         self.card_frame = QFrame()
+        self.card_frame.setObjectName("card")
         self.card_frame.setStyleSheet("""
-            QFrame {
+            #card {
                 background-color: #FFFFFF;
                 border-radius: 12px;
                 border: 1px solid #EAEAEA;
@@ -4268,6 +4338,7 @@ class TranslationWindow(QWidget):
         self.txt_origin.setFont(self.origin_font)
         self.txt_origin.setStyleSheet("""
             background-color: #FAFAFA;
+            border: none;
             border-left: 2px solid #E4E7ED;
             padding-left: 6px;
             color: #303133;
@@ -4328,11 +4399,34 @@ class TranslationWindow(QWidget):
         self.txt_result = InteractiveTextEdit()
         self.txt_result.setReadOnly(True)
         self.txt_result.selectionChanged.connect(lambda: self.on_text_selection_changed("result"))
-        self.txt_result.setStyleSheet("background-color: transparent;")
+        self.txt_result.setStyleSheet("background-color: transparent; border: none;")
         self.result_opacity_effect = QGraphicsOpacityEffect(self.txt_result)
         self.result_opacity_effect.setEnabled(False)
         self.txt_result.setGraphicsEffect(self.result_opacity_effect)
         card_layout.addWidget(self.txt_result)
+
+        # Errors and stops show here, apart from the translated text.
+        self.result_notice = QFrame()
+        self.result_notice.setObjectName("resultNotice")
+        notice_layout = QHBoxLayout(self.result_notice)
+        notice_layout.setContentsMargins(10, 6, 6, 6)
+        notice_layout.setSpacing(8)
+        self.lbl_notice_icon = QLabel()
+        self.lbl_notice_icon.setObjectName("resultNoticeIcon")
+        self.lbl_notice_icon.setFixedSize(16, 16)
+        self.lbl_notice_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        notice_layout.addWidget(self.lbl_notice_icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.lbl_notice = QLabel()
+        self.lbl_notice.setTextFormat(Qt.TextFormat.PlainText)
+        self.lbl_notice.setWordWrap(True)
+        self.lbl_notice.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        notice_layout.addWidget(self.lbl_notice, 1)
+        self.btn_retry = QPushButton(tr("main.retry"))
+        self.btn_retry.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_retry.clicked.connect(self.retry_translation)
+        notice_layout.addWidget(self.btn_retry, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.result_notice.hide()
+        card_layout.addWidget(self.result_notice)
 
         # Source, translation and back-translation read top to bottom.
         self.back_translation_panel = QWidget()
@@ -4377,6 +4471,7 @@ class TranslationWindow(QWidget):
         self.txt_back_translation.setFont(back_font)
         self.txt_back_translation.setStyleSheet("""
             background-color: #FAFAFA;
+            border: none;
             border-left: 2px solid #D7BDE2;
             padding-left: 6px;
             color: #606266;
@@ -4601,6 +4696,8 @@ class TranslationWindow(QWidget):
             self.reset_alignment_ui()
         if hasattr(self, "back_translation_panel"):
             self.reset_back_translation()
+        if hasattr(self, "result_notice"):
+            self.hide_result_notice()
 
         self.result_opacity_effect.setEnabled(False)
         self.live_render_timer.stop()
@@ -5005,10 +5102,29 @@ class TranslationWindow(QWidget):
         record_event(AppEvent.CREDENTIAL_MISSING)
         return False
 
-    def set_result_message(self, message: str):
+    def set_result_message(self, message: str, *, retry: bool = False):
+        """Clear the result and explain why it is empty."""
         self.setup_result_format()
-        cursor = self.txt_result.textCursor()
-        cursor.insertText(message, self.result_char_fmt)
+        self.show_result_notice(message, retry=retry)
+
+    def show_result_notice(self, message: str, *, error: bool = True, retry: bool = False):
+        self.result_notice.setStyleSheet(
+            RESULT_ERROR_NOTICE_STYLE if error else RESULT_INFO_NOTICE_STYLE
+        )
+        self.lbl_notice_icon.setText("!" if error else "i")
+        self.lbl_notice.setText(message)
+        self.btn_retry.setVisible(retry)
+        self.result_notice.show()
+
+    def hide_result_notice(self):
+        self.result_notice.hide()
+
+    def retry_translation(self):
+        self.hide_result_notice()
+        if self.source_mode == "manual":
+            self.start_manual_translation()
+        else:
+            self.rerun_snipdo_translation()
 
     def start_clipboard_ocr(self):
         try:
@@ -5953,10 +6069,13 @@ class TranslationWindow(QWidget):
         self.show_back_translation_message("")
         self.back_translation_panel.hide()
 
-    def show_back_translation_message(self, message: str):
+    def show_back_translation_message(self, message: str, *, error: bool = False):
         self.txt_back_translation.clear()
         self.txt_back_translation.setCurrentCharFormat(QTextCharFormat())
-        self.txt_back_translation.setPlainText(message)
+        if message:
+            self.txt_back_translation.textCursor().insertText(
+                message, pane_message_format(error)
+            )
 
     def start_back_translation(self) -> bool:
         self.reset_back_translation()
@@ -5985,7 +6104,9 @@ class TranslationWindow(QWidget):
             )
             return False
         if not self.ensure_api_key(allow_prompt=False):
-            self.show_back_translation_message(tr("message.back_translation_no_key"))
+            self.show_back_translation_message(
+                tr("message.back_translation_no_key"), error=True
+            )
             return False
 
         worker = None
@@ -6016,7 +6137,8 @@ class TranslationWindow(QWidget):
                 self.translation_threads.discard(worker)
             self.back_thread = None
             self.show_back_translation_message(
-                tr("message.back_translation_error", error=tr("error.cannot_start"))
+                tr("message.back_translation_error", error=tr("error.cannot_start")),
+                error=True,
             )
             return False
 
@@ -6037,7 +6159,7 @@ class TranslationWindow(QWidget):
         cursor = self.txt_back_translation.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.insertText(
-            "\n\n" + tr("message.back_translation_stopped"), QTextCharFormat()
+            "\n\n" + tr("message.back_translation_stopped"), pane_message_format()
         )
 
     def on_back_translation_chunk(self, worker, chunk):
@@ -6065,11 +6187,11 @@ class TranslationWindow(QWidget):
 
         error = tr("message.back_translation_error", error=error_msg)
         if not received:
-            self.show_back_translation_message(error)
+            self.show_back_translation_message(error, error=True)
             return
         cursor = self.txt_back_translation.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertText(f"\n\n{error}", QTextCharFormat())
+        cursor.insertText(f"\n\n{error}", pane_message_format(error=True))
 
     def render_back_translation(self):
         """Render the back-translation without moving the reader's place in it."""
@@ -6418,9 +6540,7 @@ class TranslationWindow(QWidget):
         self.active_translation_mode = mode
 
         if not self.ensure_api_key(allow_prompt=allow_key_prompt):
-            cursor = self.txt_result.textCursor()
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-            cursor.insertText(tr("message.translation_no_key"), self.result_char_fmt)
+            self.show_result_notice(tr("message.translation_no_key"), retry=True)
 
             if self.source_mode == "manual":
                 self.btn_translate.setEnabled(True)
@@ -6466,7 +6586,8 @@ class TranslationWindow(QWidget):
                 self.trans_thread = None
             self.force_show_window()
             self.set_result_message(
-                tr("message.translation_error", error=tr("error.cannot_start"))
+                tr("message.translation_error", error=tr("error.cannot_start")),
+                retry=True,
             )
             record_event(AppEvent.TRANSLATION_FAILED)
             return False
@@ -6537,18 +6658,13 @@ class TranslationWindow(QWidget):
             self.live_render_timer.stop()
         else:
             self.flush_live_translation()
-        cursor = self.txt_result.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-
         if not success:
             if error_msg == CANCELLED_ERROR:
                 record_event(AppEvent.TRANSLATION_CANCELLED)
             else:
                 record_event(AppEvent.TRANSLATION_FAILED)
-                cursor.movePosition(QTextCursor.MoveOperation.End)
-                cursor.insertText(
-                    "\n\n" + tr("message.translation_error", error=error_msg),
-                    self.result_char_fmt,
+                self.show_result_notice(
+                    tr("message.translation_error", error=error_msg), retry=True
                 )
         elif self.full_translation.strip():
             record_event(AppEvent.TRANSLATION_COMPLETED)
@@ -6593,12 +6709,7 @@ class TranslationWindow(QWidget):
         self.trans_thread = None
         worker.request_stop()
         self.on_translation_finished(False, CANCELLED_ERROR)
-        cursor = self.txt_result.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertText(
-            ("\n\n" if self.full_translation.strip() else "") + tr("message.stopped"),
-            self.result_char_fmt,
-        )
+        self.show_result_notice(tr("message.stopped"), error=False)
 
     # ---------- 剪贴板 ----------
     def copy_to_clipboard(self):

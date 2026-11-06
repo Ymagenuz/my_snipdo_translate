@@ -1,9 +1,10 @@
-"""Slim scroll bars and dropdowns, drawn to match the rest of the app.
+"""Slim scroll bars, dropdowns and check boxes, drawn to match the app.
 
 Qt's Windows 11 style draws scroll bars with arrow buttons and combo boxes
 with a boxed arrow button, which look dated beside the app's flat, rounded
-controls. These widgets paint those parts themselves, and ease between states
-with ui_motion's Tween, so they follow the screen's refresh like the glides do.
+controls, and under a style sheet draws a ticked check box as a bare tick.
+These widgets paint those parts themselves, and ease between states with
+ui_motion's Tween, so they follow the screen's refresh like the glides do.
 """
 from __future__ import annotations
 
@@ -16,11 +17,14 @@ from PyQt6.QtGui import QColor, QGuiApplication, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QAbstractScrollArea,
+    QCheckBox,
     QComboBox,
     QScrollBar,
     QStyle,
     QStyledItemDelegate,
+    QStyleOptionButton,
     QStyleOptionSlider,
+    QStylePainter,
     QWidget,
 )
 
@@ -341,4 +345,113 @@ class DropdownComboBox(QComboBox):
         painter.translate(self.width() - self.CHEVRON_INSET, self.height() / 2)
         painter.rotate(180.0 * turn)
         painter.drawPath(chevron)
+        painter.end()
+
+
+class ModernCheckBox(QCheckBox):
+    """A check box with a rounded box that fills with the accent when ticked.
+
+    Under a style sheet, Qt's Windows 11 style draws a ticked box as a bare
+    tick and an unticked one as an empty square, so on and off looked like
+    two different controls. This draws the box itself and leaves the label
+    to the style.
+    """
+
+    SIZE = 16.0
+    RADIUS = 4.0
+    BORDER_COLOR = QColor("#C0C4CC")
+    HOVER_COLOR = QColor("#9B59B6")
+    DISABLED_COLOR = QColor("#E4E7ED")
+    DISABLED_FILL = QColor("#F5F7FA")
+    DISABLED_TICKED = QColor("#D7BDE2")
+
+    def __init__(self, text: str = "", parent: QWidget | None = None):
+        super().__init__(text, parent)
+        # Sizes the box Qt lays out and hit-tests; paintEvent draws it.
+        self.setStyleSheet(
+            f"QCheckBox::indicator {{ width: {self.SIZE:g}px; height: {self.SIZE:g}px; }}"
+        )
+
+    def indicator_rect(self) -> QRectF:
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        area = self.style().subElementRect(
+            QStyle.SubElement.SE_CheckBoxIndicator, option, self
+        )
+        return QRectF(
+            area.left() + (area.width() - self.SIZE) / 2,
+            area.top() + (area.height() - self.SIZE) / 2,
+            self.SIZE,
+            self.SIZE,
+        )
+
+    def enterEvent(self, event):
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        label = QStyleOptionButton(option)
+        label.rect = self.style().subElementRect(
+            QStyle.SubElement.SE_CheckBoxContents, option, self
+        )
+        painter = QStylePainter(self)
+        painter.drawControl(QStyle.ControlElement.CE_CheckBoxLabel, label)
+
+        box = self.indicator_rect()
+        state = self.checkState()
+        enabled = self.isEnabled()
+        hovered = enabled and self.underMouse()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if (
+            option.state & QStyle.StateFlag.State_HasFocus
+            and option.state & QStyle.StateFlag.State_KeyboardFocusChange
+        ):
+            ring = QColor(ACCENT)
+            ring.setAlphaF(0.35)
+            painter.setPen(QPen(ring, 2.0))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(
+                box.adjusted(-2.0, -2.0, 2.0, 2.0), self.RADIUS + 2, self.RADIUS + 2
+            )
+        if state == Qt.CheckState.Unchecked:
+            border = (
+                self.DISABLED_COLOR if not enabled
+                else ACCENT if hovered
+                else self.BORDER_COLOR
+            )
+            painter.setPen(QPen(border, 1.0))
+            painter.setBrush(QColor("#FFFFFF") if enabled else self.DISABLED_FILL)
+            painter.drawRoundedRect(
+                box.adjusted(0.5, 0.5, -0.5, -0.5), self.RADIUS, self.RADIUS
+            )
+            painter.end()
+            return
+
+        fill = (
+            self.DISABLED_TICKED if not enabled
+            else self.HOVER_COLOR if hovered
+            else ACCENT
+        )
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(fill)
+        painter.drawRoundedRect(box, self.RADIUS, self.RADIUS)
+        pen = QPen(QColor("#FFFFFF"), 1.8)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        left, top = box.left(), box.top()
+        if state == Qt.CheckState.PartiallyChecked:
+            painter.drawLine(QPointF(left + 4.5, top + 8.0), QPointF(left + 11.5, top + 8.0))
+        else:
+            tick = QPainterPath(QPointF(left + 4.2, top + 8.4))
+            tick.lineTo(left + 7.0, top + 11.1)
+            tick.lineTo(left + 11.9, top + 5.4)
+            painter.drawPath(tick)
         painter.end()

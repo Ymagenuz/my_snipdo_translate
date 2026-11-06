@@ -294,21 +294,22 @@ _ENGLISH = {
     "main.placeholder.translate": (
         "Type or paste the text to translate...\nPress Ctrl + Enter to translate"
     ),
-    # Messages in the result and back-translation panes
+    # Notices under the result, and messages in the back-translation pane
     "message.ocr_running": "Reading text from the image...",
-    "message.ocr_error": "[OCR error: {error}]",
+    "message.ocr_error": "OCR failed: {error}",
     "message.ocr_unsupported": (
-        "[The current {provider} provider doesn't support image OCR; switch to "
-        "one that does in Settings]"
+        "The current {provider} provider doesn't support image OCR; switch to "
+        "one that does in Settings."
     ),
-    "message.ocr_no_key": "[No API key is set; OCR cancelled]",
-    "message.translation_no_key": "[No API key is set; translation cancelled]",
-    "message.translation_error": "[Translation error: {error}]",
-    "message.stopped": "[Stopped]",
+    "message.ocr_no_key": "No API key is set, so OCR was cancelled.",
+    "message.translation_no_key": "No API key is set, so the translation was cancelled.",
+    "message.translation_error": "Translation failed: {error}",
+    "message.stopped": "Stopped",
     "message.ipc_no_key": (
-        "[No API key is set. Start a translation in this window first and enter a key.]"
+        "No API key is set. Start a translation in this window first and enter a key."
     ),
-    "message.ipc_ocr_busy": "[OCR is busy. Try again later.]",
+    "message.ipc_ocr_busy": "OCR is busy. Try again later.",
+    "main.retry": "Try again",
     "message.back_translation_same_language": (
         "The source and the translation are in the same language; there's "
         "nothing to back-translate."
@@ -601,14 +602,15 @@ _SIMPLIFIED_CHINESE = {
     "main.placeholder.dictionary": "在此输入或粘贴需要查词的单词、短语或术语...\n按 Ctrl + Enter 开始查词",
     "main.placeholder.translate": "在此输入或粘贴需要翻译的文本...\n按 Ctrl + Enter 开始翻译",
     "message.ocr_running": "正在识别图片文字...",
-    "message.ocr_error": "[OCR 出错: {error}]",
-    "message.ocr_unsupported": "[当前 {provider} 接口不支持图片 OCR；请在设置中切换到支持图片的接口]",
-    "message.ocr_no_key": "[未设置 API Key，已取消 OCR]",
-    "message.translation_no_key": "[未设置 API Key，已取消翻译]",
-    "message.translation_error": "[翻译出错: {error}]",
-    "message.stopped": "[已停止]",
-    "message.ipc_no_key": "[未设置 API Key，请先在窗口中发起一次翻译并输入 Key]",
-    "message.ipc_ocr_busy": "[OCR 正忙，请稍后重试]",
+    "message.ocr_error": "OCR 出错：{error}",
+    "message.ocr_unsupported": "当前 {provider} 接口不支持图片 OCR；请在设置中切换到支持图片的接口。",
+    "message.ocr_no_key": "未设置 API Key，已取消 OCR。",
+    "message.translation_no_key": "未设置 API Key，已取消翻译。",
+    "message.translation_error": "翻译出错：{error}",
+    "message.stopped": "已停止",
+    "message.ipc_no_key": "未设置 API Key，请先在窗口中发起一次翻译并输入 Key。",
+    "message.ipc_ocr_busy": "OCR 正忙，请稍后重试。",
+    "main.retry": "重试",
     "message.back_translation_same_language": "原文与译文为同一语言，无需回译。",
     "message.back_translation_no_key": "[未设置 API Key，无法回译]",
     "message.back_translation_error": "[回译出错: {error}]",

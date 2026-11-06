@@ -6,6 +6,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QMessageBox, QWidget
 
 import app_update_ui as ui
+import ui_dialogs
 from app_updates import ReleaseInfo, is_newer_version
 from app_version import APP_VERSION
 
@@ -243,6 +244,15 @@ def test_install_error_is_shown_and_can_be_retried(notifications):
     controller.check_manually()
     checker.complete(release())
     assert controller.available_release == release()
+
+
+def test_update_status_is_wide_enough_for_its_title(notifications, qapp):
+    controller, _checker, _clock = notifications
+    # A short message once sized the box so narrow its title was cut off.
+    controller._show_status("You're up to date.")
+    qapp.processEvents()
+
+    assert controller._status_dialog.width() >= ui_dialogs.MESSAGE_MIN_WIDTH
 
 
 def test_shutdown_ignores_late_results(notifications):

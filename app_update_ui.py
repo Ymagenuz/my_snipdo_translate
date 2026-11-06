@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import QMessageBox
 from app_i18n import tr
 from app_updates import ReleaseInfo, UpdateChecker, is_newer_version
 from app_update_flow import UpdateFlow
+from ui_dialogs import fit_message_box
 
 
 CHECK_INTERVAL_SECONDS = 6 * 60 * 60
@@ -201,6 +202,7 @@ class UpdateNotifications(QObject):
         dialog.setTextFormat(Qt.TextFormat.PlainText)
         dialog.setText(message)
         dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        fit_message_box(dialog)
         dialog.setWindowModality(Qt.WindowModality.NonModal)
         self._status_dialog = dialog
         dialog.finished.connect(lambda _result: self._release_status(dialog))

@@ -18,8 +18,10 @@ import pytest
 
 import ui_controls
 from ui_controls import (
+    ACCENT,
     DROPDOWN_STYLE,
     DropdownComboBox,
+    ModernCheckBox,
     ModernScrollBar,
     POPUP_LIST_STYLE,
     style_popup_list,
@@ -289,3 +291,50 @@ def test_dropdown_lists_get_rounded_rows_and_a_slim_scroll_bar(combo):
     # Style-sheet rows only apply through the styled delegate.
     assert type(view.itemDelegate()) is QStyledItemDelegate
     assert isinstance(view.verticalScrollBar(), ModernScrollBar)
+
+
+@pytest.fixture
+def check_box(qapp):
+    # The Settings dialog's rule, under which Qt drew a ticked box as a bare tick.
+    window = QWidget()
+    window.setStyleSheet("QCheckBox { color: #303133; font-size: 13px; spacing: 8px; }")
+    box = ModernCheckBox("Enable global selection translation", window)
+    box.resize(box.sizeHint())
+    window.resize(box.sizeHint())
+    window.show()
+    qapp.processEvents()
+    # Wherever the pointer happens to be, test the resting look.
+    box.setAttribute(Qt.WidgetAttribute.WA_UnderMouse, False)
+    yield box
+    window.deleteLater()
+    qapp.processEvents()
+
+
+def _box_colours(check_box):
+    image = check_box.grab().toImage()
+    box = check_box.indicator_rect().toAlignedRect()
+    middle = box.center().y()
+    return (
+        # The left edge, halfway down: border or fill, never the tick.
+        image.pixelColor(box.left(), middle),
+        # Inside the box, near its top-left corner, clear of the tick.
+        image.pixelColor(box.left() + 3, box.top() + 3),
+    )
+
+
+def test_ticked_check_box_fills_its_box_with_the_accent(check_box):
+    check_box.setChecked(True)
+
+    edge, inside = _box_colours(check_box)
+
+    assert edge.name() == ACCENT.name()
+    assert inside.name() == ACCENT.name()
+
+
+def test_unticked_check_box_shows_an_empty_box_with_the_same_shape(check_box):
+    check_box.setChecked(False)
+
+    edge, inside = _box_colours(check_box)
+
+    assert edge.name() == ModernCheckBox.BORDER_COLOR.name()
+    assert inside.name() == "#ffffff"
