@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 import httpx
 from openai import OpenAI as SdkOpenAI
-from PyQt6.QtCore import QEvent, QPoint, QPointF, QSize, Qt
+from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, QSize, Qt
 from PyQt6.QtGui import QHelpEvent, QPalette, QResizeEvent, QTextCursor, QWheelEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QDialogButtonBox, QStyledItemDelegate, QToolTip
@@ -1216,7 +1216,13 @@ def test_edit_selection_preserves_source_syntax_and_completed_result(
 
     assert window.source_mode == "manual"
     assert not window.txt_origin.isReadOnly()
-    assert window.txt_origin.toPlainText() == source
+    # The Markdown shows as formatting, with the marks of the heading the
+    # caret is on; the source comes back untouched.
+    assert window.txt_origin.source_text() == source
+    assert window.txt_origin.toPlainText().splitlines() == [
+        "# Source", "Bold item", "Energy: $E=mc^2$."
+    ]
+    assert window.txt_origin.document().begin().blockFormat().headingLevel() == 1
     assert window.txt_result.isReadOnly()
     assert window.txt_result.toHtml() == rendered_result
     assert window.full_translation == result
@@ -1230,6 +1236,38 @@ def test_edit_selection_preserves_source_syntax_and_completed_result(
     assert window.btn_translate.isEnabled()
     assert window.btn_translate.text() == "Translate (Ctrl+Enter)"
     assert not window.btn_copy.isEnabled()
+
+
+def test_pasted_rich_text_is_translated_as_markdown(edit_window):
+    window, workers = edit_window
+    mime = QMimeData()
+    mime.setHtml(
+        '<h2 style="font-size:30px;color:red">Notes</h2>'
+        '<ul><li><span style="font-weight:700;font-family:Georgia">First</span>'
+        " point</li><li>Second</li></ul>"
+    )
+    mime.setText("Notes First point Second")
+    window.txt_origin.insertFromMimeData(mime)
+
+    assert window.txt_origin.toPlainText() == "Notes\nFirst point\nSecond"
+    window.start_manual_translation()
+
+    assert workers[-1].text == "## Notes\n\n- **First** point\n- Second"
+    assert window.current_request_is_structured
+    assert window.original_paragraphs == ["## Notes", "- **First** point", "- Second"]
+
+
+def test_history_entry_with_markdown_keeps_its_source(edit_window):
+    window, workers = edit_window
+    source = "# Heading\n\n* starred item\n\nEnergy: $a_1*b$."
+    window.load_history_entry({"source": source, "result": "# 标题\n\n* 星号项"})
+
+    assert window.txt_origin.document().begin().blockFormat().headingLevel() == 1
+    assert window.txt_origin.source_text() == source
+    assert window.alignment_feature_enabled()
+
+    window.start_manual_translation()
+    assert workers[-1].text == source
 
 
 def test_main_views_and_dropdowns_use_the_slim_controls(app, edit_window):

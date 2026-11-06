@@ -138,6 +138,7 @@ from ui_controls import (
 )
 from ui_dialogs import BUTTON_STYLE, ask_text, show_warning
 from ui_motion import SmoothScroller, TextReveal, fade_in, fade_opacity
+from ui_rich_text import MarkdownEditing, is_markdown_structured_text
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTextEdit,
@@ -924,16 +925,6 @@ def html_to_markdown(html_text: str) -> str:
         return ""
 
 
-def is_markdown_structured_text(text: str) -> bool:
-    if not text:
-        return False
-
-    return bool(re.search(
-        r'(?m)^\s*(#{1,6}\s+|[-*+]\s+|\d+\.\s+|>\s+|```|\|.*\|)',
-        text,
-    ))
-
-
 def is_structured_text(text: str) -> bool:
     return is_markdown_structured_text(text) or is_latex_text(text)
 
@@ -1671,6 +1662,14 @@ class InteractiveTextEdit(QTextEdit):
             return
 
         super().keyPressEvent(event)
+
+
+class SourceTextEdit(MarkdownEditing, InteractiveTextEdit):
+    """The input box: Markdown shows as formatting, as in MarkText.
+
+    Read it with source_text() and fill it with set_source_text(), which keep
+    its Markdown; toPlainText() is only the text as it shows.
+    """
 
 
 def qt_key_to_virtual_key(qt_key: int) -> int | None:
@@ -4432,7 +4431,7 @@ class TranslationWindow(QWidget):
 
         card_layout.addLayout(header_layout)
 
-        self.txt_origin = InteractiveTextEdit()
+        self.txt_origin = SourceTextEdit()
         self.txt_origin.submit_signal.connect(self.start_manual_translation)
         self.txt_origin.selectionChanged.connect(lambda: self.on_text_selection_changed("origin"))
         self.txt_origin.setMaximumHeight(180)
@@ -5126,7 +5125,7 @@ class TranslationWindow(QWidget):
         self.cancel_current_translation()
         self.source_mode = "manual"
         self.apply_manual_mode_ui(reset_content=True)
-        self.txt_origin.setPlainText(source_text)
+        self.txt_origin.set_source_text(source_text)
         self.original_paragraphs = [p.strip() for p in re.split(r'\n+', normalize_newlines(source_text)) if p.strip()]
         self.active_translation_text = source_text
         self.active_translation_mode = entry.get("mode") or "auto"
@@ -5375,7 +5374,7 @@ class TranslationWindow(QWidget):
 
         self.source_mode = "manual"
         self.apply_manual_mode_ui(reset_content=True)
-        self.txt_origin.setPlainText(ocr_text)
+        self.txt_origin.set_source_text(ocr_text)
         self.force_show_window()
         QTimer.singleShot(60, self.start_manual_translation)
 
@@ -5393,9 +5392,10 @@ class TranslationWindow(QWidget):
         self.flush_live_translation()
         self.reset_back_translation()
         self.apply_manual_mode_ui(reset_content=False)
-        # Use the source, not the rendered document, to preserve Markdown/LaTeX.
+        # Load the source, not the rendered document: the editor shows its
+        # Markdown as formatting and hands back the source, LaTeX and all.
         self.reset_origin_editor()
-        self.txt_origin.setPlainText(source_text)
+        self.txt_origin.set_source_text(source_text)
         # The previous result recedes while the source is being edited.
         self.result_opacity_effect.setOpacity(1.0)
         self.result_opacity_effect.setEnabled(True)
@@ -5647,7 +5647,7 @@ class TranslationWindow(QWidget):
                 self.trans_thread is None
                 and bool(self.full_translation.strip())
                 and self.active_translation_mode != "dictionary"
-                and "".join(self.txt_origin.toPlainText().split())
+                and "".join(self.txt_origin.source_text().split())
                 == "".join(self.active_translation_text.split())
             )
 
@@ -6659,7 +6659,8 @@ class TranslationWindow(QWidget):
         if self.source_mode != "manual":
             return
 
-        text_to_translate = self.txt_origin.toPlainText().strip()
+        # Markdown, so headings, lists and emphasis reach the model.
+        text_to_translate = self.txt_origin.source_text().strip()
         if not text_to_translate:
             return
 
