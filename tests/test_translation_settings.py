@@ -14,7 +14,7 @@ import pytest
 import httpx
 from openai import OpenAI as SdkOpenAI
 from PyQt6.QtCore import QEvent, QPoint, QPointF, QSize, Qt
-from PyQt6.QtGui import QHelpEvent, QResizeEvent, QTextCursor, QWheelEvent
+from PyQt6.QtGui import QHelpEvent, QPalette, QResizeEvent, QTextCursor, QWheelEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QDialogButtonBox, QStyledItemDelegate, QToolTip
 
@@ -34,6 +34,7 @@ from app_settings import (
     load_settings,
     mouse_shortcut,
 )
+from app_i18n import set_ui_language
 from ui_controls import ModernScrollBar
 
 
@@ -276,8 +277,9 @@ def test_main_settings_gear_and_dialog_display_shortcuts(
         assert window.btn_settings.text() == ""
         assert not window.btn_settings.icon().isNull()
         assert window.btn_settings.accessibleName() == "Settings"
-        assert "XButton1" in window.btn_settings.toolTip()
-        assert dialog.shortcut_button.text() == "XButton1"
+        # Mouse buttons read by name rather than as XButton1.
+        assert "Mouse back button" in window.btn_settings.toolTip()
+        assert dialog.shortcut_button.text() == "Mouse back button"
         assert dialog.show_window_shortcut_button.text() == "Ctrl+Alt+W"
         assert dialog.candidate_settings() == DEFAULT_SETTINGS
         dialog.show_window_shortcut_button.set_binding(
@@ -2144,7 +2146,7 @@ def test_tray_menu_hover_style_has_explicit_foreground_and_background(
 @pytest.mark.parametrize(
     ("enabled", "installed", "expected_icon", "tooltip_fragment"),
     (
-        (True, True, "enabled", "XButton1"),
+        (True, True, "enabled", "Mouse back button"),
         (True, False, "disabled", "Shortcut inactive"),
         (False, False, "disabled", "Global selection translation is off"),
     ),
@@ -3628,9 +3630,9 @@ def test_the_result_says_what_it_is_waiting_for(edit_window, source, waiting):
     assert window.txt_result.placeholderText() == waiting
 
     workers[-1].chunk_received.emit("Result")
-    assert window.txt_result.placeholderText() == ""
+    assert window.txt_result.placeholderText() == "The translation appears here."
     workers[-1].complete()
-    assert window.txt_result.placeholderText() == ""
+    assert window.txt_result.placeholderText() == "The translation appears here."
 
 
 def _shown_tooltip(widget):
@@ -3702,3 +3704,71 @@ def test_settings_buttons_match_the_main_window(app, qapp):
     dialog.reject()
     dialog.deleteLater()
     qapp.processEvents()
+
+
+def test_selected_text_is_tinted_with_the_accent_not_windows_blue(edit_window):
+    window, _workers = edit_window
+
+    for view in (window.txt_origin, window.txt_result, window.txt_back_translation):
+        view.ensurePolished()
+        assert view.palette().color(QPalette.ColorRole.Highlight).name() == "#d7bde2"
+        assert view.palette().color(QPalette.ColorRole.HighlightedText).name() == "#303133"
+
+
+def test_the_empty_result_says_where_the_translation_appears(app, edit_window):
+    window, _workers = edit_window
+
+    assert window.source_mode == "manual"
+    assert window.txt_result.placeholderText() == "The translation appears here."
+
+    window.shortcut_manager = SimpleNamespace(is_installed=lambda: True)
+    window.refresh_result_hint()
+    assert window.txt_result.placeholderText() == (
+        "The translation appears here. You can also select text in any app "
+        "and press Mouse back button."
+    )
+
+    # A selection translation fills the result itself.
+    assert window.handle_new_request("A selected sentence to translate.")
+    assert window.txt_result.placeholderText() == "Translating..."
+
+
+def test_dictionary_results_drop_what_does_not_apply(edit_window, qapp):
+    window, workers = edit_window
+    window.show()
+    qapp.processEvents()
+
+    assert window.handle_new_request("serendipity")
+    qapp.processEvents()
+
+    assert window.btn_back_translation.isHidden()
+    # One word gets a box its own size, leaving the room to the entry.
+    assert window.txt_origin.maximumHeight() < 80
+    workers[-1].complete()
+
+    assert window.handle_new_request("A selected sentence to translate.")
+    qapp.processEvents()
+
+    assert not window.btn_back_translation.isHidden()
+    assert window.txt_origin.maximumHeight() == 180
+    window.hide()
+
+
+@pytest.mark.parametrize(
+    ("stamp", "english", "chinese"),
+    [
+        ("2026-11-05 04:00:07", "Today 04:00", "今天 04:00"),
+        ("2026-11-04 21:13:55", "Yesterday 21:13", "昨天 21:13"),
+        ("2026-03-02 09:12:00", "Mar 2 09:12", "3月2日 09:12"),
+        ("2025-12-31 23:59:00", "2025-12-31", "2025-12-31"),
+        ("not a time", "not a time", "not a time"),
+    ],
+)
+def test_history_times_read_like_a_clock(app, stamp, english, chinese):
+    from datetime import datetime
+
+    now = datetime(2026, 11, 5, 18, 30)
+
+    assert app.history_time_label(stamp, now) == english
+    set_ui_language("zh-CN")
+    assert app.history_time_label(stamp, now) == chinese

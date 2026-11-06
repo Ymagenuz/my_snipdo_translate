@@ -21,11 +21,13 @@ from ui_controls import (
     ACCENT,
     DROPDOWN_STYLE,
     TOOLTIP_WIDTH,
+    MENU_STYLE,
     BusyPlaceholder,
     DropdownComboBox,
     ModernCheckBox,
     ModernScrollBar,
     POPUP_LIST_STYLE,
+    style_menu,
     style_popup_list,
     use_modern_scroll_bar,
     wrapped_tooltip,
@@ -394,3 +396,18 @@ def test_busy_placeholder_holds_still_without_motion(busy_view):
     assert busy.is_active()
     busy.stop()
     assert not busy.is_active()
+
+
+def test_text_menus_look_like_the_history_menu(qapp):
+    view = QTextEdit()
+    view.setPlainText("Some text")
+    view.selectAll()
+    menu = view.createStandardContextMenu()
+
+    style_menu(menu)
+
+    assert menu.styleSheet() == MENU_STYLE
+    assert menu.actions()
+    assert all(action.icon().isNull() for action in menu.actions())
+    menu.deleteLater()
+    view.deleteLater()

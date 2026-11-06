@@ -151,6 +151,10 @@ _ENGLISH = {
     # Shortcut recorder
     "shortcut.not_set": "Not set",
     "shortcut.inactive": "Inactive",
+    "shortcut.click_to_change": "Click to change",
+    "shortcut.mouse.xbutton1": "Mouse back button",
+    "shortcut.mouse.xbutton2": "Mouse forward button",
+    "shortcut.mouse.middle": "Middle mouse button",
     "shortcut.tooltip.removable": (
         "Click, then press a new global shortcut. Press Esc to remove this shortcut."
     ),
@@ -276,6 +280,11 @@ _ENGLISH = {
     "main.history": "History",
     "main.history.empty": "No history",
     "main.history.clear": "Clear history",
+    # History times: today and yesterday by name, then dates in Qt's format.
+    "main.history.today": "Today {time}",
+    "main.history.yesterday": "Yesterday {time}",
+    "main.history.day_format": "MMM d",
+    "main.history.year_format": "yyyy-MM-dd",
     "main.translate": "Translate (Ctrl+Enter)",
     "main.translating": "Translating...",
     "main.looking_up": "Looking up...",
@@ -293,6 +302,11 @@ _ENGLISH = {
     ),
     "main.placeholder.translate": (
         "Type or paste the text to translate...\nPress Ctrl + Enter to translate"
+    ),
+    "main.placeholder.result": "The translation appears here.",
+    "main.placeholder.result_shortcut": (
+        "The translation appears here. You can also select text in any app "
+        "and press {shortcut}."
     ),
     # Notices under the result, and messages in the back-translation pane
     "message.ocr_running": "Reading text from the image...",
@@ -501,6 +515,10 @@ _SIMPLIFIED_CHINESE = {
     ),
     "shortcut.not_set": "未设置",
     "shortcut.inactive": "未激活",
+    "shortcut.click_to_change": "点击修改",
+    "shortcut.mouse.xbutton1": "鼠标后退键",
+    "shortcut.mouse.xbutton2": "鼠标前进键",
+    "shortcut.mouse.middle": "鼠标中键",
     "shortcut.tooltip.removable": "点击后按下新的全局快捷键；按 Esc 移除此快捷键",
     "shortcut.tooltip.required": "翻译快捷键不可移除；点击后录入新快捷键，Esc 取消修改",
     "shortcut.capture.removable": "请按下快捷键，Esc 移除…",
@@ -588,6 +606,10 @@ _SIMPLIFIED_CHINESE = {
     "main.history": "History",
     "main.history.empty": "No history",
     "main.history.clear": "Clear history",
+    "main.history.today": "今天 {time}",
+    "main.history.yesterday": "昨天 {time}",
+    "main.history.day_format": "M月d日",
+    "main.history.year_format": "yyyy-MM-dd",
     "main.translate": "Translate (Ctrl+Enter)",
     "main.translating": "Translating...",
     "main.looking_up": "Looking up...",
@@ -601,6 +623,8 @@ _SIMPLIFIED_CHINESE = {
     "main.locate.busy": "定位中...",
     "main.placeholder.dictionary": "在此输入或粘贴需要查词的单词、短语或术语...\n按 Ctrl + Enter 开始查词",
     "main.placeholder.translate": "在此输入或粘贴需要翻译的文本...\n按 Ctrl + Enter 开始翻译",
+    "main.placeholder.result": "译文将显示在这里。",
+    "main.placeholder.result_shortcut": "译文将显示在这里。也可以在任意应用中选中文本后按 {shortcut}。",
     "message.ocr_running": "正在识别图片文字...",
     "message.ocr_error": "OCR 出错：{error}",
     "message.ocr_unsupported": "当前 {provider} 接口不支持图片 OCR；请在设置中切换到支持图片的接口。",

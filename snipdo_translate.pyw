@@ -19,6 +19,7 @@ import uuid
 import threading
 from ctypes import wintypes
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 from html import unescape
 from html.parser import HTMLParser
 from urllib.parse import unquote
@@ -125,11 +126,13 @@ from latex_renderer import (
 )
 from ui_controls import (
     DROPDOWN_STYLE,
+    MENU_STYLE,
     TOOLTIP_STYLE,
     BusyPlaceholder,
     DropdownComboBox,
     ModernCheckBox,
     style_popup_list,
+    use_modern_context_menu,
     use_modern_scroll_bar,
     use_modern_tooltips,
 )
@@ -152,7 +155,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtCore import (
     Qt, pyqtSignal, QThread, QObject, QTimer, QByteArray, QBuffer,
     QIODevice, QMimeData, QKeyCombination, QAbstractNativeEventFilter,
-    QEvent, QPoint, QRectF, QSize
+    QEvent, QLocale, QPoint, QPointF, QRectF, QSize
 )
 
 warnings.filterwarnings("ignore")
@@ -1643,12 +1646,13 @@ class InteractiveTextEdit(QTextEdit):
             QTextEdit {
                 border: none;
                 background-color: transparent;
-                selection-background-color: #B3D8FF;
+                selection-background-color: #D7BDE2;
                 selection-color: #303133;
             }
         """)
         # Its own style sheet, so the views' replacement style sheets keep it.
         use_modern_scroll_bar(self)
+        use_modern_context_menu(self)
         self.smooth_scroller = SmoothScroller(self)
 
     def keyPressEvent(self, event):
@@ -1728,6 +1732,32 @@ def keyboard_shortcut_display(qt_key: int, modifiers: tuple[str, ...]) -> str:
     return "+".join([*(modifier_labels[name] for name in modifiers), key_name])
 
 
+def history_time_label(stamp: str, now: datetime | None = None) -> str:
+    """"Today 04:00" for a History entry saved as "2026-11-05 04:00:07"."""
+    try:
+        moment = datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return stamp or ""
+    now = now or datetime.now()
+    time_text = moment.strftime("%H:%M")
+    if moment.date() == now.date():
+        return tr("main.history.today", time=time_text)
+    if moment.date() == (now - timedelta(days=1)).date():
+        return tr("main.history.yesterday", time=time_text)
+    locale = QLocale(ui_language().replace("-", "_"))
+    if moment.year == now.year:
+        day = locale.toString(moment.date(), tr("main.history.day_format"))
+        return f"{day} {time_text}"
+    return locale.toString(moment.date(), tr("main.history.year_format"))
+
+
+def shortcut_label(binding: ShortcutBinding) -> str:
+    """How a shortcut reads in the app: mouse buttons by name, not XButton1."""
+    if binding.kind == "mouse":
+        return tr(f"shortcut.mouse.{binding.mouse_button}")
+    return binding.display
+
+
 def shortcuts_conflict(
     first: ShortcutBinding | None,
     second: ShortcutBinding | None,
@@ -1766,18 +1796,24 @@ class ShortcutCaptureButton(QPushButton):
             tr("shortcut.tooltip.removable")
             if allow_clear else tr("shortcut.tooltip.required")
         )
+        # A field with a key or mouse at its start and "Click to change" at its
+        # end, so it reads as a place that records a shortcut, not a button.
         self.setStyleSheet("""
             QPushButton {
-                background-color: #F5F7FA;
-                color: #606266;
+                background-color: #FFFFFF;
+                color: #303133;
                 border: 1px solid #DCDFE6;
                 border-radius: 6px;
-                padding: 7px 12px;
+                padding: 7px 12px 7px 36px;
+                text-align: left;
                 font-family: 'Segoe UI', 'Microsoft YaHei UI';
                 font-size: 13px;
                 font-weight: 600;
             }
-            QPushButton:hover, QPushButton:focus {
+            QPushButton:hover {
+                border-color: #C39BD3;
+            }
+            QPushButton:focus {
                 border-color: #8E44AD;
                 color: #8E44AD;
             }
@@ -1801,8 +1837,39 @@ class ShortcutCaptureButton(QPushButton):
 
     def _refresh_text(self) -> None:
         self.setText(
-            self._binding.display if self._binding is not None else tr("shortcut.not_set")
+            shortcut_label(self._binding) if self._binding is not None else tr("shortcut.not_set")
         )
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        accent = self._capturing or self.hasFocus()
+        pen = QPen(QColor("#8E44AD" if accent else "#909399"), 1.3)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        middle = self.height() / 2
+        if self._binding is not None and self._binding.kind == "mouse" and not self._capturing:
+            painter.drawRoundedRect(QRectF(15.5, middle - 7, 10, 14), 5, 5)
+            painter.drawLine(QPointF(20.5, middle - 7), QPointF(20.5, middle - 2.5))
+        else:
+            painter.drawRoundedRect(QRectF(12.5, middle - 5.5, 17, 11), 2, 2)
+            for x in (15.5, 19, 22.5, 26):
+                painter.drawPoint(QPointF(x, middle - 2.2))
+            painter.drawLine(QPointF(17, middle + 2), QPointF(25, middle + 2))
+        if not self._capturing:
+            font = QFont(self.font())
+            font.setPixelSize(12)
+            font.setWeight(QFont.Weight.Normal)
+            painter.setFont(font)
+            painter.setPen(QColor("#A8ABB2"))
+            painter.drawText(
+                self.rect().adjusted(0, 0, -12, 0),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                tr("shortcut.click_to_change"),
+            )
+        painter.end()
 
     def begin_capture(self) -> None:
         if self._capturing:
@@ -1812,6 +1879,7 @@ class ShortcutCaptureButton(QPushButton):
             tr("shortcut.capture.removable")
             if self._allow_clear else tr("shortcut.capture.required")
         )
+        self.update()
         self.setFocus(Qt.FocusReason.OtherFocusReason)
         self.grabKeyboard()
         self.grabMouse()
@@ -2019,6 +2087,8 @@ class SettingsDialog(QDialog):
                 padding: 7px 10px;
                 font-family: 'Segoe UI', 'Microsoft YaHei UI';
                 font-size: 13px;
+                selection-background-color: #D7BDE2;
+                selection-color: #303133;
             }
             QLineEdit:focus, QComboBox:focus {
                 border-color: #8E44AD;
@@ -2223,6 +2293,8 @@ class SettingsDialog(QDialog):
         )
         layout.addWidget(button_box)
         use_modern_tooltips(self)
+        for field in (self.api_key_input, self.base_url_input, self.model_combo.lineEdit()):
+            use_modern_context_menu(field)
 
     def _build_about_page(self, updates, changelog: str, app_icon) -> None:
         # The changelog at the bottom takes the free space instead of a stretch.
@@ -2398,9 +2470,12 @@ class SettingsDialog(QDialog):
                 border-radius: 8px;
                 font-family: 'Segoe UI', 'Microsoft YaHei UI';
                 font-size: 13px;
+                selection-background-color: #D7BDE2;
+                selection-color: #303133;
             }
         """)
         use_modern_scroll_bar(self.changelog_view)
+        use_modern_context_menu(self.changelog_view)
         SmoothScroller(self.changelog_view)
         about_layout.addWidget(self.changelog_view, 1)
         self._changelog = changelog
@@ -3309,33 +3384,7 @@ class TranslationWindow(QWidget):
         # observes a menu that has already been destroyed.
         self.tray_menu = QMenu(self)
         tray_menu = self.tray_menu
-        tray_menu.setStyleSheet("""
-            QMenu {
-                background-color: #FFFFFF;
-                color: #303133;
-                border: 1px solid #DCDFE6;
-                padding: 5px;
-            }
-            QMenu::item {
-                background-color: transparent;
-                color: #303133;
-                padding: 6px 22px 6px 10px;
-                border-radius: 4px;
-            }
-            QMenu::item:selected {
-                background-color: #EDE7F6;
-                color: #303133;
-            }
-            QMenu::item:disabled {
-                background-color: transparent;
-                color: #A8ABB2;
-            }
-            QMenu::separator {
-                height: 1px;
-                background-color: #E4E7ED;
-                margin: 4px 6px;
-            }
-        """)
+        tray_menu.setStyleSheet(MENU_STYLE)
 
         self.show_window_action = QAction(tr("tray.show_window"), self)
         self.show_window_action.triggered.connect(self.show_manual_window)
@@ -3533,7 +3582,7 @@ class TranslationWindow(QWidget):
         if not self.app_settings.enabled:
             tooltip = tr("tray.disabled", app=APP_DISPLAY_NAME)
         elif shortcut_active:
-            tooltip = f"{APP_DISPLAY_NAME} · {self.app_settings.shortcut.display}"
+            tooltip = f"{APP_DISPLAY_NAME} · {shortcut_label(self.app_settings.shortcut)}"
         else:
             tooltip = tr("tray.shortcut_inactive", app=APP_DISPLAY_NAME)
         show_binding = self.app_settings.show_window_shortcut
@@ -3546,7 +3595,7 @@ class TranslationWindow(QWidget):
             show_shortcut_status = tr("shortcut.not_set")
         else:
             show_shortcut_status = (
-                show_binding.display if show_shortcut_active else tr("shortcut.inactive")
+                shortcut_label(show_binding) if show_shortcut_active else tr("shortcut.inactive")
             )
         tooltip += tr("tray.show_window_status", status=show_shortcut_status)
         icon = (
@@ -3563,7 +3612,7 @@ class TranslationWindow(QWidget):
             )
         if hasattr(self, "btn_settings"):
             button_tooltip = (
-                tr("main.settings_tooltip", shortcut=self.app_settings.shortcut.display)
+                tr("main.settings_tooltip", shortcut=shortcut_label(self.app_settings.shortcut))
                 + f"\n{tooltip}"
             )
             updates = getattr(self, "update_notifications", None)
@@ -3576,9 +3625,32 @@ class TranslationWindow(QWidget):
             self.btn_settings.setToolTip(button_tooltip)
         if hasattr(self, "show_window_action"):
             self.show_window_action.setText(
-                tr("tray.show_window_with_shortcut", shortcut=show_binding.display)
+                tr("tray.show_window_with_shortcut", shortcut=shortcut_label(show_binding))
                 if show_binding is not None else tr("tray.show_window")
             )
+        if hasattr(self, "result_busy"):
+            self.refresh_result_hint(shortcut_active)
+
+    def refresh_result_hint(self, shortcut_active: bool | None = None):
+        """While nothing is translated, say where the translation will appear."""
+        if not hasattr(self, "result_busy"):
+            return
+        if shortcut_active is None:
+            shortcut_active = bool(
+                self.app_settings.enabled
+                and self.shortcut_manager
+                and self.shortcut_manager.is_installed()
+            )
+        if self.source_mode != "manual":
+            hint = ""
+        elif shortcut_active:
+            hint = tr(
+                "main.placeholder.result_shortcut",
+                shortcut=shortcut_label(self.app_settings.shortcut),
+            )
+        else:
+            hint = tr("main.placeholder.result")
+        self.result_busy.set_idle_text(hint)
 
     def refresh_api_status(self):
         if not hasattr(self, "lbl_model_name"):
@@ -4249,7 +4321,7 @@ class TranslationWindow(QWidget):
                 background-color: #F5F7FA;
                 color: #909399;
                 border: 1px solid #E4E7ED;
-                border-radius: 4px;
+                border-radius: 6px;
                 padding: 2px 6px;
                 font-size: 11px;
                 font-weight: 600;
@@ -4267,14 +4339,14 @@ class TranslationWindow(QWidget):
         self.btn_settings.setAccessibleName(tr("main.settings"))
         self.btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_settings.setToolTip(
-            tr("main.settings_tooltip", shortcut=self.app_settings.shortcut.display)
+            tr("main.settings_tooltip", shortcut=shortcut_label(self.app_settings.shortcut))
         )
         self.btn_settings.setStyleSheet("""
             QPushButton {
                 background-color: #F5F7FA;
                 color: #606266;
                 border: 1px solid #E4E7ED;
-                border-radius: 4px;
+                border-radius: 6px;
                 padding: 4px;
                 font-size: 11px;
                 font-weight: 600;
@@ -4301,7 +4373,7 @@ class TranslationWindow(QWidget):
                 background-color: #FAFAFA;
                 color: #606266;
                 border: 1px solid #DCDFE6;
-                border-radius: 4px;
+                border-radius: 6px;
                 padding: 2px 6px;
                 font-size: 11px;
                 min-height: 22px;
@@ -4348,6 +4420,8 @@ class TranslationWindow(QWidget):
                 border-radius: 8px;
                 padding: 4px 4px 4px 8px;
                 color: #303133;
+                selection-background-color: #D7BDE2;
+                selection-color: #303133;
             }
         """)
         card_layout.addWidget(self.txt_origin)
@@ -4372,7 +4446,7 @@ class TranslationWindow(QWidget):
                 background-color: transparent;
                 color: #909399;
                 border: 1px solid #DCDFE6;
-                border-radius: 4px;
+                border-radius: 6px;
                 padding: 2px 8px;
                 font-size: 11px;
                 font-weight: 600;
@@ -4412,6 +4486,8 @@ class TranslationWindow(QWidget):
                 background-color: transparent;
                 border: none;
                 padding: 0 4px 0 8px;
+                selection-background-color: #D7BDE2;
+                selection-color: #303133;
             }
         """)
         self.result_busy = BusyPlaceholder(self.txt_result)
@@ -4491,6 +4567,8 @@ class TranslationWindow(QWidget):
                 border-radius: 8px;
                 padding: 4px 4px 4px 8px;
                 color: #606266;
+                selection-background-color: #D7BDE2;
+                selection-color: #303133;
             }
         """)
         back_layout.addWidget(self.txt_back_translation)
@@ -4509,7 +4587,7 @@ class TranslationWindow(QWidget):
                 background-color: #8E44AD;
                 color: white;
                 border: none;
-                border-radius: 5px;
+                border-radius: 6px;
                 padding: 3px 10px;
                 font-family: 'Segoe UI', 'Microsoft YaHei UI';
                 font-weight: 600;
@@ -5007,35 +5085,7 @@ class TranslationWindow(QWidget):
 
     def show_history_menu(self):
         menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu {
-                background-color: #FFFFFF;
-                color: #303133;
-                border: 1px solid #DCDFE6;
-                border-radius: 6px;
-                padding: 4px;
-                font-family: 'Segoe UI', 'Microsoft YaHei UI';
-                font-size: 12px;
-            }
-            QMenu::item {
-                color: #303133;
-                background-color: transparent;
-                padding: 6px 22px 6px 10px;
-                border-radius: 4px;
-            }
-            QMenu::item:selected {
-                color: #303133;
-                background-color: #EDE7F6;
-            }
-            QMenu::item:disabled {
-                color: #A8ABB2;
-            }
-            QMenu::separator {
-                height: 1px;
-                background-color: #E4E7ED;
-                margin: 4px 6px;
-            }
-        """)
+        menu.setStyleSheet(MENU_STYLE)
 
         if not self.translation_history:
             empty_action = QAction(tr("main.history.empty"), self)
@@ -5043,7 +5093,8 @@ class TranslationWindow(QWidget):
             menu.addAction(empty_action)
         else:
             for entry in self.translation_history[:12]:
-                title = f"{entry.get('time', '')}  {self.history_preview(entry.get('source', ''))}"
+                when = history_time_label(entry.get("time", ""))
+                title = f"{when}  {self.history_preview(entry.get('source', ''))}"
                 action = QAction(title, self)
                 action.triggered.connect(lambda _checked=False, item=entry: self.load_history_entry(item))
                 menu.addAction(action)
@@ -5405,6 +5456,8 @@ class TranslationWindow(QWidget):
     def show_heading_labels(self, mode: str):
         """Label both panes for "ocr", "dictionary" or a translation direction."""
         self.heading_mode = mode
+        # Dictionary entries and OCR text aren't back-translated.
+        self.btn_back_translation.setVisible(mode not in ("dictionary", "ocr"))
         if mode == "ocr":
             self.lbl_origin.setText(tr("main.label.ocr_image"))
             self.lbl_result.setText(tr("main.label.ocr"))
@@ -6262,6 +6315,7 @@ class TranslationWindow(QWidget):
         self.btn_content_mode.show()
         self.btn_edit_origin.hide()
         self.btn_clear_origin.show()
+        self.refresh_result_hint()
         self.btn_ocr_clipboard.show()
         self.btn_ocr_clipboard.setEnabled(True)
         self.btn_translate.show()
@@ -6297,6 +6351,7 @@ class TranslationWindow(QWidget):
         self.btn_translate.hide()
         self.btn_clear_origin.hide()
         self.btn_edit_origin.show()
+        self.refresh_result_hint()
         self.refresh_stop_button()
         self.btn_ocr_clipboard.hide()
         self.set_dictionary_language_controls_visible(True)
@@ -6309,6 +6364,26 @@ class TranslationWindow(QWidget):
         dict_mode = effective_mode == "dictionary"
 
         self.show_heading_labels("dictionary" if dict_mode else effective_mode)
+        self.fit_origin_height()
+
+    def fit_origin_height(self):
+        """A looked-up word gets a box its own size, leaving the room to the entry."""
+        if self.source_mode != "snipdo":
+            return
+        if self.heading_mode != "dictionary":
+            self.txt_origin.setMaximumHeight(180)
+            return
+        document = self.txt_origin.document()
+        document.setTextWidth(self.txt_origin.viewport().width())
+        margins = self.txt_origin.contentsMargins()
+        chrome = (
+            self.txt_origin.height() - self.txt_origin.viewport().height()
+            if self.txt_origin.isVisible()
+            else margins.top() + margins.bottom() + 8
+        )
+        self.txt_origin.setMaximumHeight(
+            min(180, math.ceil(document.size().height()) + chrome)
+        )
 
     def refresh_origin_placeholder(self):
         if self.source_mode != "manual":
@@ -6428,6 +6503,7 @@ class TranslationWindow(QWidget):
         cursor.endEditBlock()
 
         self.txt_origin.moveCursor(QTextCursor.MoveOperation.Start)
+        self.fit_origin_height()
 
     def ensure_large_window_size(self):
         if not self.isMaximized():

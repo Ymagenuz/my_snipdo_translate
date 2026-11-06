@@ -401,14 +401,14 @@ def test_settings_button_shows_a_blue_download_icon_while_an_update_waits(window
     assert button.icon().cacheKey() == window._update_icon.cacheKey()
     assert button.accessibleName() == "Settings · Version 12.9.0 is available"
     assert button.toolTip().startswith("Version 12.9.0 is available. Click to update.\n")
-    assert "XButton1" in button.toolTip()
+    assert "Mouse back button" in button.toolTip()
 
     updates.available_release = None
     updates.changed.emit()
 
     assert button.icon().cacheKey() == window._settings_icon.cacheKey()
     assert button.accessibleName() == "Settings"
-    assert button.toolTip().startswith("Settings · Translation shortcut: XButton1")
+    assert button.toolTip().startswith("Settings · Translation shortcut: Mouse back button")
 
 
 def test_update_indicator_survives_a_language_switch(window):

@@ -13,14 +13,25 @@ import html
 from ctypes import wintypes
 from functools import lru_cache
 
-from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, Qt, QTimer
-from PyQt6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPainterPath, QPen
+from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, QTimer
+from PyQt6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QGuiApplication,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPen,
+)
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QAbstractScrollArea,
     QApplication,
     QCheckBox,
     QComboBox,
+    QLineEdit,
+    QMenu,
     QScrollBar,
     QStyle,
     QStyledItemDelegate,
@@ -93,6 +104,38 @@ TOOLTIP_STYLE = """
 """
 
 TOOLTIP_WIDTH = 320
+
+# The History and tray menus, and the right-click menus on text.
+MENU_STYLE = """
+    QMenu {
+        background-color: #FFFFFF;
+        color: #303133;
+        border: 1px solid #DCDFE6;
+        border-radius: 8px;
+        padding: 4px;
+        font-family: 'Segoe UI', 'Microsoft YaHei UI';
+        font-size: 12px;
+    }
+    QMenu::item {
+        background-color: transparent;
+        color: #303133;
+        padding: 6px 22px 6px 10px;
+        border-radius: 6px;
+    }
+    QMenu::item:selected {
+        background-color: #EDE7F6;
+        color: #303133;
+    }
+    QMenu::item:disabled {
+        background-color: transparent;
+        color: #A8ABB2;
+    }
+    QMenu::separator {
+        height: 1px;
+        background-color: #E4E7ED;
+        margin: 4px 6px;
+    }
+"""
 
 # Hands the arrow area to DropdownComboBox, which draws its own chevron.
 DROPDOWN_STYLE = """
@@ -578,3 +621,42 @@ class BusyPlaceholder(QObject):
     def _advance(self) -> None:
         self._step = self._step % 3 + 1
         self._view.setPlaceholderText(self._text + "." * self._step)
+
+
+def style_menu(menu: QMenu) -> None:
+    """The History menu's look, without the line icons Qt's text menus carry."""
+    menu.setStyleSheet(MENU_STYLE)
+    for action in menu.actions():
+        action.setIcon(QIcon())
+
+
+class _ModernContextMenus(QObject):
+    def eventFilter(self, watched, event):
+        if event.type() != QEvent.Type.ContextMenu:
+            return False
+        if isinstance(watched, QLineEdit):
+            menu = watched.createStandardContextMenu()
+        else:
+            view = watched.parent()
+            if not isinstance(view, QTextEdit):
+                return False
+            # The view's menu wants the click in document coordinates.
+            offset = QPoint(view.horizontalScrollBar().value(), view.verticalScrollBar().value())
+            menu = view.createStandardContextMenu(event.pos() + offset)
+        style_menu(menu)
+        menu.exec(event.globalPos())
+        menu.deleteLater()
+        return True
+
+
+_modern_context_menus: _ModernContextMenus | None = None
+
+
+def use_modern_context_menu(widget: QTextEdit | QLineEdit) -> None:
+    """Give a text view or field's right-click menu the History menu's look."""
+    global _modern_context_menus
+    if _modern_context_menus is None:
+        _modern_context_menus = _ModernContextMenus()
+    # A view's right-clicks arrive at its viewport.
+    target = widget.viewport() if isinstance(widget, QAbstractScrollArea) else widget
+    target.installEventFilter(_modern_context_menus)

@@ -159,7 +159,7 @@ def test_saving_a_language_relabels_the_window_and_tray_at_once(make_window):
     assert window.check_updates_action.text() == "检查更新…"
     assert window.quit_action.text() == "彻底退出"
     assert window.show_window_action.text() == "显示主窗口（Ctrl+Alt+W）"
-    assert window.btn_settings.toolTip().startswith("设置 · 翻译快捷键：XButton1")
+    assert window.btn_settings.toolTip().startswith("设置 · 翻译快捷键：鼠标后退键")
     assert "当前接口" in window.lbl_model_name.toolTip()
 
     assert window.apply_settings(replace(window.app_settings, ui_language="en"))

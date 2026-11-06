@@ -429,3 +429,13 @@ def test_animations_are_on_without_windows(monkeypatch):
     monkeypatch.setattr(ui_motion, "ctypes", SimpleNamespace())
 
     assert _windows_animations_enabled() is True
+
+
+def test_vblank_reports_stop_quietly_once_qt_has_deleted_the_clock(qapp):
+    clock = ui_motion.FrameClock()
+    sip.delete(clock)
+
+    # At quit the waiting thread once read the deleted clock's signal before
+    # the check meant to catch it, and the error escaped the thread.
+    assert clock._emit("_vblank", time.perf_counter()) is False
+    assert clock._emit("_vblank_failed") is False

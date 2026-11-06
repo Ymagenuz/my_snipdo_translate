@@ -85,6 +85,9 @@ class _WidgetStub:
     def setReadOnly(self, value):
         self.values.append(value)
 
+    def setVisible(self, value):
+        self.values.append(value)
+
     def clear(self):
         self.values.append("clear")
 
@@ -158,6 +161,7 @@ def _ocr_window(app):
         txt_origin=_TextEditStub(),
         txt_result=_TextEditStub(),
         result_busy=_BusyPlaceholderStub(),
+        btn_back_translation=_WidgetStub(),
         lbl_origin=_WidgetStub(),
         lbl_result=_WidgetStub(),
         btn_copy=_WidgetStub(),

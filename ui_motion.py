@@ -298,17 +298,18 @@ class FrameClock(QObject):
             except OSError:
                 if waiter is not None:
                     waiter.close()
-                self._emit(self._vblank_failed)
+                self._emit("_vblank_failed")
                 return
             if self._wanted.is_set() and not self._frame_pending:
                 self._frame_pending = True
-                if not self._emit(self._vblank, time.perf_counter()):
+                if not self._emit("_vblank", time.perf_counter()):
                     return
 
-    @staticmethod
-    def _emit(signal, *args) -> bool:
+    def _emit(self, name: str, *args) -> bool:
+        # Looked up here: once Qt has deleted the clock at quit, even reading
+        # the signal raises, and it must not escape the thread.
         try:
-            signal.emit(*args)
+            getattr(self, name).emit(*args)
         except RuntimeError:  # The app is closing.
             return False
         return True
