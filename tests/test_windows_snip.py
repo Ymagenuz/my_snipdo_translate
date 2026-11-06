@@ -46,7 +46,7 @@ def test_closing_the_overlay_without_a_snip_cancels_after_the_clipboard_settles(
     now, outcome = _watch_until_done(watch, [
         (0.4, 7, False, True),
         (2.0, 7, False, False),
-        (3.0, 7, False, False),
+        (2.0 + snip.CLIPBOARD_SETTLE_SECONDS - 0.1, 7, False, False),
         (2.0 + snip.CLIPBOARD_SETTLE_SECONDS, 7, False, False),
     ])
 

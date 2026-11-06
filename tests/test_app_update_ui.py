@@ -79,7 +79,13 @@ def notifications(qapp, tmp_path):
     window.deleteLater()
 
 
-def release(version="12.9.0"):
+_MAJOR, _MINOR, _PATCH = (int(part) for part in APP_VERSION.split("."))
+# Releases newer than this build, whatever version it is.
+NEWER = f"{_MAJOR}.{_MINOR + 1}.0"
+NEWEST = f"{_MAJOR + 1}.0.0"
+
+
+def release(version=NEWER):
     return ReleaseInfo(
         version=version,
         url=f"https://github.com/Ymagenuz/my_snipdo_translate/releases/tag/v{version}",
@@ -174,8 +180,8 @@ def test_newer_check_result_replaces_the_shown_release(notifications):
     checker.complete(release())
     clock[0] += ui.CHECK_INTERVAL_SECONDS
     controller._check_automatically()
-    checker.complete(release("13.0.0"))
-    assert controller.available_release == release("13.0.0")
+    checker.complete(release(NEWEST))
+    assert controller.available_release == release(NEWEST)
     controller.check_manually()
     checker.complete(None)
     assert controller.available_release is None
@@ -185,7 +191,7 @@ def test_release_found_before_a_restart_is_looked_up_again_at_once(notifications
     controller, checker, clock = notifications
     controller._check_automatically()
     checker.complete(release())
-    assert ui.load_update_state(controller._path) == (clock[0], "12.9.0")
+    assert ui.load_update_state(controller._path) == (clock[0], NEWER)
 
     second_checker = FakeChecker()
     restarted = ui.UpdateNotifications(
@@ -260,7 +266,7 @@ def test_shutdown_ignores_late_results(notifications):
     controller._check_automatically()
     controller.stop()
     assert checker.stopped
-    checker.complete(release("13.0.0"))
+    checker.complete(release(NEWEST))
     checker.fail()
     assert controller.available_release is None
     assert controller._status_dialog is None
