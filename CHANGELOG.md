@@ -4,6 +4,15 @@
 
 What changed in each SnipDo Translate release. The app shows this list on the **About** page in Settings.
 
+## 13.0.0 — 2026-11-06
+
+- **Snip and read text.** Press `Ctrl+Alt+O`, click **OCR** or choose **Snip and read text** in the tray to snip part of the screen with Windows' own snip; the text in it is read and translated. The window steps aside while you snip, shows the snip in the input box while it's read and offers **Stop**. The text arrives marked **From image**, with **Show image** and **Copy text**; fix a misread word and press `Ctrl+Enter` to translate again. Change or remove the shortcut on the **Shortcuts** page in Settings.
+- Press `Ctrl+V` with a screenshot in the input box, or drop an image file on the window, to read it the same way. **OCR** no longer reads the clipboard on its own, and a failed or stopped read gives back what you had typed.
+- The input box shows Markdown as formatting, as MarkText does: headings, lists, quotes, code, emphasis and links, with their marks shown in grey at the caret so you can edit them. MarkText's shortcuts and the right-click **Paragraph** and **Format** menus work too. Pasted web pages and documents keep their structure, and so does the translation.
+- The window takes the icon's colours: blue for the source and back-translation, teal for the translation. The source boxes have a faint tint, **Translate** is tinted blue and **Copy** teal, and translations fade in paragraph by paragraph as they arrive.
+- A failed translation keeps what arrived and shows the error in a red note with **Try again**; **Stop** leaves a grey **Stopped** note. **Stop** is a small chip beside the translation's heading, so no button moves.
+- Smaller touches: rounded check boxes, one style for menus and tooltips, "Mouse back button" instead of "XButton1", short **History** times such as "Today 04:00", a box sized to a looked-up word, and a hint in the empty result naming the shortcut to press.
+
 ## 12.7.0 — 2026-11-05
 
 - Scrolling glides smoothly instead of jumping, one frame per refresh of your monitor (for example 100 or 144 times a second). Locating text glides to it too. With **Animation effects** turned off in Windows, everything moves at once as before.

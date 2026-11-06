@@ -19,8 +19,8 @@ SNIP_PROCESS_NAMES = frozenset({"snippingtool.exe", "screenclippinghost.exe"})
 
 # A cold Snipping Tool takes about a second to show its overlay.
 OVERLAY_OPEN_TIMEOUT_SECONDS = 5.0
-# The snip can reach the clipboard just after the overlay closes.
-CLIPBOARD_SETTLE_SECONDS = 1.5
+# The snip reaches the clipboard as the overlay closes; this allows for a slow one.
+CLIPBOARD_SETTLE_SECONDS = 0.5
 # Stop watching an overlay left open; a later snip then stays on the clipboard.
 SNIP_TIMEOUT_SECONDS = 300.0
 
