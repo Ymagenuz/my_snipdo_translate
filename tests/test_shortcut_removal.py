@@ -40,7 +40,7 @@ def app(app_module, monkeypatch):
     monkeypatch.setattr(app_module, "OpenAI", forbidden)
     monkeypatch.setattr(app_module, "create_api_client", forbidden)
     monkeypatch.setattr(app_module, "WindowsMouseShortcutHook", forbidden)
-    monkeypatch.setattr(app_module, "QMessageBox", SimpleNamespace(warning=forbidden))
+    monkeypatch.setattr(app_module, "show_warning", forbidden)
     monkeypatch.setattr(app_module, "credential_store_for_window", lambda *_args: None)
     monkeypatch.setattr(app_module, "user32", SimpleNamespace(
         RegisterHotKey=forbidden, UnregisterHotKey=forbidden,
@@ -346,7 +346,7 @@ def test_save_failure_restores_previous_optional_shortcut_state(app, monkeypatch
         raise OSError("synthetic save failure")
 
     monkeypatch.setattr(app, "save_settings_atomic", fail_save)
-    monkeypatch.setattr(app, "QMessageBox", SimpleNamespace(warning=lambda *args: warnings.append(args)))
+    monkeypatch.setattr(app, "show_warning", lambda *args: warnings.append(args))
 
     assert not app.TranslationWindow.apply_settings(window, candidate)
 

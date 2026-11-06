@@ -20,12 +20,15 @@ import ui_controls
 from ui_controls import (
     ACCENT,
     DROPDOWN_STYLE,
+    TOOLTIP_WIDTH,
+    BusyPlaceholder,
     DropdownComboBox,
     ModernCheckBox,
     ModernScrollBar,
     POPUP_LIST_STYLE,
     style_popup_list,
     use_modern_scroll_bar,
+    wrapped_tooltip,
 )
 
 
@@ -338,3 +341,56 @@ def test_unticked_check_box_shows_an_empty_box_with_the_same_shape(check_box):
 
     assert edge.name() == ModernCheckBox.BORDER_COLOR.name()
     assert inside.name() == "#ffffff"
+
+
+def test_short_tooltips_stay_as_they_are():
+    assert wrapped_tooltip("Source language") == "Source language"
+    assert wrapped_tooltip("Provider: A\nModel: b") == "Provider: A\nModel: b"
+
+
+def test_long_tooltips_wrap_at_a_readable_width():
+    text = (
+        "When on, each finished translation is translated back into the source "
+        "language so you can check the meaning. <Each> request & more."
+    )
+
+    wrapped = wrapped_tooltip(text)
+
+    assert wrapped.startswith(f"<table width='{TOOLTIP_WIDTH}'>")
+    assert "&lt;Each&gt; request &amp; more." in wrapped
+
+
+@pytest.fixture
+def busy_view(qapp):
+    view = QTextEdit()
+    busy = BusyPlaceholder(view)
+    busy.set_idle_text("Press Ctrl+Enter to translate")
+    yield view, busy
+    view.deleteLater()
+    qapp.processEvents()
+
+
+def test_busy_placeholder_counts_its_dots_while_motion_is_on(busy_view, motion_on):
+    view, busy = busy_view
+
+    busy.start("Translating...")
+    seen = {view.placeholderText()}
+    for _ in range(3):
+        QTest.qWait(BusyPlaceholder.INTERVAL_MS + 30)
+        seen.add(view.placeholderText())
+
+    assert seen == {"Translating.", "Translating..", "Translating..."}
+    busy.stop()
+    assert view.placeholderText() == "Press Ctrl+Enter to translate"
+
+
+def test_busy_placeholder_holds_still_without_motion(busy_view):
+    view, busy = busy_view
+
+    busy.start("Translating...")
+    QTest.qWait(BusyPlaceholder.INTERVAL_MS + 30)
+
+    assert view.placeholderText() == "Translating..."
+    assert busy.is_active()
+    busy.stop()
+    assert not busy.is_active()

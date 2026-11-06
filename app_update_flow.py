@@ -14,6 +14,7 @@ from app_update_install import (
     install_unavailable_reason,
     prepare_install,
 )
+from ui_dialogs import style_progress_dialog
 
 
 class _PrepareInstall(QThread):
@@ -95,6 +96,7 @@ class UpdateFlow(QObject):
         dialog.setWindowModality(Qt.WindowModality.NonModal)
         dialog.setMinimumDuration(0)
         dialog.setMinimumWidth(420)
+        style_progress_dialog(dialog)
         dialog.setAutoClose(False)
         dialog.setAutoReset(False)
         dialog.canceled.connect(self.cancel)

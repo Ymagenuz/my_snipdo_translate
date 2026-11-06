@@ -114,6 +114,20 @@ class _ScrollBarStub:
         self.position = value
 
 
+class _BusyPlaceholderStub:
+    def __init__(self):
+        self.text = ""
+
+    def start(self, text):
+        self.text = text
+
+    def stop(self):
+        self.text = ""
+
+    def is_active(self):
+        return bool(self.text)
+
+
 class _TextEditStub(_WidgetStub):
     def __init__(self):
         super().__init__()
@@ -143,6 +157,7 @@ def _ocr_window(app):
         source_mode="snipdo",
         txt_origin=_TextEditStub(),
         txt_result=_TextEditStub(),
+        result_busy=_BusyPlaceholderStub(),
         lbl_origin=_WidgetStub(),
         lbl_result=_WidgetStub(),
         btn_copy=_WidgetStub(),
@@ -170,6 +185,7 @@ def _translation_window(app):
         source_mode="snipdo",
         btn_copy=_WidgetStub(),
         txt_result=_TextEditStub(),
+        result_busy=_BusyPlaceholderStub(),
         result_char_fmt=object(),
         ensure_api_key=lambda *, allow_prompt=True: True,
         cancel_current_ocr=lambda: None,
@@ -646,6 +662,7 @@ def test_completed_stream_is_reparsed_as_full_markdown(app, monkeypatch):
     window = SimpleNamespace(
         full_translation=markdown,
         txt_result=_TextEditStub(),
+        result_busy=_BusyPlaceholderStub(),
         source_mode="snipdo",
         btn_copy=_WidgetStub(),
         result_char_fmt=object(),

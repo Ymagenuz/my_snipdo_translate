@@ -13,10 +13,10 @@ from types import SimpleNamespace
 import pytest
 import httpx
 from openai import OpenAI as SdkOpenAI
-from PyQt6.QtCore import QPoint, QPointF, QSize, Qt
-from PyQt6.QtGui import QResizeEvent, QWheelEvent
+from PyQt6.QtCore import QEvent, QPoint, QPointF, QSize, Qt
+from PyQt6.QtGui import QHelpEvent, QResizeEvent, QTextCursor, QWheelEvent
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QStyledItemDelegate
+from PyQt6.QtWidgets import QApplication, QDialogButtonBox, QStyledItemDelegate, QToolTip
 
 from app_paths import AppPaths
 from api_providers import (
@@ -1837,9 +1837,7 @@ def test_failed_save_reverts_the_back_translation_toggle(
         raise OSError("disk full")
 
     monkeypatch.setattr(app, "save_settings_atomic", failing_save)
-    monkeypatch.setattr(
-        app.QMessageBox, "warning", lambda *args: warnings.append(args[1])
-    )
+    monkeypatch.setattr(app, "show_warning", lambda *args: warnings.append(args[1]))
     window.load_history_entry({
         "mode": "zh2en",
         "source": "这是一个测试句子。",
@@ -2864,11 +2862,7 @@ def test_apply_settings_rolls_shortcut_back_when_save_fails(
         raise OSError("synthetic settings write failure")
 
     monkeypatch.setattr(app, "save_settings_atomic", fail_save)
-    monkeypatch.setattr(
-        app,
-        "QMessageBox",
-        SimpleNamespace(warning=lambda *args: warnings.append(args)),
-    )
+    monkeypatch.setattr(app, "show_warning", lambda *args: warnings.append(args))
 
     assert app.TranslationWindow.apply_settings(window, candidate) is False
 
@@ -2908,11 +2902,7 @@ def test_apply_settings_rolls_translation_back_when_show_hotkey_is_unavailable(
         show_window_manager=show_window_manager,
     )
     warnings = []
-    monkeypatch.setattr(
-        app,
-        "QMessageBox",
-        SimpleNamespace(warning=lambda *args: warnings.append(args)),
-    )
+    monkeypatch.setattr(app, "show_warning", lambda *args: warnings.append(args))
 
     assert app.TranslationWindow.apply_settings(window, candidate) is False
 
@@ -2941,11 +2931,7 @@ def test_apply_settings_rejects_duplicate_shortcuts_before_registration(
         show_window_manager=show_window_manager,
     )
     warnings = []
-    monkeypatch.setattr(
-        app,
-        "QMessageBox",
-        SimpleNamespace(warning=lambda *args: warnings.append(args)),
-    )
+    monkeypatch.setattr(app, "show_warning", lambda *args: warnings.append(args))
 
     assert app.TranslationWindow.apply_settings(window, candidate) is False
 
@@ -3056,11 +3042,7 @@ def test_provider_switch_is_deferred_while_cancelled_thread_is_still_running(
     window.cancel_current_ocr = lambda: None
     warnings = []
     monkeypatch.setattr(app, "create_credential_store", lambda _provider: StoreStub())
-    monkeypatch.setattr(
-        app,
-        "QMessageBox",
-        SimpleNamespace(warning=lambda *args: warnings.append(args)),
-    )
+    monkeypatch.setattr(app, "show_warning", lambda *args: warnings.append(args))
     candidate = AppSettings(api_provider=DEEPSEEK_API_PROVIDER)
 
     result = app.TranslationWindow.apply_settings(window, candidate)
@@ -3143,11 +3125,7 @@ def test_apply_settings_replaces_client_only_after_credential_write_succeeds(
     )
     monkeypatch.setattr(app, "save_settings_atomic", lambda _path, _value: None)
     monkeypatch.setattr(app, "record_event", events.append)
-    monkeypatch.setattr(
-        app,
-        "QMessageBox",
-        SimpleNamespace(warning=lambda *args: warnings.append(args)),
-    )
+    monkeypatch.setattr(app, "show_warning", lambda *args: warnings.append(args))
 
     result = app.TranslationWindow.apply_settings(
         window,
@@ -3585,3 +3563,142 @@ def test_settings_dialog_offers_completion_notifications_on_the_general_page(
     finally:
         dialog.deleteLater()
         qapp.processEvents()
+
+
+def _text_start(view, card):
+    cursor = view.textCursor()
+    cursor.movePosition(QTextCursor.MoveOperation.Start)
+    return view.viewport().mapTo(card, view.cursorRect(cursor).topLeft()).x()
+
+
+def test_text_boxes_are_single_shapes_with_their_text_lined_up(
+    app, edit_window, back_workers, qapp
+):
+    window, workers = edit_window
+    window.app_settings = replace(window.app_settings, back_translation=True)
+    _translate_manually(window, workers, "这是一个测试句子。", "This is a test.")
+    back_workers[-1].chunk_received.emit("这是一个测试句子。")
+    back_workers[-1].complete()
+    window.show()
+    qapp.processEvents()
+
+    card = window.card_frame
+    views = (window.txt_origin, window.txt_result, window.txt_back_translation)
+    # The translation once started 4 px from its edge and the boxes 12 px in.
+    assert len({_text_start(view, card) for view in views}) == 1
+    # A tinted box, without the bar that ran down its left side.
+    image = card.grab().toImage()
+    for view, tint in ((window.txt_origin, "#f7f8fa"), (window.txt_back_translation, "#faf7fc")):
+        left_middle = view.mapTo(card, QPoint(0, view.height() // 2))
+        assert image.pixelColor(left_middle).name() == tint
+    window.hide()
+
+
+def test_stop_takes_translates_place_without_moving_the_other_buttons(
+    edit_window, qapp
+):
+    window, workers = edit_window
+    window.show()
+    qapp.processEvents()
+    buttons = (window.btn_clear_origin, window.btn_ocr_clipboard, window.btn_history)
+    before = [button.pos() for button in buttons]
+
+    window.txt_origin.setPlainText("这是第一句。")
+    window.start_manual_translation()
+    qapp.processEvents()
+
+    assert not window.btn_stop.isHidden()
+    assert window.btn_translate.isHidden()
+    assert [button.pos() for button in buttons] == before
+    assert window.btn_stop.width() == window.btn_translate.width()
+    window.hide()
+
+
+@pytest.mark.parametrize(
+    ("source", "waiting"),
+    [("这是第一句。这是第二句。", "Translating..."), ("serendipity", "Looking up...")],
+)
+def test_the_result_says_what_it_is_waiting_for(edit_window, source, waiting):
+    window, workers = edit_window
+    window.txt_origin.setPlainText(source)
+
+    window.start_manual_translation()
+
+    assert window.txt_result.toPlainText() == ""
+    assert window.txt_result.placeholderText() == waiting
+
+    workers[-1].chunk_received.emit("Result")
+    assert window.txt_result.placeholderText() == ""
+    workers[-1].complete()
+    assert window.txt_result.placeholderText() == ""
+
+
+def _shown_tooltip(widget):
+    point = QPoint(4, widget.height() // 2)
+    QApplication.sendEvent(
+        widget, QHelpEvent(QEvent.Type.ToolTip, point, widget.mapToGlobal(point))
+    )
+    return next(
+        tip for tip in QApplication.topLevelWidgets()
+        if tip.metaObject().className() == "QTipLabel" and tip.isVisible()
+    )
+
+
+@pytest.mark.parametrize("name", ["btn_back_translation", "lbl_model_name", "btn_settings"])
+def test_main_window_tooltips_are_dark_and_wrapped(edit_window, qapp, name):
+    window, _workers = edit_window
+    window.show()
+    qapp.processEvents()
+    widget = getattr(window, name)
+
+    tip = _shown_tooltip(widget)
+    qapp.processEvents()
+
+    assert tip.grab().toImage().pixelColor(2, 2).name() == "#303133"
+    # The longest one once ran across the screen on a single line.
+    assert tip.width() <= 360
+    QToolTip.hideText()
+    window.hide()
+
+
+def test_moving_straight_between_tooltips_keeps_their_padding(edit_window, qapp):
+    window, _workers = edit_window
+    window.show()
+    qapp.processEvents()
+
+    first = _shown_tooltip(window.btn_settings)
+    padding = (first.contentsMargins().left(), first.contentsMargins().top())
+    second = _shown_tooltip(window.lbl_model_name)
+
+    # Qt handed the showing tooltip over to the next widget, and on Windows
+    # the handed-over one lost its padding; each now starts afresh.
+    assert second is not first
+    assert (second.contentsMargins().left(), second.contentsMargins().top()) == padding
+    assert padding[0] >= 8
+    QToolTip.hideText()
+    window.hide()
+
+
+def test_settings_buttons_match_the_main_window(app, qapp):
+    dialog = app.SettingsDialog(
+        DEFAULT_SETTINGS,
+        api_key_configured=False,
+        environment_key_active=False,
+    )
+    dialog.page_list.setCurrentRow(dialog._api_page)
+    dialog.show()
+    qapp.processEvents()
+
+    box = dialog.findChild(QDialogButtonBox)
+    for kind, colour in (
+        (QDialogButtonBox.StandardButton.Save, "#8e44ad"),
+        (QDialogButtonBox.StandardButton.Cancel, "#f2f3f5"),
+    ):
+        button = box.button(kind)
+        image = button.grab().toImage()
+        assert image.pixelColor(4, button.height() // 2).name() == colour
+    # Fetch models stands as tall as the model box beside it.
+    assert dialog.fetch_models_button.height() == dialog.model_combo.height()
+    dialog.reject()
+    dialog.deleteLater()
+    qapp.processEvents()

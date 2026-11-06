@@ -173,10 +173,7 @@ class _SettingsHarness:
         )
         monkeypatch.setattr(app, "WindowsStartupRegistration", registration_factory)
         monkeypatch.setattr(app, "SettingsDialog", dialog_factory)
-        monkeypatch.setattr(
-            app, "QMessageBox",
-            SimpleNamespace(warning=lambda *args: self.warnings.append(args)),
-        )
+        monkeypatch.setattr(app, "show_warning", lambda *args: self.warnings.append(args))
         self.app = app
 
     def open_settings(self, **options):
@@ -357,8 +354,8 @@ class _MainHarness:
         monkeypatch.setattr(app, "load_settings", lambda _path: DEFAULT_SETTINGS)
         monkeypatch.setattr(app, "initialize_credentials", initialize_credentials)
         monkeypatch.setattr(app, "QApplication", SimpleNamespace(instance=lambda: application))
-        monkeypatch.setattr(app, "QMessageBox", SimpleNamespace(warning=forbidden, critical=forbidden))
-        monkeypatch.setattr(app, "QInputDialog", SimpleNamespace(getText=forbidden))
+        monkeypatch.setattr(app, "show_warning", forbidden)
+        monkeypatch.setattr(app, "ask_text", forbidden)
         monkeypatch.setattr(app, "QtIpcRequestBridge", lambda: self.bridge)
         monkeypatch.setattr(app, "SingleInstanceServer", lambda *_args: self.server)
         monkeypatch.setattr(app, "TranslationWindow", create_window)

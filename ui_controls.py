@@ -9,14 +9,16 @@ ui_motion's Tween, so they follow the screen's refresh like the glides do.
 from __future__ import annotations
 
 import ctypes
+import html
 from ctypes import wintypes
 from functools import lru_cache
 
-from PyQt6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer
-from PyQt6.QtGui import QColor, QGuiApplication, QPainter, QPainterPath, QPen
+from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, Qt, QTimer
+from PyQt6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QAbstractScrollArea,
+    QApplication,
     QCheckBox,
     QComboBox,
     QScrollBar,
@@ -25,9 +27,12 @@ from PyQt6.QtWidgets import (
     QStyleOptionButton,
     QStyleOptionSlider,
     QStylePainter,
+    QTextEdit,
+    QToolTip,
     QWidget,
 )
 
+import ui_motion
 from ui_motion import Tween
 
 ACCENT = QColor("#8E44AD")
@@ -70,6 +75,24 @@ SCROLL_BAR_GUTTER_STYLE = """
         margin: 0;
     }
 """
+
+# Add to a window's style sheet. A tooltip takes its style from the widget it
+# belongs to and is a label itself, so rules in the style sheet of a widget
+# with a tooltip should name the widget rather than match every QLabel.
+TOOLTIP_STYLE = """
+    QToolTip {
+        background-color: #303133;
+        color: #FFFFFF;
+        border: none;
+        padding: 6px 8px;
+        font-family: 'Segoe UI', 'Microsoft YaHei UI';
+        font-size: 12px;
+        font-weight: 400;
+        letter-spacing: 0;
+    }
+"""
+
+TOOLTIP_WIDTH = 320
 
 # Hands the arrow area to DropdownComboBox, which draws its own chevron.
 DROPDOWN_STYLE = """
@@ -455,3 +478,103 @@ class ModernCheckBox(QCheckBox):
             tick.lineTo(left + 11.9, top + 5.4)
             painter.drawPath(tick)
         painter.end()
+
+
+def wrapped_tooltip(text: str) -> str:
+    """text as rich text that wraps at TOOLTIP_WIDTH, or as it is if it fits."""
+    if not text or text.lstrip().startswith("<"):
+        return text
+    font = QFont()
+    font.setFamilies(["Segoe UI", "Microsoft YaHei UI"])
+    font.setPixelSize(12)
+    metrics = QFontMetrics(font)
+    lines = text.split("\n")
+    if max(metrics.horizontalAdvance(line) for line in lines) <= TOOLTIP_WIDTH:
+        return text
+    # A table is the one rich-text box Qt lets a tooltip take its width from.
+    body = "<br>".join(html.escape(line) for line in lines)
+    return f"<table width='{TOOLTIP_WIDTH}'><tr><td>{body}</td></tr></table>"
+
+
+class _ModernToolTips(QObject):
+    def eventFilter(self, watched, event):
+        if event.type() != QEvent.Type.ToolTip or not isinstance(watched, QWidget):
+            return False
+        text = watched.toolTip()
+        if not text:
+            return False
+        # Qt hands a tooltip that is still showing to the next widget, and
+        # the handed-over one loses its style sheet's padding; start afresh.
+        for widget in QApplication.topLevelWidgets():
+            if widget.metaObject().className() == "QTipLabel" and widget.isVisible():
+                widget.hide()
+        QToolTip.showText(
+            event.globalPos(), wrapped_tooltip(text), watched, QRect(), watched.toolTipDuration()
+        )
+        return True
+
+
+_modern_tooltips: _ModernToolTips | None = None
+
+
+def use_modern_tooltips(root: QWidget) -> None:
+    """Show the tooltips of root and the widgets in it wrapped and padded.
+
+    Qt shows a plain-text tooltip on one line, so the longer ones ran across
+    the screen. Widgets that have a tooltip when this is called get it
+    wrapped at TOOLTIP_WIDTH whenever it shows, whatever it has changed to.
+    """
+    global _modern_tooltips
+    if _modern_tooltips is None:
+        _modern_tooltips = _ModernToolTips()
+    for widget in (root, *root.findChildren(QWidget)):
+        if widget.toolTip():
+            widget.installEventFilter(_modern_tooltips)
+
+
+class BusyPlaceholder(QObject):
+    """Says what an empty text box is waiting for, such as "Translating...".
+
+    The dots count up while Windows' animation effects are on, so a slow
+    first answer still shows that something is under way.
+    """
+
+    INTERVAL_MS = 450
+
+    def __init__(self, view: QTextEdit):
+        super().__init__(view)
+        self._view = view
+        self._text = ""
+        self._step = 0
+        self._idle_text = ""
+        self._timer = QTimer(self)
+        self._timer.setInterval(self.INTERVAL_MS)
+        self._timer.timeout.connect(self._advance)
+
+    def is_active(self) -> bool:
+        return bool(self._text)
+
+    def set_idle_text(self, text: str) -> None:
+        """What the box says when nothing is under way."""
+        self._idle_text = text
+        if not self._text:
+            self._view.setPlaceholderText(text)
+
+    def start(self, text: str) -> None:
+        self._text = text
+        self._step = 0
+        if ui_motion.animations_enabled():
+            self._text = text.rstrip(".…")
+            self._advance()
+            self._timer.start()
+        else:
+            self._view.setPlaceholderText(text)
+
+    def stop(self) -> None:
+        self._timer.stop()
+        self._text = ""
+        self._view.setPlaceholderText(self._idle_text)
+
+    def _advance(self) -> None:
+        self._step = self._step % 3 + 1
+        self._view.setPlaceholderText(self._text + "." * self._step)
