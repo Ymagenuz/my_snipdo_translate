@@ -20,17 +20,20 @@ from PyQt6.QtCore import (
     QEasingCurve,
     QEvent,
     QObject,
+    QPointF,
     QPropertyAnimation,
+    QRectF,
     QTimer,
     Qt,
     pyqtSignal,
 )
-from PyQt6.QtGui import QGuiApplication
+from PyQt6.QtGui import QColor, QGuiApplication, QPainter, QTextDocument, QTextLine
 from PyQt6.QtWidgets import (
     QAbstractScrollArea,
     QAbstractSlider,
     QApplication,
     QGraphicsOpacityEffect,
+    QTextEdit,
     QWidget,
 )
 
@@ -42,6 +45,13 @@ FINE_SCROLL_DURATION_MS = 90
 # Jumps to a far-away place, such as a located sentence, travel further.
 GLIDE_DURATION_MS = 320
 FADE_DURATION_MS = 160
+# Streamed text: a new paragraph fades in as a whole, and its characters
+# follow one after another in reading order.
+REVEAL_BLOCK_MS = 360
+REVEAL_CHARACTER_MS = 300
+REVEAL_STAGGER_MS = 10
+# However much text arrives at once, its last character starts within this.
+REVEAL_SPREAD_MS = 360
 # Frames keep coming at least this often if a monitor stops reporting
 # refreshes, for example while its panel self-refreshes or wakes up.
 FRAME_WATCHDOG_MS = 50
@@ -577,4 +587,152 @@ def fade_in(widget: QWidget, duration: int = FADE_DURATION_MS) -> None:
     # Once opaque, the widget paints directly again instead of through the effect.
     fade_opacity(
         effect, 1.0, duration=duration, finished=lambda: effect.setEnabled(False)
+    )
+
+
+class TextReveal(QObject):
+    """Fades text into a view as it streams in.
+
+    Each new paragraph or list item fades in as a whole, and its characters
+    follow one after another in reading order. The text itself is left
+    alone: veils in the view's background colour cover what just arrived
+    and thin out, so headings, links and formulas keep their own colours.
+    Call note_text() after each render of the streamed text, paint() at the
+    end of the view's paintEvent, and reset() before the view starts over.
+    """
+
+    def __init__(self, view: QTextEdit, background: str):
+        super().__init__(view)
+        self._view = view
+        self._background = QColor(background)
+        self._easing = QEasingCurve(QEasingCurve.Type.OutCubic)
+        self._text = ""
+        # (first, end, when the first appeared, seconds between characters)
+        self._arrivals: list[tuple[int, int, float, float]] = []
+        # Where each new block starts, and when its first character shows.
+        self._blocks: dict[int, float] = {}
+        self._running = False
+        on_frame = self._on_frame
+        self.destroyed.connect(lambda _object=None: _forget_frames(on_frame))
+
+    def is_revealing(self) -> bool:
+        return bool(self._arrivals or self._blocks)
+
+    def reset(self) -> None:
+        self._text = ""
+        self._arrivals.clear()
+        self._blocks.clear()
+        self._stop()
+        self._view.viewport().update()
+
+    def note_text(self) -> None:
+        """Start fading in whatever the view shows beyond the last call."""
+        document = self._view.document()
+        text = document.toPlainText()
+        first = len(self._text)
+        self._text = text
+        if not (self._view.isVisible() and animations_enabled()):
+            self._arrivals.clear()
+            self._blocks.clear()
+            self._stop()
+            return
+        if len(text) <= first:
+            # A re-render tidied what was there; nothing new to show.
+            self._arrivals = [
+                (start, min(end, len(text)), at, step)
+                for start, end, at, step in self._arrivals
+                if start < len(text)
+            ]
+            return
+        now = time.perf_counter()
+        count = len(text) - first
+        step = min(REVEAL_STAGGER_MS, REVEAL_SPREAD_MS / count) / 1000
+        self._arrivals.append((first, len(text), now, step))
+        block = document.findBlock(first)
+        if block.position() < first:
+            block = block.next()  # The block already showing goes on.
+        while block.isValid():
+            # In step with its first character, so a list's bullet shows
+            # with its text rather than ahead of it.
+            self._blocks.setdefault(
+                block.position(), now + (block.position() - first) * step
+            )
+            block = block.next()
+        if not self._running:
+            self._running = True
+            frame_clock().subscribe(self._on_frame, self._view)
+
+    def paint(self) -> None:
+        if not self.is_revealing():
+            return
+        now = time.perf_counter()
+        view = self._view
+        document = view.document()
+        offset = QPointF(-view.horizontalScrollBar().value(), -view.verticalScrollBar().value())
+        visible = QRectF(view.viewport().rect())
+        painter = QPainter(view.viewport())
+        layout = document.documentLayout()
+        for position, at in self._blocks.items():
+            progress = (now - at) * 1000 / REVEAL_BLOCK_MS
+            block = document.findBlock(position)
+            if progress < 1 and block.isValid():
+                rect = layout.blockBoundingRect(block).translated(offset)
+                if rect.intersects(visible):
+                    self._veil(painter, rect, progress)
+        for first, end, at, step in self._arrivals:
+            for index in range(first, end):
+                progress = (now - at - (index - first) * step) * 1000 / REVEAL_CHARACTER_MS
+                if progress >= 1:
+                    continue
+                rect = _character_rect(document, index)
+                if rect is not None:
+                    rect.translate(offset)
+                    if rect.intersects(visible):
+                        self._veil(painter, rect, progress)
+        painter.end()
+
+    def _veil(self, painter: QPainter, rect: QRectF, progress: float) -> None:
+        color = QColor(self._background)
+        color.setAlphaF(1.0 - self._easing.valueForProgress(min(1.0, max(0.0, progress))))
+        painter.fillRect(rect, color)
+
+    def _on_frame(self, now: float) -> None:
+        now = time.perf_counter()
+        self._blocks = {
+            position: at for position, at in self._blocks.items()
+            if (now - at) * 1000 < REVEAL_BLOCK_MS
+        }
+        self._arrivals = [
+            arrival for arrival in self._arrivals
+            if (now - arrival[2] - (arrival[1] - arrival[0] - 1) * arrival[3]) * 1000
+            < REVEAL_CHARACTER_MS
+        ]
+        self._view.viewport().update()
+        if not self.is_revealing():
+            self._stop()
+
+    def _stop(self) -> None:
+        if self._running:
+            self._running = False
+            frame_clock().unsubscribe(self._on_frame)
+
+
+def _character_rect(document: QTextDocument, index: int) -> QRectF | None:
+    """Where character index sits in the document, or None for a line break."""
+    block = document.findBlock(index)
+    layout = block.layout()
+    offset = index - block.position()
+    if layout is None or offset >= block.length() - 1:
+        return None
+    line = layout.lineForTextPosition(offset)
+    if not line.isValid():
+        return None
+    left = line.cursorToX(offset, QTextLine.Edge.Leading)[0]
+    right = line.cursorToX(offset, QTextLine.Edge.Trailing)[0]
+    origin = layout.position()
+    return QRectF(
+        origin.x() + min(left, right),
+        origin.y() + line.y(),
+        abs(right - left),
+        line.height(),
     )

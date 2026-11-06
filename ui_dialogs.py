@@ -1,9 +1,9 @@
 """Message boxes and prompts that suit the rest of the app.
 
 Qt's stock dialogs bring Windows' yellow triangle, blue focus line and blue
-progress bar into an app that is otherwise grey, white and purple. These
-helpers give them the main window's buttons and colours, and keep message
-boxes wide enough for their titles.
+progress bar into an app with its own greys, blue and teal. These helpers
+give them the main window's buttons and colours, and keep message boxes
+wide enough for their titles.
 """
 from __future__ import annotations
 
@@ -27,12 +27,13 @@ MESSAGE_MIN_WIDTH = 360
 
 WARNING_COLOR = QColor("#E6A23C")
 
-# The main window's grey buttons; the dialog's default one takes the accent.
+# The main window's buttons: grey, with the default one tinted blue like
+# Translate.
 BUTTON_STYLE = """
     QPushButton {
-        background-color: #F2F3F5;
-        color: #606266;
-        border: 1px solid #DCDFE6;
+        background-color: #F2F4F7;
+        color: #5F6B7A;
+        border: 1px solid #DDE3EA;
         border-radius: 6px;
         padding: 6px 16px;
         min-width: 56px;
@@ -41,27 +42,27 @@ BUTTON_STYLE = """
         font-weight: 600;
     }
     QPushButton:hover {
-        background-color: #E4E7ED;
+        background-color: #E6EAF0;
         color: #303133;
     }
     QPushButton:focus {
-        border-color: #C39BD3;
+        border-color: #B7CCF8;
     }
     QPushButton:default {
-        background-color: #8E44AD;
-        color: #FFFFFF;
-        border-color: #8E44AD;
+        background-color: #EAF1FE;
+        color: #2F62D6;
+        border-color: #CFDDFB;
     }
     QPushButton:default:hover {
-        background-color: #9B59B6;
-        border-color: #9B59B6;
+        background-color: #DFE9FD;
+        border-color: #B7CCF8;
     }
     QPushButton:default:pressed {
-        background-color: #7D3C98;
-        border-color: #7D3C98;
+        background-color: #D3E1FC;
+        border-color: #B7CCF8;
     }
     QPushButton:disabled {
-        background-color: #F2F3F5;
+        background-color: #F2F4F7;
         color: #C0C4CC;
         border-color: #E4E7ED;
     }
@@ -84,11 +85,11 @@ DIALOG_STYLE = BUTTON_STYLE + """
         padding: 6px 10px;
         font-family: 'Segoe UI', 'Microsoft YaHei UI';
         font-size: 13px;
-        selection-background-color: #D7BDE2;
+        selection-background-color: #D3DFFB;
         selection-color: #303133;
     }
     QLineEdit:focus {
-        border-color: #8E44AD;
+        border-color: #2F62D6;
     }
     QProgressBar {
         background-color: #EBEEF5;
@@ -98,7 +99,7 @@ DIALOG_STYLE = BUTTON_STYLE + """
         max-height: 6px;
     }
     QProgressBar::chunk {
-        background-color: #8E44AD;
+        background-color: #2F62D6;
         border-radius: 3px;
     }
 """

@@ -18,7 +18,6 @@ import pytest
 
 import ui_controls
 from ui_controls import (
-    ACCENT,
     DROPDOWN_STYLE,
     TOOLTIP_WIDTH,
     MENU_STYLE,
@@ -327,13 +326,13 @@ def _box_colours(check_box):
     )
 
 
-def test_ticked_check_box_fills_its_box_with_the_accent(check_box):
+def test_ticked_check_box_fills_its_box_with_teal(check_box):
     check_box.setChecked(True)
 
     edge, inside = _box_colours(check_box)
 
-    assert edge.name() == ACCENT.name()
-    assert inside.name() == ACCENT.name()
+    assert edge.name() == ModernCheckBox.TICKED_COLOR.name() == "#0e9a8b"
+    assert inside.name() == ModernCheckBox.TICKED_COLOR.name()
 
 
 def test_unticked_check_box_shows_an_empty_box_with_the_same_shape(check_box):

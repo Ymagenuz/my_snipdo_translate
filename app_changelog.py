@@ -37,8 +37,8 @@ _HEADING_COLOR = "#303133"
 _MUTED_COLOR = "#A8ABB2"
 _SECTION_COLOR = "#909399"
 # Badge label key, text color and background for a release heading.
-_INSTALLED_BADGE = ("settings.about.changelog.installed", "#8E44AD", "#F3ECF8")
-_AVAILABLE_BADGE = ("settings.about.changelog.available", "#409EFF", "#ECF5FF")
+_INSTALLED_BADGE = ("settings.about.changelog.installed", "#0B7A6F", "#E6F6F4")
+_AVAILABLE_BADGE = ("settings.about.changelog.available", "#2F62D6", "#EAF1FE")
 
 
 def load_changelog(directory: Path, language: str) -> str:

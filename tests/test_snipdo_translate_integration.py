@@ -136,6 +136,7 @@ class _TextEditStub(_WidgetStub):
         super().__init__()
         self.cursor = _CursorStub()
         self.scroll_bar = _ScrollBarStub()
+        self.text_reveal = None
 
     def textCursor(self):
         return self.cursor

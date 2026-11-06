@@ -2135,7 +2135,7 @@ def test_tray_menu_hover_style_has_explicit_foreground_and_background(
         selected_style = compact_style.split(
             "qmenu::item:selected{", 1
         )[1].split("}", 1)[0]
-        assert "background-color:#ede7f6;" in selected_style
+        assert "background-color:#eaf1fe;" in selected_style
         assert "color:#303133;" in selected_style
     finally:
         window.tray_icon.hide()
@@ -3180,7 +3180,7 @@ def test_disable_while_suspended_prevents_delayed_resume_from_reinstalling(
     assert len(refreshes) == 2
 
 
-def test_stop_button_takes_the_translate_buttons_place_while_running(edit_window):
+def test_stop_shows_beside_the_heading_while_running(edit_window):
     window, workers = edit_window
     assert window.btn_stop.isHidden()
     assert not window.btn_translate.isHidden()
@@ -3188,14 +3188,18 @@ def test_stop_button_takes_the_translate_buttons_place_while_running(edit_window
     window.txt_origin.setPlainText("这是一个测试句子。")
     window.start_manual_translation()
 
+    # Translate stays where it is and says what's happening.
     assert not window.btn_stop.isHidden()
-    assert window.btn_translate.isHidden()
+    assert not window.btn_translate.isHidden()
+    assert not window.btn_translate.isEnabled()
+    assert window.btn_translate.text() == "Translating..."
 
     workers[-1].chunk_received.emit("This is a test sentence.")
     workers[-1].complete()
 
     assert window.btn_stop.isHidden()
-    assert not window.btn_translate.isHidden()
+    assert window.btn_translate.isEnabled()
+    assert window.btn_translate.text() == "Translate (Ctrl+Enter)"
 
     assert window.handle_new_request("A selected sentence to translate.")
     assert window.source_mode == "snipdo"
@@ -3590,30 +3594,45 @@ def test_text_boxes_are_single_shapes_with_their_text_lined_up(
     assert len({_text_start(view, card) for view in views}) == 1
     # A tinted box, without the bar that ran down its left side.
     image = card.grab().toImage()
-    for view, tint in ((window.txt_origin, "#f7f8fa"), (window.txt_back_translation, "#faf7fc")):
+    for view, tint in ((window.txt_origin, "#fbfcff"), (window.txt_back_translation, "#fbfcff")):
         left_middle = view.mapTo(card, QPoint(0, view.height() // 2))
         assert image.pixelColor(left_middle).name() == tint
     window.hide()
 
 
-def test_stop_takes_translates_place_without_moving_the_other_buttons(
-    edit_window, qapp
-):
+def test_a_running_translation_moves_no_button(edit_window, qapp):
     window, workers = edit_window
     window.show()
     qapp.processEvents()
-    buttons = (window.btn_clear_origin, window.btn_ocr_clipboard, window.btn_history)
-    before = [button.pos() for button in buttons]
+    buttons = (
+        window.btn_clear_origin, window.btn_ocr_clipboard, window.btn_history,
+        window.btn_translate, window.btn_copy, window.btn_hide,
+    )
+    before = [button.geometry() for button in buttons]
 
     window.txt_origin.setPlainText("这是第一句。")
     window.start_manual_translation()
     qapp.processEvents()
 
-    assert not window.btn_stop.isHidden()
-    assert window.btn_translate.isHidden()
-    assert [button.pos() for button in buttons] == before
-    assert window.btn_stop.width() == window.btn_translate.width()
+    assert [button.geometry() for button in buttons] == before
+    # Stop is a small chip by the translation's heading, not a big button.
+    stop = window.btn_stop
+    assert stop.isVisible()
+    assert abs(stop.mapTo(window, QPoint(0, 0)).y() - window.lbl_result.mapTo(window, QPoint(0, 0)).y()) < 12
+    assert stop.height() < window.btn_translate.height()
+    # As tall as Back-translate, beside it in the same row.
+    assert stop.height() == window.btn_back_translation.height()
     window.hide()
+
+
+def test_source_boxes_take_the_faint_tint_and_fade_into_it(edit_window):
+    window, _workers = edit_window
+
+    for view in (window.txt_origin, window.txt_back_translation):
+        view.ensurePolished()
+        assert view.palette().color(QPalette.ColorRole.Base).name() == "#fbfcff"
+    # Back-translated text fades in behind veils of the box's own colour.
+    assert window.txt_back_translation.text_reveal._background.name() == "#fbfcff"
 
 
 @pytest.mark.parametrize(
@@ -3693,8 +3712,8 @@ def test_settings_buttons_match_the_main_window(app, qapp):
 
     box = dialog.findChild(QDialogButtonBox)
     for kind, colour in (
-        (QDialogButtonBox.StandardButton.Save, "#8e44ad"),
-        (QDialogButtonBox.StandardButton.Cancel, "#f2f3f5"),
+        (QDialogButtonBox.StandardButton.Save, "#eaf1fe"),
+        (QDialogButtonBox.StandardButton.Cancel, "#f2f4f7"),
     ):
         button = box.button(kind)
         image = button.grab().toImage()
@@ -3706,12 +3725,17 @@ def test_settings_buttons_match_the_main_window(app, qapp):
     qapp.processEvents()
 
 
-def test_selected_text_is_tinted_with_the_accent_not_windows_blue(edit_window):
+def test_selected_text_is_tinted_with_its_sides_colour_not_windows_blue(edit_window):
     window, _workers = edit_window
 
-    for view in (window.txt_origin, window.txt_result, window.txt_back_translation):
+    # Blue for the source and its back-translation, teal for the translation.
+    for view, tint in (
+        (window.txt_origin, "#d3dffb"),
+        (window.txt_result, "#cbefeb"),
+        (window.txt_back_translation, "#d3dffb"),
+    ):
         view.ensurePolished()
-        assert view.palette().color(QPalette.ColorRole.Highlight).name() == "#d7bde2"
+        assert view.palette().color(QPalette.ColorRole.Highlight).name() == tint
         assert view.palette().color(QPalette.ColorRole.HighlightedText).name() == "#303133"
 
 
@@ -3772,3 +3796,29 @@ def test_history_times_read_like_a_clock(app, stamp, english, chinese):
     assert app.history_time_label(stamp, now) == english
     set_ui_language("zh-CN")
     assert app.history_time_label(stamp, now) == chinese
+
+
+def test_streamed_translation_and_back_translation_fade_in(
+    edit_window, back_workers, qapp, motion_on, wait_until
+):
+    window, workers = edit_window
+    window.app_settings = replace(window.app_settings, back_translation=True)
+    window.show()
+    qapp.processEvents()
+    window.txt_origin.setPlainText("这是第一句。")
+    window.start_manual_translation()
+
+    workers[-1].chunk_received.emit("This is the first sentence.")
+    window.flush_live_translation()
+    assert window.txt_result.text_reveal.is_revealing()
+
+    workers[-1].complete()
+    back_workers[-1].chunk_received.emit("这是第一句。")
+    window.render_back_translation()
+    assert window.txt_back_translation.text_reveal.is_revealing()
+
+    # A new translation starts with nothing left fading.
+    window.start_manual_translation()
+    assert not window.txt_result.text_reveal.is_revealing()
+    assert not window.txt_back_translation.text_reveal.is_revealing()
+    window.hide()

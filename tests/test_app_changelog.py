@@ -137,9 +137,9 @@ def test_rendered_changelog_marks_installed_and_available_releases(qapp):
     assert version_format.foreground().color().name() == "#303133"
     assert _format_at(headings[0], len("13.0.0 — ")).foreground().color().name() == "#a8abb2"
     available_badge = _format_at(headings[0], len(headings[0].text()) - 3)
-    assert available_badge.background().color().name() == "#ecf5ff"
+    assert available_badge.background().color().name() == "#eaf1fe"
     installed_badge = _format_at(headings[2], len(headings[2].text()) - 3)
-    assert installed_badge.foreground().color().name() == "#8e44ad"
+    assert installed_badge.foreground().color().name() == "#0b7a6f"
     assert _format_at(headings[1], 0).property(size) == 0
     assert headings[0].blockFormat().topMargin() == 0
     assert headings[2].blockFormat().topMargin() > 0

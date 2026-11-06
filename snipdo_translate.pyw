@@ -137,7 +137,7 @@ from ui_controls import (
     use_modern_tooltips,
 )
 from ui_dialogs import BUTTON_STYLE, ask_text, show_warning
-from ui_motion import SmoothScroller, fade_in, fade_opacity
+from ui_motion import SmoothScroller, TextReveal, fade_in, fade_opacity
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTextEdit,
@@ -541,7 +541,7 @@ def create_update_icon() -> QIcon:
     arrow.lineTo(20, 20)
     arrow.lineTo(20, 15)
 
-    pen = QPen(QColor("#409EFF"))
+    pen = QPen(QColor("#2F62D6"))
     pen.setWidthF(2.4)
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
@@ -1646,7 +1646,7 @@ class InteractiveTextEdit(QTextEdit):
             QTextEdit {
                 border: none;
                 background-color: transparent;
-                selection-background-color: #D7BDE2;
+                selection-background-color: #D3DFFB;
                 selection-color: #303133;
             }
         """)
@@ -1654,6 +1654,13 @@ class InteractiveTextEdit(QTextEdit):
         use_modern_scroll_bar(self)
         use_modern_context_menu(self)
         self.smooth_scroller = SmoothScroller(self)
+        # Set by views whose text streams in.
+        self.text_reveal: TextReveal | None = None
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.text_reveal is not None:
+            self.text_reveal.paint()
 
     def keyPressEvent(self, event):
         if (
@@ -1811,11 +1818,11 @@ class ShortcutCaptureButton(QPushButton):
                 font-weight: 600;
             }
             QPushButton:hover {
-                border-color: #C39BD3;
+                border-color: #B7CCF8;
             }
             QPushButton:focus {
-                border-color: #8E44AD;
-                color: #8E44AD;
+                border-color: #2F62D6;
+                color: #2F62D6;
             }
         """)
         self.clicked.connect(self.begin_capture)
@@ -1846,7 +1853,7 @@ class ShortcutCaptureButton(QPushButton):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         accent = self._capturing or self.hasFocus()
-        pen = QPen(QColor("#8E44AD" if accent else "#909399"), 1.3)
+        pen = QPen(QColor("#2F62D6" if accent else "#909399"), 1.3)
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         middle = self.height() / 2
@@ -2045,7 +2052,7 @@ class SettingsDialog(QDialog):
         self.setMinimumWidth(720)
         self.setStyleSheet("""
             QDialog {
-                background-color: #F5F7FA;
+                background-color: #F3F6FA;
             }
             QListWidget {
                 background-color: transparent;
@@ -2062,11 +2069,11 @@ class SettingsDialog(QDialog):
                 border-radius: 6px;
             }
             QListWidget::item:hover {
-                background-color: #EBEEF5;
+                background-color: #E6EAF0;
             }
             QListWidget::item:selected {
-                background-color: #EDE7F6;
-                color: #8E44AD;
+                background-color: #EAF1FE;
+                color: #2F62D6;
             }
             QLabel {
                 color: #606266;
@@ -2087,11 +2094,11 @@ class SettingsDialog(QDialog):
                 padding: 7px 10px;
                 font-family: 'Segoe UI', 'Microsoft YaHei UI';
                 font-size: 13px;
-                selection-background-color: #D7BDE2;
+                selection-background-color: #D3DFFB;
                 selection-color: #303133;
             }
             QLineEdit:focus, QComboBox:focus {
-                border-color: #8E44AD;
+                border-color: #2F62D6;
             }
         """ + BUTTON_STYLE + TOOLTIP_STYLE)
 
@@ -2342,8 +2349,8 @@ class SettingsDialog(QDialog):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self.version_label.setStyleSheet("""
-            color: #8E44AD;
-            background-color: #F3ECF8;
+            color: #0B7A6F;
+            background-color: #E6F6F4;
             border-radius: 9px;
             padding: 1px 8px;
             font-size: 12px;
@@ -2358,7 +2365,7 @@ class SettingsDialog(QDialog):
         names.addWidget(tagline)
         identity.addLayout(names, 1)
         project_link = QLabel(
-            f'<a href="{REPOSITORY_URL}" style="color: #8E44AD; '
+            f'<a href="{REPOSITORY_URL}" style="color: #2F62D6; '
             'text-decoration: none;">GitHub ↗</a>'
         )
         project_link.setTextFormat(Qt.TextFormat.RichText)
@@ -2388,21 +2395,20 @@ class SettingsDialog(QDialog):
             self.install_update_button = QPushButton(tr("update.button.install"))
             self.install_update_button.setStyleSheet("""
                 QPushButton {
-                    background-color: #8E44AD;
-                    color: #FFFFFF;
-                    border: 1px solid #8E44AD;
+                    background-color: #EAF1FE;
+                    color: #2F62D6;
+                    border: 1px solid #CFDDFB;
                     border-radius: 6px;
                     padding: 6px 16px;
                     font-size: 13px;
                     font-weight: 600;
                 }
                 QPushButton:hover {
-                    background-color: #9B59B6;
-                    border-color: #9B59B6;
+                    background-color: #DFE9FD;
+                    border-color: #B7CCF8;
                 }
                 QPushButton:pressed {
-                    background-color: #7D3C98;
-                    border-color: #7D3C98;
+                    background-color: #D3E1FC;
                 }
             """)
             self.install_update_button.clicked.connect(self._install_update)
@@ -2422,9 +2428,9 @@ class SettingsDialog(QDialog):
                     font-size: 13px;
                 }
                 QPushButton:hover {
-                    color: #8E44AD;
-                    background-color: #F4ECF7;
-                    border-color: #D7BDE2;
+                    color: #2F62D6;
+                    background-color: #EAF1FE;
+                    border-color: #CFDDFB;
                 }
                 QPushButton:disabled {
                     color: #C0C4CC;
@@ -2470,7 +2476,7 @@ class SettingsDialog(QDialog):
                 border-radius: 8px;
                 font-family: 'Segoe UI', 'Microsoft YaHei UI';
                 font-size: 13px;
-                selection-background-color: #D7BDE2;
+                selection-background-color: #D3DFFB;
                 selection-color: #303133;
             }
         """)
@@ -2527,9 +2533,9 @@ class SettingsDialog(QDialog):
             text, color = tr("update.about.checking"), "#E6A23C"
         elif release is not None:
             text = tr("update.about.available", version=release.version, current=APP_VERSION)
-            color = "#409EFF"
+            color = "#2F62D6"
         elif updates.last_result == "current":
-            text, color = tr("update.about.current"), "#67C23A"
+            text, color = tr("update.about.current"), "#0E9A8B"
         elif updates.last_result == "failed":
             text, color = tr("update.check_failed"), "#F56C6C"
         else:
@@ -3201,6 +3207,28 @@ def pane_message_format(error: bool = False) -> QTextCharFormat:
     message_format.setForeground(QColor("#C45656" if error else "#909399"))
     return message_format
 
+
+# The source and back-translation boxes: the source side's blue, so faint
+# the boxes read as a hint of colour behind the text.
+SOURCE_BOX_TINT = "#FBFCFF"
+
+# Fill in color and hover: the Locate button takes the colour of the side
+# it finds the text in.
+LOCATE_BUTTON_STYLE = """
+    QPushButton {{
+        background-color: {color};
+        color: white;
+        border: none;
+        border-radius: 6px;
+        padding: 3px 10px;
+        font-family: 'Segoe UI', 'Microsoft YaHei UI';
+        font-weight: 600;
+        font-size: 12px;
+    }}
+    QPushButton:hover {{
+        background-color: {hover};
+    }}
+"""
 
 RESULT_ERROR_NOTICE_STYLE = """
     #resultNotice {
@@ -4268,7 +4296,7 @@ class TranslationWindow(QWidget):
         # outline around themselves.
         self.setObjectName("translationWindow")
         self.setStyleSheet(
-            "#translationWindow { background-color: #F5F7FA; }" + TOOLTIP_STYLE
+            "#translationWindow { background-color: #F3F6FA; }" + TOOLTIP_STYLE
         )
 
         screen = QApplication.primaryScreen()
@@ -4288,7 +4316,7 @@ class TranslationWindow(QWidget):
             #card {
                 background-color: #FFFFFF;
                 border-radius: 12px;
-                border: 1px solid #EAEAEA;
+                border: 1px solid #E6EBF2;
             }
         """)
 
@@ -4303,7 +4331,7 @@ class TranslationWindow(QWidget):
         header_layout = QHBoxLayout()
 
         self.lbl_origin = QLabel(tr("main.label.original_auto"))
-        self.lbl_origin.setStyleSheet("color: #909399; font-size: 10px; font-weight: 700; letter-spacing: 1px;")
+        self.lbl_origin.setStyleSheet("color: #2F62D6; font-size: 10px; font-weight: 700; letter-spacing: 1px;")
         header_layout.addWidget(self.lbl_origin)
 
         header_layout.addStretch()
@@ -4318,9 +4346,9 @@ class TranslationWindow(QWidget):
         self.lbl_model_name.setObjectName("modelBadge")
         self.lbl_model_name.setStyleSheet("""
             #modelBadge {
-                background-color: #F5F7FA;
-                color: #909399;
-                border: 1px solid #E4E7ED;
+                background-color: #F3F6FA;
+                color: #7C8798;
+                border: 1px solid #E6EBF2;
                 border-radius: 6px;
                 padding: 2px 6px;
                 font-size: 11px;
@@ -4343,17 +4371,17 @@ class TranslationWindow(QWidget):
         )
         self.btn_settings.setStyleSheet("""
             QPushButton {
-                background-color: #F5F7FA;
-                color: #606266;
-                border: 1px solid #E4E7ED;
+                background-color: #F3F6FA;
+                color: #5F6B7A;
+                border: 1px solid #E6EBF2;
                 border-radius: 6px;
                 padding: 4px;
                 font-size: 11px;
                 font-weight: 600;
             }
             QPushButton:hover {
-                color: #8E44AD;
-                border-color: #C39BD3;
+                color: #2F62D6;
+                border-color: #CFDDFB;
             }
         """)
         self.btn_settings.clicked.connect(
@@ -4364,7 +4392,7 @@ class TranslationWindow(QWidget):
         self.lbl_dictionary_lang = QLabel(tr("main.language"))
         self.lbl_dictionary_lang.setObjectName("dictionaryLanguageLabel")
         self.lbl_dictionary_lang.setStyleSheet(
-            "#dictionaryLanguageLabel { color: #909399; font-size: 11px; font-weight: 600; }"
+            "#dictionaryLanguageLabel { color: #7C8798; font-size: 11px; font-weight: 600; }"
         )
         self.lbl_dictionary_lang.setToolTip(tr("main.language.tooltip"))
 
@@ -4413,25 +4441,16 @@ class TranslationWindow(QWidget):
         self.origin_font.setFamilies(["Segoe UI", "Microsoft YaHei UI", "sans-serif"])
         self.origin_font.setPixelSize(14)
         self.txt_origin.setFont(self.origin_font)
-        self.txt_origin.setStyleSheet("""
-            QTextEdit {
-                background-color: #F7F8FA;
-                border: none;
-                border-radius: 8px;
-                padding: 4px 4px 4px 8px;
-                color: #303133;
-                selection-background-color: #D7BDE2;
-                selection-color: #303133;
-            }
-        """)
         card_layout.addWidget(self.txt_origin)
 
         result_header_layout = QHBoxLayout()
         result_header_layout.setContentsMargins(0, 2, 0, 0)
         result_header_layout.setSpacing(8)
+        # Stop joins the heading once the buttons below exist.
+        self.result_header_layout = result_header_layout
 
         self.lbl_result = QLabel(tr("main.label.auto_translation"))
-        self.lbl_result.setStyleSheet("color: #8E44AD; font-size: 10px; font-weight: 700; letter-spacing: 1px; margin-top: 2px;")
+        self.lbl_result.setStyleSheet("color: #0E8A7D; font-size: 10px; font-weight: 700; letter-spacing: 1px; margin-top: 2px;")
         result_header_layout.addWidget(self.lbl_result)
 
         result_header_layout.addStretch()
@@ -4444,8 +4463,8 @@ class TranslationWindow(QWidget):
         self.btn_back_translation.setStyleSheet("""
             QPushButton {
                 background-color: transparent;
-                color: #909399;
-                border: 1px solid #DCDFE6;
+                color: #7C8798;
+                border: 1px solid #DDE3EA;
                 border-radius: 6px;
                 padding: 2px 8px;
                 font-size: 11px;
@@ -4453,13 +4472,13 @@ class TranslationWindow(QWidget):
                 min-height: 20px;
             }
             QPushButton:hover {
-                color: #8E44AD;
-                border-color: #C39BD3;
+                color: #0B7A6F;
+                border-color: #A6DED7;
             }
             QPushButton:checked {
-                background-color: #F4ECF7;
-                color: #8E44AD;
-                border-color: #C39BD3;
+                background-color: #E6F6F4;
+                color: #0B7A6F;
+                border-color: #BFE8E3;
             }
         """)
         self.btn_back_translation.clicked.connect(self.toggle_back_translation)
@@ -4486,11 +4505,13 @@ class TranslationWindow(QWidget):
                 background-color: transparent;
                 border: none;
                 padding: 0 4px 0 8px;
-                selection-background-color: #D7BDE2;
+                selection-background-color: #CBEFEB;
                 selection-color: #303133;
             }
         """)
         self.result_busy = BusyPlaceholder(self.txt_result)
+        # It sits on the card's white.
+        self.txt_result.text_reveal = TextReveal(self.txt_result, "#FFFFFF")
         self.result_opacity_effect = QGraphicsOpacityEffect(self.txt_result)
         self.result_opacity_effect.setEnabled(False)
         self.txt_result.setGraphicsEffect(self.result_opacity_effect)
@@ -4530,7 +4551,7 @@ class TranslationWindow(QWidget):
         back_layout.setSpacing(6)
         back_header_layout = QHBoxLayout()
         self.lbl_back_translation = QLabel(tr("main.label.back_translation"))
-        self.lbl_back_translation.setStyleSheet("color: #909399; font-size: 10px; font-weight: 700; letter-spacing: 1px;")
+        self.lbl_back_translation.setStyleSheet("color: #2F62D6; font-size: 10px; font-weight: 700; letter-spacing: 1px;")
         back_header_layout.addWidget(self.lbl_back_translation)
         back_header_layout.addStretch()
         self.btn_stop_back_translation = QPushButton(tr("main.stop_back_translation"))
@@ -4560,18 +4581,11 @@ class TranslationWindow(QWidget):
         back_font = QFont(self.origin_font)
         back_font.setPixelSize(13)
         self.txt_back_translation.setFont(back_font)
-        self.txt_back_translation.setStyleSheet("""
-            QTextEdit {
-                background-color: #FAF7FC;
-                border: none;
-                border-radius: 8px;
-                padding: 4px 4px 4px 8px;
-                color: #606266;
-                selection-background-color: #D7BDE2;
-                selection-color: #303133;
-            }
-        """)
         back_layout.addWidget(self.txt_back_translation)
+        self.txt_back_translation.text_reveal = TextReveal(
+            self.txt_back_translation, SOURCE_BOX_TINT
+        )
+        self.style_source_boxes()
         self.back_translation_panel.hide()
         card_layout.addWidget(self.back_translation_panel)
 
@@ -4582,21 +4596,9 @@ class TranslationWindow(QWidget):
         self.btn_align_selection = QPushButton(self.card_frame)
         self.btn_align_selection.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_align_selection.setFixedHeight(26)
-        self.btn_align_selection.setStyleSheet("""
-            QPushButton {
-                background-color: #8E44AD;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 3px 10px;
-                font-family: 'Segoe UI', 'Microsoft YaHei UI';
-                font-weight: 600;
-                font-size: 12px;
-            }
-            QPushButton:hover {
-                background-color: #9B59B6;
-            }
-        """)
+        self.btn_align_selection.setStyleSheet(
+            LOCATE_BUTTON_STYLE.format(color="#0E8A7D", hover="#0B7A6F")
+        )
         self.btn_align_selection.clicked.connect(self.highlight_selected_counterpart)
         self.btn_align_selection.hide()
 
@@ -4617,9 +4619,9 @@ class TranslationWindow(QWidget):
         self.btn_clear_origin.clicked.connect(self.clear_manual_origin)
         self.btn_clear_origin.setStyleSheet("""
             QPushButton {
-                background-color: #F2F3F5;
-                color: #606266;
-                border: 1px solid #DCDFE6;
+                background-color: #F2F4F7;
+                color: #5F6B7A;
+                border: 1px solid #DDE3EA;
                 border-radius: 6px;
                 padding: 6px 16px;
                 font-family: 'Segoe UI', 'Microsoft YaHei UI';
@@ -4627,7 +4629,7 @@ class TranslationWindow(QWidget):
                 font-size: 13px;
             }
             QPushButton:hover {
-                background-color: #E4E7ED;
+                background-color: #E6EAF0;
                 color: #303133;
             }
         """)
@@ -4641,9 +4643,9 @@ class TranslationWindow(QWidget):
         self.btn_ocr_clipboard.clicked.connect(self.start_clipboard_ocr)
         self.btn_ocr_clipboard.setStyleSheet("""
             QPushButton {
-                background-color: #F2F3F5;
-                color: #606266;
-                border: 1px solid #DCDFE6;
+                background-color: #F2F4F7;
+                color: #5F6B7A;
+                border: 1px solid #DDE3EA;
                 border-radius: 6px;
                 padding: 6px 14px;
                 font-family: 'Segoe UI', 'Microsoft YaHei UI';
@@ -4651,11 +4653,11 @@ class TranslationWindow(QWidget):
                 font-size: 13px;
             }
             QPushButton:hover {
-                background-color: #E4E7ED;
+                background-color: #E6EAF0;
                 color: #303133;
             }
             QPushButton:disabled {
-                background-color: #F2F3F5;
+                background-color: #F2F4F7;
                 color: #C0C4CC;
             }
         """)
@@ -4666,9 +4668,9 @@ class TranslationWindow(QWidget):
         self.btn_history.clicked.connect(self.show_history_menu)
         self.btn_history.setStyleSheet("""
             QPushButton {
-                background-color: #F2F3F5;
-                color: #606266;
-                border: 1px solid #DCDFE6;
+                background-color: #F2F4F7;
+                color: #5F6B7A;
+                border: 1px solid #DDE3EA;
                 border-radius: 6px;
                 padding: 6px 14px;
                 font-family: 'Segoe UI', 'Microsoft YaHei UI';
@@ -4676,7 +4678,7 @@ class TranslationWindow(QWidget):
                 font-size: 13px;
             }
             QPushButton:hover {
-                background-color: #E4E7ED;
+                background-color: #E6EAF0;
                 color: #303133;
             }
         """)
@@ -4687,9 +4689,9 @@ class TranslationWindow(QWidget):
         self.btn_translate.clicked.connect(self.start_manual_translation)
         self.btn_translate.setStyleSheet("""
             QPushButton {
-                background-color: #8E44AD;
-                color: white;
-                border: 1px solid #8E44AD;
+                background-color: #EAF1FE;
+                color: #2F62D6;
+                border: 1px solid #CFDDFB;
                 border-radius: 6px;
                 padding: 6px 16px;
                 font-family: 'Segoe UI', 'Microsoft YaHei UI';
@@ -4697,17 +4699,16 @@ class TranslationWindow(QWidget):
                 font-size: 13px;
             }
             QPushButton:hover {
-                background-color: #9B59B6;
-                border-color: #9B59B6;
+                background-color: #DFE9FD;
+                border-color: #B7CCF8;
             }
             QPushButton:pressed {
-                background-color: #7D3C98;
-                border-color: #7D3C98;
+                background-color: #D3E1FC;
             }
             QPushButton:disabled {
-                background-color: #D7BDE2;
-                color: #FFFFFF;
-                border-color: #D7BDE2;
+                background-color: #F3F6FA;
+                color: #9DB3E6;
+                border-color: #E1E8F5;
             }
         """)
         btn_layout.addWidget(self.btn_translate)
@@ -4716,24 +4717,28 @@ class TranslationWindow(QWidget):
         self.btn_stop.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_stop.setToolTip(tr("main.stop.tooltip"))
         self.btn_stop.clicked.connect(self.stop_translation)
+        # Small and grey, like the back-translation's Stop: there when wanted,
+        # without drawing the eye while the translation arrives.
         self.btn_stop.setStyleSheet("""
             QPushButton {
                 background-color: #FFFFFF;
-                color: #F56C6C;
-                border: 1px solid #FBC4C4;
+                color: #7C8798;
+                border: 1px solid #DDE3EA;
                 border-radius: 6px;
-                padding: 6px 16px;
+                padding: 2px 8px;
                 font-family: 'Segoe UI', 'Microsoft YaHei UI';
                 font-weight: 600;
-                font-size: 13px;
+                font-size: 11px;
+                min-height: 20px;
             }
             QPushButton:hover {
                 background-color: #FEF0F0;
-                border-color: #F56C6C;
+                color: #F56C6C;
+                border-color: #FBC4C4;
             }
         """)
         self.btn_stop.hide()
-        btn_layout.addWidget(self.btn_stop)
+        self.result_header_layout.insertWidget(1, self.btn_stop)
 
         self.btn_copy = QPushButton(tr("main.copy"))
         self.btn_copy.setEnabled(False)
@@ -4741,9 +4746,9 @@ class TranslationWindow(QWidget):
         self.btn_copy.clicked.connect(self.copy_to_clipboard)
         self.btn_copy.setStyleSheet("""
             QPushButton {
-                background-color: #F4ECF7;
-                color: #8E44AD;
-                border: 1px solid #E3D0EC;
+                background-color: #E6F6F4;
+                color: #0B7A6F;
+                border: 1px solid #BFE8E3;
                 border-radius: 6px;
                 padding: 6px 16px;
                 font-family: 'Segoe UI', 'Microsoft YaHei UI';
@@ -4751,16 +4756,16 @@ class TranslationWindow(QWidget):
                 font-size: 13px;
             }
             QPushButton:hover {
-                background-color: #EBDDF2;
-                border-color: #D7BDE2;
+                background-color: #D8F1EE;
+                border-color: #A6DED7;
             }
             QPushButton:pressed {
-                background-color: #E3D0EC;
+                background-color: #CBEBE7;
             }
             QPushButton:disabled {
-                background-color: #F8F4FA;
-                color: #C9A9D8;
-                border-color: #EFE4F4;
+                background-color: #F3FAF9;
+                color: #9FD4CD;
+                border-color: #E0F2EF;
             }
         """)
         btn_layout.addWidget(self.btn_copy)
@@ -4770,9 +4775,9 @@ class TranslationWindow(QWidget):
         self.btn_hide.clicked.connect(lambda _checked=False: self.hide())
         self.btn_hide.setStyleSheet("""
             QPushButton {
-                background-color: #F2F3F5;
-                color: #606266;
-                border: 1px solid #DCDFE6;
+                background-color: #F2F4F7;
+                color: #5F6B7A;
+                border: 1px solid #DDE3EA;
                 border-radius: 6px;
                 padding: 6px 16px;
                 font-family: 'Segoe UI', 'Microsoft YaHei UI';
@@ -4780,7 +4785,7 @@ class TranslationWindow(QWidget):
                 font-size: 13px;
             }
             QPushButton:hover {
-                background-color: #E4E7ED;
+                background-color: #E6EAF0;
                 color: #303133;
             }
         """)
@@ -4789,7 +4794,7 @@ class TranslationWindow(QWidget):
         main_layout.addLayout(btn_layout)
         self.setLayout(main_layout)
         self.setMinimumSize(420, 300)
-        self.match_translate_and_stop_widths()
+        self.keep_translate_width()
         use_modern_tooltips(self)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
         self.setWindowOpacity(1.0)
@@ -4803,6 +4808,8 @@ class TranslationWindow(QWidget):
             self.hide_result_notice()
         if hasattr(self, "result_busy"):
             self.result_busy.stop()
+        if hasattr(self, "txt_result") and self.txt_result.text_reveal is not None:
+            self.txt_result.text_reveal.reset()
 
         self.result_opacity_effect.setEnabled(False)
         self.live_render_timer.stop()
@@ -5473,8 +5480,8 @@ class TranslationWindow(QWidget):
         self.btn_content_mode.setText(
             tr("main.mode.dictionary" if dictionary else "main.mode.auto")
         )
-        # Grey while it decides by itself; the accent while Dictionary is forced.
-        color, hover = ("#8E44AD", "#9B59B6") if dictionary else ("#909399", "#8E44AD")
+        # Grey while it decides by itself; teal while Dictionary is forced.
+        color, hover = ("#0E8A7D", "#0B7A6F") if dictionary else ("#7C8798", "#0E8A7D")
         self.btn_content_mode.setStyleSheet(f"""
             QPushButton {{
                 background-color: transparent;
@@ -5488,16 +5495,34 @@ class TranslationWindow(QWidget):
             }}
         """)
 
-    def match_translate_and_stop_widths(self):
-        """Stop takes Translate's place at its width, so no other button moves."""
+    def style_source_boxes(self):
+        """The source and back-translation boxes share the source side's tint."""
+        for view, text_color in (
+            (self.txt_origin, "#303133"),
+            (self.txt_back_translation, "#606266"),
+        ):
+            view.setStyleSheet(f"""
+                QTextEdit {{
+                    background-color: {SOURCE_BOX_TINT};
+                    border: none;
+                    border-radius: 8px;
+                    padding: 4px 4px 4px 8px;
+                    color: {text_color};
+                    selection-background-color: #D3DFFB;
+                    selection-color: #303133;
+                }}
+            """)
+
+    def keep_translate_width(self):
+        """Translate keeps one width as it says Translating..., so nothing moves."""
         text = self.btn_translate.text()
-        self.btn_translate.setText(tr("main.translate"))
         self.btn_translate.ensurePolished()
-        self.btn_stop.ensurePolished()
-        width = max(self.btn_translate.sizeHint().width(), self.btn_stop.sizeHint().width())
+        width = 0
+        for key in ("main.translate", "main.translating", "main.looking_up", "main.ocr.busy"):
+            self.btn_translate.setText(tr(key))
+            width = max(width, self.btn_translate.sizeHint().width())
         self.btn_translate.setText(text)
         self.btn_translate.setMinimumWidth(width)
-        self.btn_stop.setMinimumWidth(width)
 
     def resolve_effective_mode(self, text: str) -> str:
         if self.content_mode_override == "dictionary":
@@ -5659,6 +5684,8 @@ class TranslationWindow(QWidget):
         self.btn_align_selection.setText(
             tr("main.locate.translation" if source_name == "origin" else "main.locate.original")
         )
+        color, hover = ("#0E8A7D", "#0B7A6F") if source_name == "origin" else ("#2F62D6", "#2756C2")
+        self.btn_align_selection.setStyleSheet(LOCATE_BUTTON_STYLE.format(color=color, hover=hover))
         self.btn_align_selection.adjustSize()
 
         rect = source_widget.cursorRect(cursor)
@@ -5964,7 +5991,10 @@ class TranslationWindow(QWidget):
         selection = QTextEdit.ExtraSelection()
         selection.cursor = cursor
         selection.format = QTextCharFormat()
-        selection.format.setBackground(QColor("#E8D7F1"))
+        # A tint of the side's own colour: blue in the source, teal in the translation.
+        selection.format.setBackground(
+            QColor("#DCE7FD" if widget is self.txt_origin else "#D2F1ED")
+        )
         selection.format.setForeground(QColor("#1F2D3D"))
         widget.setExtraSelections([selection])
 
@@ -6172,6 +6202,8 @@ class TranslationWindow(QWidget):
         self.back_render_timer.stop()
         self.back_translation_text = ""
         self.show_back_translation_message("")
+        if self.txt_back_translation.text_reveal is not None:
+            self.txt_back_translation.text_reveal.reset()
         self.back_translation_panel.hide()
 
     def show_back_translation_message(self, message: str, *, error: bool = False):
@@ -6306,6 +6338,8 @@ class TranslationWindow(QWidget):
             self.txt_back_translation, self.back_translation_text, "back",
         )
         scroll_bar.setValue(position)
+        if self.txt_back_translation.text_reveal is not None:
+            self.txt_back_translation.text_reveal.note_text()
 
     # ---------- 模式切换 ----------
     def apply_manual_mode_ui(self, reset_content=False):
@@ -6460,7 +6494,7 @@ class TranslationWindow(QWidget):
         self.btn_hide.setText(tr("main.hide"))
         busy_keys = ("main.translating", "main.looking_up", "main.ocr.busy")
         follow(self.btn_translate, ("main.translate", *busy_keys))
-        self.match_translate_and_stop_widths()
+        self.keep_translate_width()
         follow(self.btn_copy, ("main.copy", "main.copied", *busy_keys))
         follow(
             self.btn_align_selection,
@@ -6774,6 +6808,8 @@ class TranslationWindow(QWidget):
             self.txt_result, self.full_translation, "result", preview=preview,
         )
         scroll_bar.setValue(position)
+        if self.txt_result.text_reveal is not None:
+            self.txt_result.text_reveal.note_text()
 
     def render_live_translation(self):
         """Render the partial response as Markdown while it streams."""
@@ -6826,12 +6862,11 @@ class TranslationWindow(QWidget):
             self.ensure_large_window_size()
 
     def refresh_stop_button(self):
-        """Stop takes the Translate button's place while a translation runs."""
+        """Stop shows beside the heading while a translation runs."""
         if not hasattr(self, "btn_stop"):
             return
-        running = self.trans_thread is not None
-        self.btn_stop.setVisible(running)
-        self.btn_translate.setVisible(self.source_mode == "manual" and not running)
+        self.btn_stop.setVisible(self.trans_thread is not None)
+        self.btn_translate.setVisible(self.source_mode == "manual")
 
     def stop_translation(self):
         """Stop generating and keep the part of the translation that arrived."""

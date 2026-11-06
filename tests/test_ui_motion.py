@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
 )
 
 import ui_motion
-from ui_motion import SmoothScroller, Tween, fade_in, fade_opacity
+from ui_motion import SmoothScroller, TextReveal, Tween, fade_in, fade_opacity
 
 
 # conftest replaces it for every test; keep the real one to test it.
@@ -439,3 +439,96 @@ def test_vblank_reports_stop_quietly_once_qt_has_deleted_the_clock(qapp):
     # the check meant to catch it, and the error escaped the thread.
     assert clock._emit("_vblank", time.perf_counter()) is False
     assert clock._emit("_vblank_failed") is False
+
+
+class _RevealingView(QTextEdit):
+    def __init__(self):
+        super().__init__()
+        self.setStyleSheet("QTextEdit { background-color: #FFFFFF; border: none; }")
+        self.text_reveal = TextReveal(self, "#FFFFFF")
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        self.text_reveal.paint()
+
+
+@pytest.fixture
+def revealing_view(qapp):
+    view = _RevealingView()
+    view.resize(400, 200)
+    view.show()
+    qapp.processEvents()
+    yield view
+    view.deleteLater()
+    qapp.processEvents()
+
+
+def _ink(view, index):
+    """How much text colour the character at index shows, 0 for none."""
+    image = view.viewport().grab().toImage()
+    rect = ui_motion._character_rect(view.document(), index).toAlignedRect()
+    darkest = 255
+    for x in range(rect.left(), rect.right() + 1):
+        for y in range(rect.top(), rect.bottom() + 1):
+            darkest = min(darkest, image.pixelColor(x, y).lightness())
+    return 255 - darkest
+
+
+def test_streamed_text_fades_in_after_what_was_showing(revealing_view, motion_on, wait_until):
+    view = revealing_view
+    view.setPlainText("Shown.")
+    view.text_reveal.note_text()
+    wait_until(lambda: not view.text_reveal.is_revealing())
+
+    view.setPlainText("Shown. " + "New words arrive here. " * 4)
+    view.text_reveal.note_text()
+
+    # What was there stays; what arrived starts hidden behind a veil.
+    assert _ink(view, 0) > 100
+    assert _ink(view, 8) < 20  # The "e" of "New".
+    wait_until(lambda: not view.text_reveal.is_revealing())
+    assert _ink(view, 8) > 100
+
+
+def test_streamed_text_appears_in_reading_order(revealing_view, motion_on):
+    view = revealing_view
+    view.setPlainText("Words that arrive together in one chunk of the stream.")
+    view.text_reveal.note_text()
+
+    QTest.qWait(150)
+
+    # The first characters show while the last ones are still to come.
+    assert _ink(view, 0) > _ink(view, 50) + 60
+
+
+def test_streamed_text_shows_at_once_without_animations(revealing_view):
+    view = revealing_view
+    view.setPlainText("All at once.")
+
+    view.text_reveal.note_text()
+
+    assert not view.text_reveal.is_revealing()
+    assert _ink(view, 0) > 100
+
+
+def test_a_list_bullet_shows_with_its_text_not_ahead_of_it(revealing_view, motion_on):
+    view = revealing_view
+    view.setMarkdown("An opening paragraph of a few words.\n\n- the first item\n- the second item")
+    view.text_reveal.note_text()
+
+    QTest.qWait(150)
+
+    # The opening shows while the list, bullet and all, waits its turn.
+    document = view.document()
+    item = document.findBlock(document.toPlainText().index("the first"))
+    rect = document.documentLayout().blockBoundingRect(item).toAlignedRect()
+    # The bullet sits in the indent, between the block's edge and its text.
+    text_left = int(ui_motion._character_rect(document, item.position()).left())
+    image = view.viewport().grab().toImage()
+    bullet_ink = 255 - min(
+        image.pixelColor(x, y).lightness()
+        for x in range(rect.left(), text_left)
+        for y in range(rect.top(), rect.bottom() + 1)
+    )
+    assert _ink(view, 0) > 60
+    assert bullet_ink < 20

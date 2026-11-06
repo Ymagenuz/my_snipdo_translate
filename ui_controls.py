@@ -46,7 +46,8 @@ from PyQt6.QtWidgets import (
 import ui_motion
 from ui_motion import Tween
 
-ACCENT = QColor("#8E44AD")
+# The blue of the app's icon, deepened for text: focus, chosen rows, actions.
+ACCENT = QColor("#2F62D6")
 
 _DWMWA_WINDOW_CORNER_PREFERENCE = 33
 _DWMWCP_ROUND = 2
@@ -123,7 +124,7 @@ MENU_STYLE = """
         border-radius: 6px;
     }
     QMenu::item:selected {
-        background-color: #EDE7F6;
+        background-color: #EAF1FE;
         color: #303133;
     }
     QMenu::item:disabled {
@@ -153,7 +154,7 @@ DROPDOWN_STYLE = """
     }
 """
 
-# Lists that drop down: rounded rows highlighted like the History menu.
+# Lists that drop down: rounded rows, the chosen one tinted blue.
 POPUP_LIST_STYLE = """
     QAbstractItemView {
         background-color: #FFFFFF;
@@ -173,8 +174,8 @@ POPUP_LIST_STYLE = """
         color: #303133;
     }
     QAbstractItemView::item:selected {
-        background-color: #F4ECF7;
-        color: #8E44AD;
+        background-color: #EAF1FE;
+        color: #2F62D6;
     }
 """
 
@@ -376,6 +377,7 @@ class DropdownComboBox(QComboBox):
     def is_open(self) -> bool:
         return self._turn.target == 1.0
 
+
     def showPopup(self):
         # Qt 6.10's style marks the list window see-through whenever it
         # polishes the combo box, so undo that right before each opening.
@@ -415,7 +417,9 @@ class DropdownComboBox(QComboBox):
 
 
 class ModernCheckBox(QCheckBox):
-    """A check box with a rounded box that fills with the accent when ticked.
+    """A check box with a rounded box that fills with teal when ticked.
+
+    Teal marks what's on, as on the main window's Back-translate button.
 
     Under a style sheet, Qt's Windows 11 style draws a ticked box as a bare
     tick and an unticked one as an empty square, so on and off looked like
@@ -425,11 +429,12 @@ class ModernCheckBox(QCheckBox):
 
     SIZE = 16.0
     RADIUS = 4.0
+    TICKED_COLOR = QColor("#0E9A8B")
     BORDER_COLOR = QColor("#C0C4CC")
-    HOVER_COLOR = QColor("#9B59B6")
+    HOVER_COLOR = QColor("#0B8679")
     DISABLED_COLOR = QColor("#E4E7ED")
     DISABLED_FILL = QColor("#F5F7FA")
-    DISABLED_TICKED = QColor("#D7BDE2")
+    DISABLED_TICKED = QColor("#A6DED7")
 
     def __init__(self, text: str = "", parent: QWidget | None = None):
         super().__init__(text, parent)
@@ -488,7 +493,7 @@ class ModernCheckBox(QCheckBox):
         if state == Qt.CheckState.Unchecked:
             border = (
                 self.DISABLED_COLOR if not enabled
-                else ACCENT if hovered
+                else self.TICKED_COLOR if hovered
                 else self.BORDER_COLOR
             )
             painter.setPen(QPen(border, 1.0))
@@ -502,7 +507,7 @@ class ModernCheckBox(QCheckBox):
         fill = (
             self.DISABLED_TICKED if not enabled
             else self.HOVER_COLOR if hovered
-            else ACCENT
+            else self.TICKED_COLOR
         )
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(fill)

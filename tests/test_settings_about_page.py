@@ -202,7 +202,7 @@ def test_about_page_offers_an_available_update(app, make_dialog):
     assert dialog.update_status_label.text() == (
         f"Version 12.9.0 is available. You have {app.APP_VERSION}."
     )
-    assert _dot_color(dialog) == "#409EFF"
+    assert _dot_color(dialog) == "#2F62D6"
     assert not dialog.install_update_button.isHidden()
     assert dialog.install_update_button.text() == "Update and restart"
     assert not dialog.release_notes_button.isHidden()
@@ -236,7 +236,7 @@ def test_about_page_follows_a_check_while_open(make_dialog):
     updates.last_result = "current"
     updates.changed.emit()
     assert dialog.update_status_label.text() == "You're up to date."
-    assert _dot_color(dialog) == "#67C23A"
+    assert _dot_color(dialog) == "#0E9A8B"
     assert dialog.check_updates_button.isEnabled()
 
     updates.last_result = "failed"
