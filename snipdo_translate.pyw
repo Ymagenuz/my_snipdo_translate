@@ -110,6 +110,7 @@ from windows_ipc import (
 )
 from windows_mouse_hook import WindowsMouseShortcutHook
 from windows_selection import copy_keys_released, send_ctrl_c
+from windows_snip import SnipOutcome, SnipOverlayTracker, SnipWatch, open_snip_overlay
 from windows_startup import StartupRegistrationError, WindowsStartupRegistration
 from latex_support import (
     LatexStreamRestorer,
@@ -138,6 +139,14 @@ from ui_controls import (
 )
 from ui_dialogs import BUTTON_STYLE, ask_text, show_warning
 from ui_motion import SmoothScroller, TextReveal, fade_in, fade_opacity
+from ui_ocr import (
+    ImageDropHint,
+    ImagePopup,
+    SnipPreview,
+    SourceImageBar,
+    has_incoming_image,
+    incoming_image,
+)
 from ui_rich_text import MarkdownEditing, is_markdown_structured_text
 
 from PyQt6.QtWidgets import (
@@ -179,6 +188,10 @@ APP_DISPLAY_NAME = "SnipDo Translate"
 IPC_UI_TIMEOUT_SECONDS = 4.0
 SELECTION_KEY_RELEASE_TIMEOUT_SECONDS = 2.0
 SELECTION_COPY_TIMEOUT_SECONDS = 1.0
+SNIP_POLL_MS = 60
+SNIP_KEY_RELEASE_TIMEOUT_SECONDS = 1.0
+# Long enough for the window to fade out before the overlay freezes the screen.
+SNIP_HIDE_SETTLE_SECONDS = 0.2
 NORMAL_WINDOW_WIDTH = 560
 NORMAL_WINDOW_HEIGHT = 700
 
@@ -403,6 +416,7 @@ MOD_WIN = 0x0008
 MOD_NOREPEAT = 0x4000
 TRANSLATION_HOTKEY_ID = 0x5344
 SHOW_WINDOW_HOTKEY_ID = 0x5345
+SNIP_HOTKEY_ID = 0x5346
 
 user32.RegisterHotKey.argtypes = [
     ctypes.c_void_p,
@@ -653,24 +667,35 @@ def image_file_to_data_url(file_path: str) -> str:
         return bytes_to_data_url(f.read(), mime_type)
 
 
-def clipboard_image_to_data_url() -> str:
-    clipboard = QApplication.clipboard()
-    image = clipboard.image()
+def qimage_to_data_url(image: QImage) -> str:
     if image.isNull():
-        raise RuntimeError(tr("error.clipboard_no_image"))
+        raise RuntimeError(tr("error.cannot_read_image"))
 
     byte_array = QByteArray()
     buffer = QBuffer(byte_array)
     if not buffer.open(QIODevice.OpenModeFlag.WriteOnly):
-        raise RuntimeError(tr("error.clipboard_unreadable"))
+        raise RuntimeError(tr("error.cannot_read_image"))
 
     try:
         if not image.save(buffer, "PNG"):
-            raise RuntimeError(tr("error.clipboard_not_png"))
+            raise RuntimeError(tr("error.cannot_read_image"))
     finally:
         buffer.close()
 
     return bytes_to_data_url(bytes(byte_array), "image/png")
+
+
+def qimage_from_data_url(data_url: str) -> QImage:
+    """The picture in a data: URL, or a null image when it can't be decoded."""
+    try:
+        return QImage.fromData(base64.b64decode(data_url.split(",", 1)[1]))
+    except Exception:
+        return QImage()
+
+
+def clipboard_has_image() -> bool:
+    mime = QApplication.clipboard().mimeData()
+    return bool(mime is not None and mime.hasImage())
 
 
 def clone_clipboard_mime_data():
@@ -1549,6 +1574,106 @@ JSON 格式：
             self.finished.emit(False, {"text": ""}, str(e))
 
 
+class ScreenSnip(QObject):
+    """Open the Windows snip and hand back the image it puts on the clipboard.
+
+    The clipboard is put back as it was, as after copying a selection.
+    """
+
+    captured = pyqtSignal(QImage)
+    cancelled = pyqtSignal()
+    unavailable = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._timer = QTimer(self)
+        self._timer.setInterval(SNIP_POLL_MS)
+        self._timer.timeout.connect(self._poll)
+        self._watch = None
+        self._tracker = None
+        self._sequence = 0
+        self._saved_clipboard = None
+        self._trigger_key = None
+        self._not_before = 0.0
+        self._release_deadline = 0.0
+
+    def is_active(self) -> bool:
+        return self._timer.isActive()
+
+    def start(self, trigger_key: int | None = None, *, delay: float = 0.0) -> bool:
+        if self.is_active():
+            return False
+        now = time.monotonic()
+        self._trigger_key = trigger_key
+        self._not_before = now + delay
+        self._release_deadline = self._not_before + SNIP_KEY_RELEASE_TIMEOUT_SECONDS
+        self._watch = None
+        self._tracker = None
+        self._timer.start()
+        return True
+
+    def stop(self) -> None:
+        self._timer.stop()
+        self._watch = None
+        self._tracker = None
+        self._saved_clipboard = None
+
+    def _poll(self) -> None:
+        try:
+            if self._watch is None:
+                self._launch_when_ready()
+                return
+            sequence = get_clipboard_sequence_number()
+            outcome = self._watch.update(
+                time.monotonic(),
+                clipboard_sequence=sequence,
+                clipboard_has_image=sequence != self._sequence and clipboard_has_image(),
+                overlay_open=self._tracker.is_open(),
+            )
+        except Exception as e:
+            log(f"[Snip] watch error: {e}")
+            outcome = SnipOutcome.CANCELLED
+        if outcome is not None:
+            self._finish(outcome)
+
+    def _launch_when_ready(self) -> None:
+        now = time.monotonic()
+        if now < self._not_before:
+            return
+        # Keys still held from the shortcut would reach the overlay.
+        if now < self._release_deadline and not copy_keys_released(self._trigger_key):
+            return
+        self._saved_clipboard = clone_clipboard_mime_data()
+        self._sequence = get_clipboard_sequence_number()
+        self._tracker = SnipOverlayTracker()
+        self._watch = SnipWatch(self._sequence, now)
+        if not open_snip_overlay():
+            self._finish(SnipOutcome.UNAVAILABLE)
+
+    def _finish(self, outcome: SnipOutcome) -> None:
+        saved = self._saved_clipboard
+        self.stop()
+        if outcome is SnipOutcome.UNAVAILABLE:
+            self.unavailable.emit()
+            return
+        if outcome is not SnipOutcome.CAPTURED:
+            self.cancelled.emit()
+            return
+        clipboard = QApplication.clipboard()
+        image = clipboard.image()
+        try:
+            if saved is not None:
+                clipboard.setMimeData(saved)
+            else:
+                clipboard.clear()
+        except Exception as e:
+            log(f"[Snip] restore clipboard error: {e}")
+        if image.isNull():
+            self.cancelled.emit()
+        else:
+            self.captured.emit(image)
+
+
 # ================= 2. OCR 线程 =================
 class OcrThread(QThread):
     finished = pyqtSignal(bool, str, str)  # success, extracted_text, error_message
@@ -1669,7 +1794,38 @@ class SourceTextEdit(MarkdownEditing, InteractiveTextEdit):
 
     Read it with source_text() and fill it with set_source_text(), which keep
     its Markdown; toPlainText() is only the text as it shows.
+
+    An image pasted or dropped on it isn't inserted: image_received hands it
+    on, as a QImage or an image file's path, to have its text read.
     """
+
+    image_received = pyqtSignal(object)
+    image_dragged = pyqtSignal(bool)
+
+    def canInsertFromMimeData(self, source):
+        if not self.isReadOnly() and has_incoming_image(source):
+            return True
+        return super().canInsertFromMimeData(source)
+
+    def insertFromMimeData(self, source):
+        image = None if self.isReadOnly() else incoming_image(source)
+        if image is None:
+            super().insertFromMimeData(source)
+            return
+        self.image_received.emit(image)
+
+    def dragEnterEvent(self, event):
+        super().dragEnterEvent(event)
+        if event.isAccepted() and has_incoming_image(event.mimeData()):
+            self.image_dragged.emit(True)
+
+    def dragLeaveEvent(self, event):
+        self.image_dragged.emit(False)
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        self.image_dragged.emit(False)
+        super().dropEvent(event)
 
 
 def qt_key_to_virtual_key(qt_key: int) -> int | None:
@@ -2185,6 +2341,12 @@ class SettingsDialog(QDialog):
         form.addRow(
             tr("settings.shortcut.show_window.row"), self.show_window_shortcut_button
         )
+
+        self.snip_shortcut_button = ShortcutCaptureButton(
+            settings.snip_shortcut, allow_clear=True
+        )
+        self.snip_shortcut_button.capture_error.connect(self._show_capture_error)
+        form.addRow(tr("settings.shortcut.snip.row"), self.snip_shortcut_button)
         self.shortcut_status_label = QLabel()
         self.shortcut_status_label.setWordWrap(True)
         self.shortcut_status_label.setStyleSheet("color: #E6A23C; font-size: 12px;")
@@ -2748,6 +2910,7 @@ class SettingsDialog(QDialog):
             enabled=self.chk_enabled.isChecked(),
             shortcut=self.shortcut_button.binding,
             show_window_shortcut=self.show_window_shortcut_button.binding,
+            snip_shortcut=self.snip_shortcut_button.binding,
             api_provider=self.selected_api_provider(),
             api_configs=configs,
             back_translation=self.chk_back_translation.isChecked(),
@@ -2773,6 +2936,7 @@ class SettingsDialog(QDialog):
         self._model_loader.stop()
         self.shortcut_button.cancel_capture()
         self.show_window_shortcut_button.cancel_capture()
+        self.snip_shortcut_button.cancel_capture()
         if self._updates is not None:
             try:
                 self._updates.changed.disconnect(self._refresh_update_section)
@@ -3324,7 +3488,18 @@ class TranslationWindow(QWidget):
         self.translation_threads = set()
         self.align_thread = None
         self.ocr_thread = None
+        # ocr_threads keeps a stopped reader alive until it finishes.
+        self.ocr_threads = set()
         self.ocr_result_source_mode = "manual"
+        self._ocr_request = None
+        self.ocr_retry = None
+        self.ocr_previous_source = ""
+        self.ocr_previous_image = QImage()
+        self._snip_restore_window = False
+        self.screen_snip = ScreenSnip(self)
+        self.screen_snip.captured.connect(self.on_snip_captured)
+        self.screen_snip.cancelled.connect(self.on_snip_cancelled)
+        self.screen_snip.unavailable.connect(self.on_snip_unavailable)
         self.alignment_selection_source = None
         self.alignment_selection_range = None
         self.alignment_highlight_source = None
@@ -3339,6 +3514,7 @@ class TranslationWindow(QWidget):
         self._selection_suspended_managers = []
         self.shortcut_manager = None
         self.show_window_shortcut_manager = None
+        self.snip_shortcut_manager = None
         self.xbutton1_hook = None
         self.current_request_is_structured = False
         self.active_translation_text = ""
@@ -3417,6 +3593,10 @@ class TranslationWindow(QWidget):
         self.show_window_action.triggered.connect(self.show_manual_window)
         tray_menu.addAction(self.show_window_action)
 
+        self.ocr_action = QAction(tr("tray.snip"), self)
+        self.ocr_action.triggered.connect(lambda _checked=False: self.start_snip())
+        tray_menu.addAction(self.ocr_action)
+
         self.toggle_translation_action = QAction(tr("tray.disable"), self)
         self.toggle_translation_action.setCheckable(True)
         self.toggle_translation_action.setChecked(not self.app_settings.enabled)
@@ -3430,10 +3610,6 @@ class TranslationWindow(QWidget):
             lambda _checked=False: self.show_settings()
         )
         tray_menu.addAction(self.settings_action)
-
-        self.ocr_action = QAction(tr("tray.ocr_clipboard"), self)
-        self.ocr_action.triggered.connect(self.start_clipboard_ocr)
-        tray_menu.addAction(self.ocr_action)
 
         tray_menu.addSeparator()
 
@@ -3585,6 +3761,24 @@ class TranslationWindow(QWidget):
                 QSystemTrayIcon.MessageIcon.Warning,
                 1800,
             )
+
+        self.snip_shortcut_manager = TranslationShortcutManager(
+            self,
+            self.app_settings.snip_shortcut,
+            hotkey_id=SNIP_HOTKEY_ID,
+            log_name="snip",
+        )
+        self.snip_shortcut_manager.triggered.connect(self.on_snip_shortcut_triggered)
+        if not self.snip_shortcut_manager.configure(
+            self.app_settings.snip_shortcut,
+            self.app_settings.snip_shortcut is not None,
+        ):
+            self.tray_icon.showMessage(
+                APP_DISPLAY_NAME,
+                tr("notify.snip_shortcut_failed"),
+                QSystemTrayIcon.MessageIcon.Warning,
+                1800,
+            )
         self.refresh_shortcut_status()
 
     def setup_xbutton1_hook(self):
@@ -3595,6 +3789,7 @@ class TranslationWindow(QWidget):
         for attribute_name in (
             "shortcut_manager",
             "show_window_shortcut_manager",
+            "snip_shortcut_manager",
         ):
             manager = getattr(self, attribute_name, None)
             if manager:
@@ -3654,6 +3849,17 @@ class TranslationWindow(QWidget):
             self.show_window_action.setText(
                 tr("tray.show_window_with_shortcut", shortcut=shortcut_label(show_binding))
                 if show_binding is not None else tr("tray.show_window")
+            )
+        snip_binding = self.app_settings.snip_shortcut
+        if hasattr(self, "ocr_action"):
+            self.ocr_action.setText(
+                tr("tray.snip_with_shortcut", shortcut=shortcut_label(snip_binding))
+                if snip_binding is not None else tr("tray.snip")
+            )
+        if hasattr(self, "btn_ocr_clipboard"):
+            self.btn_ocr_clipboard.setToolTip(
+                tr("main.ocr.tooltip_with_shortcut", shortcut=shortcut_label(snip_binding))
+                if snip_binding is not None else tr("main.ocr.tooltip")
             )
         if hasattr(self, "result_busy"):
             self.refresh_result_hint(shortcut_active)
@@ -3728,9 +3934,13 @@ class TranslationWindow(QWidget):
         )
         self.selection_capture_busy = True
         self._selection_suspended_managers = []
-        # Either shortcut can be configured as Ctrl+C. Both must be inactive
+        # Any shortcut can be configured as Ctrl+C. All must be inactive
         # while copying, and only successful suspensions should be resumed.
-        for manager in (self.shortcut_manager, self.show_window_shortcut_manager):
+        for manager in (
+            self.shortcut_manager,
+            self.show_window_shortcut_manager,
+            getattr(self, "snip_shortcut_manager", None),
+        ):
             if manager is None:
                 continue
             try:
@@ -3900,6 +4110,13 @@ class TranslationWindow(QWidget):
         log("[Shortcut] show window triggered")
         self.force_show_window()
 
+    def on_snip_shortcut_triggered(self):
+        log("[Shortcut] snip triggered")
+        binding = self.app_settings.snip_shortcut
+        self.start_snip(
+            trigger_key=binding.virtual_key if binding is not None else None
+        )
+
     def show_settings(self, page: str = ""):
         self.force_show_window()
         provider = self.app_settings.resolved_provider()
@@ -3932,6 +4149,7 @@ class TranslationWindow(QWidget):
             for manager in (
                 getattr(self, "shortcut_manager", None),
                 getattr(self, "show_window_shortcut_manager", None),
+                getattr(self, "snip_shortcut_manager", None),
             )
             if manager is not None
         ]
@@ -3971,9 +4189,13 @@ class TranslationWindow(QWidget):
 
     def apply_settings(self, candidate: AppSettings, api_key: str = "") -> bool:
         previous = self.app_settings
-        if shortcuts_conflict(
-            candidate.shortcut,
-            candidate.show_window_shortcut,
+        if any(
+            shortcuts_conflict(first, second)
+            for first, second in (
+                (candidate.shortcut, candidate.show_window_shortcut),
+                (candidate.shortcut, candidate.snip_shortcut),
+                (candidate.show_window_shortcut, candidate.snip_shortcut),
+            )
         ):
             show_warning(
                 self,
@@ -4083,6 +4305,29 @@ class TranslationWindow(QWidget):
             self.refresh_shortcut_status()
             return False
 
+        snip_manager = getattr(self, "snip_shortcut_manager", None)
+        if snip_manager and not snip_manager.configure(
+            candidate.snip_shortcut,
+            candidate.snip_shortcut is not None,
+        ):
+            if translation_manager:
+                translation_manager.configure(
+                    previous.shortcut,
+                    previous.enabled,
+                )
+            if show_window_manager:
+                show_window_manager.configure(
+                    previous.show_window_shortcut,
+                    previous.show_window_shortcut is not None,
+                )
+            show_warning(
+                self,
+                tr("warning.snip_shortcut_unavailable.title"),
+                tr("warning.shortcut_unavailable.text"),
+            )
+            self.refresh_shortcut_status()
+            return False
+
         try:
             save_settings_atomic(self.settings_path, candidate)
         except (OSError, SettingsDataError):
@@ -4095,6 +4340,11 @@ class TranslationWindow(QWidget):
                 show_window_manager.configure(
                     previous.show_window_shortcut,
                     previous.show_window_shortcut is not None,
+                )
+            if snip_manager:
+                snip_manager.configure(
+                    previous.snip_shortcut,
+                    previous.snip_shortcut is not None,
                 )
             show_warning(
                 self,
@@ -4170,6 +4420,7 @@ class TranslationWindow(QWidget):
     def quit_app(self):
         log("[App] quit_app called")
         self.force_quit = True
+        self.screen_snip.stop()
         self.cancel_current_ocr()
         self.cancel_current_translation()
         self.cancel_current_back_translation(wait_ms=800)
@@ -4193,10 +4444,16 @@ class TranslationWindow(QWidget):
             self.align_thread.wait(300)
 
     def cancel_current_ocr(self):
-        if self.ocr_thread and self.ocr_thread.isRunning():
-            log("[UI] cancel_current_ocr")
-            self.ocr_thread.request_stop()
-            self.ocr_thread.wait(800)
+        worker = self.ocr_thread
+        if worker is None:
+            return
+        log("[UI] cancel_current_ocr")
+        # Detach first: a late answer from this reader is ignored.
+        self.ocr_thread = None
+        if worker.isRunning():
+            worker.request_stop()
+            worker.wait(800)
+        self.on_ocr_finished(False, "", CANCELLED_ERROR)
 
     def force_show_window(self):
         """
@@ -4442,6 +4699,24 @@ class TranslationWindow(QWidget):
         self.txt_origin.setFont(self.origin_font)
         card_layout.addWidget(self.txt_origin)
 
+        # Images pasted or dropped on the window have their text read.
+        self.setAcceptDrops(True)
+        self.txt_origin.image_received.connect(self.start_image_ocr)
+        self.txt_origin.image_dragged.connect(self.show_image_drop_hint)
+        self.ocr_preview = SnipPreview(self.txt_origin)
+        self.origin_image_bar = SourceImageBar(self.txt_origin, self.origin_image_texts())
+        self.origin_image_bar.show_image_clicked.connect(self.show_origin_image_popup)
+        self.origin_image_bar.copy_text_clicked.connect(self.copy_origin_text)
+        self.image_drop_hint = ImageDropHint(self.txt_origin, tr("main.image.drop"))
+        # Moving from the box to the rest of the window leaves one and
+        # enters the other; the hint waits a moment before it goes.
+        self._drop_hint_timer = QTimer(self)
+        self._drop_hint_timer.setSingleShot(True)
+        self._drop_hint_timer.setInterval(40)
+        self._drop_hint_timer.timeout.connect(
+            lambda: self.image_drop_hint.set_visible(False)
+        )
+
         result_header_layout = QHBoxLayout()
         result_header_layout.setContentsMargins(0, 2, 0, 0)
         result_header_layout.setSpacing(8)
@@ -4639,7 +4914,7 @@ class TranslationWindow(QWidget):
         self.btn_ocr_clipboard = QPushButton(tr("main.ocr"))
         self.btn_ocr_clipboard.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_ocr_clipboard.setToolTip(tr("main.ocr.tooltip"))
-        self.btn_ocr_clipboard.clicked.connect(self.start_clipboard_ocr)
+        self.btn_ocr_clipboard.clicked.connect(lambda _checked=False: self.start_snip())
         self.btn_ocr_clipboard.setStyleSheet("""
             QPushButton {
                 background-color: #F2F4F7;
@@ -4715,7 +4990,7 @@ class TranslationWindow(QWidget):
         self.btn_stop = QPushButton(tr("main.stop"))
         self.btn_stop.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_stop.setToolTip(tr("main.stop.tooltip"))
-        self.btn_stop.clicked.connect(self.stop_translation)
+        self.btn_stop.clicked.connect(self.on_stop_clicked)
         # Small and grey, like the back-translation's Stop: there when wanted,
         # without drawing the eye while the translation arrives.
         self.btn_stop.setStyleSheet("""
@@ -5205,24 +5480,83 @@ class TranslationWindow(QWidget):
 
     def retry_translation(self):
         self.hide_result_notice()
+        ocr_retry = getattr(self, "ocr_retry", None)
+        if ocr_retry is not None:
+            self.ocr_retry = None
+            image_data_url, result_source_mode, preview = ocr_retry
+            self.start_ocr(image_data_url, result_source_mode, preview=preview)
+            return
         if self.source_mode == "manual":
             self.start_manual_translation()
         else:
             self.rerun_snipdo_translation()
 
-    def start_clipboard_ocr(self):
-        try:
-            log("[UI] start_clipboard_ocr")
-            self.cancel_current_translation()
-            self.source_mode = "manual"
-            self.apply_manual_mode_ui(reset_content=True)
+    def start_snip(self, trigger_key: int | None = None):
+        """Snip part of the screen with Windows' snip, then read its text."""
+        if self.force_quit or self.screen_snip.is_active():
+            return
+        log("[UI] start_snip")
+        provider = api_provider_for_window(self)
+        if not provider.supports_vision:
             self.force_show_window()
+            self.set_result_message(
+                tr(
+                    "message.ocr_unsupported",
+                    provider=provider_name(provider.provider_id, short=True),
+                )
+            )
+            record_event(AppEvent.OCR_FAILED)
+            return
+        if not self.ensure_api_key():
+            self.force_show_window()
+            self.show_result_notice(tr("message.ocr_no_key"))
+            return
+        # The window steps aside so it isn't in what's snipped, and comes
+        # back with the text, or as it was if the snip is cancelled.
+        self._snip_restore_window = self.isVisible() and not self.isMinimized()
+        if self._snip_restore_window:
+            self.hide()
+        self.screen_snip.start(
+            trigger_key,
+            delay=SNIP_HIDE_SETTLE_SECONDS if self._snip_restore_window else 0.0,
+        )
 
-            image_data_url = clipboard_image_to_data_url()
-            self.start_ocr(image_data_url, result_source_mode="manual")
-        except Exception as e:
-            log(f"[UI] start_clipboard_ocr error: {e}")
-            self.set_result_message(tr("message.ocr_error", error=e))
+    def on_snip_captured(self, image: QImage):
+        log("[UI] snip captured")
+        self._snip_restore_window = False
+        self.start_image_ocr(image)
+
+    def on_snip_cancelled(self):
+        log("[UI] snip cancelled")
+        if self._snip_restore_window:
+            self.force_show_window()
+        self._snip_restore_window = False
+
+    def on_snip_unavailable(self):
+        log("[UI] snip unavailable")
+        self._snip_restore_window = False
+        self.force_show_window()
+        self.show_result_notice(tr("message.snip_unavailable"))
+
+    def start_image_ocr(self, source) -> bool:
+        """Read a snipped, pasted or dropped image (a QImage or a file's path)."""
+        try:
+            if isinstance(source, QImage):
+                preview = source
+                image_data_url = qimage_to_data_url(source)
+            else:
+                image_data_url = image_file_to_data_url(source)
+                preview = qimage_from_data_url(image_data_url)
+        except Exception:
+            self.force_show_window()
+            self.show_result_notice(
+                tr("message.ocr_error", error=tr("error.cannot_read_image"))
+            )
+            record_event(AppEvent.OCR_FAILED)
+            return False
+        # The newest image wins over one still being read.
+        self.cancel_current_ocr()
+        return self.start_ocr(image_data_url, "manual", preview=preview)
 
     def start_image_file_ocr(
         self,
@@ -5267,6 +5601,7 @@ class TranslationWindow(QWidget):
             image_data_url,
             result_source_mode="snipdo",
             allow_key_prompt=allow_key_prompt,
+            preview=qimage_from_data_url(image_data_url),
         )
         return (
             ReceiveResult.accept()
@@ -5280,6 +5615,7 @@ class TranslationWindow(QWidget):
         result_source_mode: str,
         *,
         allow_key_prompt: bool = True,
+        preview: QImage | None = None,
     ):
         if self.ocr_thread and self.ocr_thread.isRunning():
             record_event(AppEvent.OCR_BUSY)
@@ -5301,82 +5637,212 @@ class TranslationWindow(QWidget):
             return False
 
         self.cancel_current_translation()
+        self.ocr_retry = None
+        self._ocr_request = (image_data_url, result_source_mode, preview)
+        # What was typed comes back if the image can't be read.
+        editing = self.source_mode == "manual" and not self.txt_origin.isReadOnly()
+        self.ocr_previous_source = self.txt_origin.source_text() if editing else ""
+        self.ocr_previous_image = (
+            self.origin_image_bar.image() if editing else QImage()
+        )
         self.ocr_result_source_mode = result_source_mode
         self.full_translation = ""
         self.original_paragraphs = []
         self.pending_snipdo_text = ""
 
         self.setup_result_format()
+        self.clear_origin_image()
         self.txt_origin.clear()
         self.txt_origin.setReadOnly(True)
+        # The image takes the box; its hint would show through.
+        self.txt_origin.setPlaceholderText("")
         self.show_heading_labels("ocr")
-        self.btn_copy.setText(tr("main.ocr.busy"))
+        self.btn_copy.setText(tr("main.copy"))
         self.btn_copy.setEnabled(False)
         self.btn_edit_origin.setEnabled(False)
+        self.btn_ocr_clipboard.setEnabled(False)
 
         if self.source_mode == "manual":
             self.btn_clear_origin.setEnabled(False)
             self.btn_translate.setEnabled(False)
-            self.btn_translate.setText(tr("main.ocr.busy"))
-            self.btn_ocr_clipboard.setEnabled(False)
+            self.btn_translate.setText(tr("main.translate"))
 
         self.result_busy.start(tr("message.ocr_running"))
         self.ensure_large_window_size()
         self.force_show_window()
+        self.ocr_preview.show_image(preview)
 
+        worker = None
         try:
-            self.ocr_thread = OcrThread(image_data_url)
-            self.ocr_thread.finished.connect(self.on_ocr_finished)
-            self.ocr_thread.start()
+            worker = OcrThread(image_data_url)
+            self.ocr_thread = worker
+            self.ocr_threads.add(worker)
+            worker.finished.connect(
+                lambda success, extracted_text, error_msg, active_worker=worker:
+                self.on_ocr_worker_finished(
+                    active_worker, success, extracted_text, error_msg,
+                )
+            )
+            worker.start()
         except Exception:
             self.ocr_thread = None
-            self.set_result_message(
-                tr("message.ocr_error", error=tr("error.cannot_start"))
-            )
-            record_event(AppEvent.OCR_FAILED)
+            self.ocr_threads.discard(worker)
+            self.on_ocr_finished(False, "", tr("error.cannot_start"))
             return False
 
         record_event(AppEvent.OCR_STARTED)
+        self.refresh_stop_button()
         return True
+
+    def on_ocr_worker_finished(self, worker, success, extracted_text, error_msg):
+        self.ocr_threads.discard(worker)
+        if worker is not self.ocr_thread:
+            return
+        self.ocr_thread = None
+        self.on_ocr_finished(success, extracted_text, error_msg)
+
+    def stop_ocr(self):
+        """Stop reading the image and give back what was in the box."""
+        worker = self.ocr_thread
+        if worker is None:
+            return
+        log("[UI] stop_ocr")
+        self.ocr_thread = None
+        worker.request_stop()
+        self.on_ocr_finished(False, "", CANCELLED_ERROR)
+        self.show_result_notice(tr("message.stopped"), error=False)
 
     def on_ocr_finished(self, success: bool, extracted_text: str, error_msg: str):
         log(f"[UI] on_ocr_finished success={success}, error={error_msg}")
         self.result_busy.stop()
+        image = self.ocr_preview.image()
+        self.ocr_preview.hide_image()
 
         if self.source_mode == "manual":
             self.btn_clear_origin.setEnabled(True)
             self.btn_translate.setEnabled(True)
             self.btn_translate.setText(tr("main.translate"))
-            self.btn_ocr_clipboard.setEnabled(True)
+        self.btn_ocr_clipboard.setEnabled(True)
 
         self.btn_copy.setText(tr("main.copy"))
         self.btn_copy.setEnabled(False)
+        self.refresh_stop_button()
 
-        if not success:
-            record_event(AppEvent.OCR_FAILED)
-            if error_msg != CANCELLED_ERROR:
-                self.set_result_message(tr("message.ocr_error", error=error_msg))
-            return
-
-        ocr_text = normalize_newlines(extracted_text).strip()
+        ocr_text = normalize_newlines(extracted_text).strip() if success else ""
         if not ocr_text:
             record_event(AppEvent.OCR_FAILED)
+            self.restore_source_after_ocr()
+            if not success and error_msg == CANCELLED_ERROR:
+                return
+            # A failed request may work a second time; an image without text won't.
+            self.ocr_retry = self._ocr_request if not success else None
             self.set_result_message(
-                tr("message.ocr_error", error=tr("error.no_text_found"))
+                tr(
+                    "message.ocr_error",
+                    error=error_msg if not success else tr("error.no_text_found"),
+                ),
+                retry=self.ocr_retry is not None,
             )
             return
 
         record_event(AppEvent.OCR_COMPLETED)
 
         if self.ocr_result_source_mode == "snipdo":
-            QTimer.singleShot(60, lambda text=ocr_text: self.handle_new_request(text))
+            # A bound method, so the timer can't call into a closed window.
+            self._ocr_text_to_translate = (ocr_text, image)
+            QTimer.singleShot(60, self.translate_ocr_text)
             return
 
         self.source_mode = "manual"
         self.apply_manual_mode_ui(reset_content=True)
         self.txt_origin.set_source_text(ocr_text)
+        self.show_origin_image(image)
         self.force_show_window()
         QTimer.singleShot(60, self.start_manual_translation)
+
+    def translate_ocr_text(self):
+        """Translate text read from an image passed in by SnipDo or --image."""
+        text, image = self._ocr_text_to_translate
+        self.handle_new_request(text)
+        if self.txt_origin.toPlainText().strip():
+            self.show_origin_image(image)
+
+    def restore_source_after_ocr(self):
+        """Give back what was in the box before an image was read into it."""
+        if self.ocr_result_source_mode != "manual":
+            return
+        self.source_mode = "manual"
+        self.apply_manual_mode_ui(reset_content=False)
+        self.reset_origin_editor()
+        if self.ocr_previous_source:
+            self.txt_origin.set_source_text(self.ocr_previous_source)
+            self.show_origin_image(self.ocr_previous_image)
+        self.ocr_previous_source = ""
+        self.ocr_previous_image = QImage()
+
+    def origin_image_texts(self) -> dict[str, str]:
+        return {
+            "from": tr("main.image.from"),
+            "show": tr("main.image.show"),
+            "copy": tr("main.image.copy_text"),
+        }
+
+    def show_origin_image(self, image: QImage | None):
+        """Mark the box's text as read from this image."""
+        self.origin_image_bar.show_image(image)
+        self.fit_origin_height()
+
+    def clear_origin_image(self):
+        self.origin_image_bar.clear()
+        self.fit_origin_height()
+
+    def show_origin_image_popup(self):
+        image = self.origin_image_bar.image()
+        if image.isNull():
+            return
+        button = self.origin_image_bar.btn_show
+        popup = ImagePopup(self)
+        popup.show_image(image, button.mapToGlobal(QPoint(0, button.height() + 4)))
+
+    def copy_origin_text(self):
+        text = self.txt_origin.toPlainText().strip()
+        if not text:
+            return
+        QApplication.clipboard().setText(text)
+        self.origin_image_bar.show_copied(tr("main.image.copied"))
+
+    def show_image_drop_hint(self, visible: bool):
+        """Mark the input box while an image is dragged over the window."""
+        if visible:
+            self._drop_hint_timer.stop()
+            self.image_drop_hint.set_visible(True)
+        else:
+            self._drop_hint_timer.start()
+
+    def dragEnterEvent(self, event):
+        if has_incoming_image(event.mimeData()):
+            event.acceptProposedAction()
+            self.show_image_drop_hint(True)
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if has_incoming_image(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self.show_image_drop_hint(False)
+
+    def dropEvent(self, event):
+        self.show_image_drop_hint(False)
+        image = incoming_image(event.mimeData())
+        if image is None:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        self.start_image_ocr(image)
 
     def edit_selected_text(self):
         if self.source_mode != "snipdo":
@@ -5413,6 +5879,7 @@ class TranslationWindow(QWidget):
 
         self.cancel_current_translation()
         self.reset_origin_editor()
+        self.clear_origin_image()
         self.original_paragraphs = []
         self.full_translation = ""
         self.setup_result_format()
@@ -5518,7 +5985,7 @@ class TranslationWindow(QWidget):
         text = self.btn_translate.text()
         self.btn_translate.ensurePolished()
         width = 0
-        for key in ("main.translate", "main.translating", "main.looking_up", "main.ocr.busy"):
+        for key in ("main.translate", "main.translating", "main.looking_up"):
             self.btn_translate.setText(tr(key))
             width = max(width, self.btn_translate.sizeHint().width())
         self.btn_translate.setText(text)
@@ -6370,6 +6837,7 @@ class TranslationWindow(QWidget):
             self.original_paragraphs = []
             self.full_translation = ""
             self.reset_origin_editor()
+            self.clear_origin_image()
             self.setup_result_format()
             self.btn_translate.setEnabled(True)
             self.btn_translate.setText(tr("main.translate"))
@@ -6387,7 +6855,7 @@ class TranslationWindow(QWidget):
         self.btn_edit_origin.show()
         self.refresh_result_hint()
         self.refresh_stop_button()
-        self.btn_ocr_clipboard.hide()
+        self.btn_ocr_clipboard.show()
         self.set_dictionary_language_controls_visible(True)
         self.txt_origin.setReadOnly(True)
         self.txt_origin.setPlaceholderText("")
@@ -6444,7 +6912,6 @@ class TranslationWindow(QWidget):
         if hasattr(self, "tray_menu"):
             self.toggle_translation_action.setText(tr("tray.disable"))
             self.settings_action.setText(tr("tray.settings"))
-            self.ocr_action.setText(tr("tray.ocr_clipboard"))
             self.check_updates_action.setText(tr("tray.check_updates"))
             self.about_action.setText(tr("tray.about", version=APP_VERSION))
             self.quit_action.setText(tr("tray.quit"))
@@ -6487,12 +6954,13 @@ class TranslationWindow(QWidget):
         self.btn_edit_origin.setToolTip(tr("main.edit.tooltip"))
         self.btn_clear_origin.setText(tr("main.clear"))
         self.btn_ocr_clipboard.setText(tr("main.ocr"))
-        self.btn_ocr_clipboard.setToolTip(tr("main.ocr.tooltip"))
+        self.origin_image_bar.set_texts(self.origin_image_texts())
+        self.image_drop_hint.text = tr("main.image.drop")
         self.btn_history.setText(tr("main.history"))
         self.btn_stop.setText(tr("main.stop"))
-        self.btn_stop.setToolTip(tr("main.stop.tooltip"))
+        self.refresh_stop_button()
         self.btn_hide.setText(tr("main.hide"))
-        busy_keys = ("main.translating", "main.looking_up", "main.ocr.busy")
+        busy_keys = ("main.translating", "main.looking_up")
         follow(self.btn_translate, ("main.translate", *busy_keys))
         self.keep_translate_width()
         follow(self.btn_copy, ("main.copy", "main.copied", *busy_keys))
@@ -6552,6 +7020,7 @@ class TranslationWindow(QWidget):
 
             self.cancel_current_ocr()
             self.cancel_current_translation()
+            self.clear_origin_image()
 
             self.original_paragraphs = normalize_input_text(raw_text)
             log(f"[UI] normalized paragraphs count={len(self.original_paragraphs)}")
@@ -6700,6 +7169,7 @@ class TranslationWindow(QWidget):
         allow_key_prompt: bool = True,
     ):
         log(f"[UI] start_translation, mode={mode}, text={repr(text[:300])}")
+        self.ocr_retry = None
         self.active_translation_text = text
         self.active_translation_mode = mode
 
@@ -6863,11 +7333,19 @@ class TranslationWindow(QWidget):
             self.ensure_large_window_size()
 
     def refresh_stop_button(self):
-        """Stop shows beside the heading while a translation runs."""
+        """Stop shows beside the heading while a translation runs or an image is read."""
         if not hasattr(self, "btn_stop"):
             return
-        self.btn_stop.setVisible(self.trans_thread is not None)
+        reading = getattr(self, "ocr_thread", None) is not None
+        self.btn_stop.setVisible(self.trans_thread is not None or reading)
+        self.btn_stop.setToolTip(tr("main.stop.ocr_tooltip" if reading else "main.stop.tooltip"))
         self.btn_translate.setVisible(self.source_mode == "manual")
+
+    def on_stop_clicked(self):
+        if self.ocr_thread is not None:
+            self.stop_ocr()
+        else:
+            self.stop_translation()
 
     def stop_translation(self):
         """Stop generating and keep the part of the translation that arrived."""

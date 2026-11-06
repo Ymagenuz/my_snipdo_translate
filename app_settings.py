@@ -44,7 +44,8 @@ _BACK_TRANSLATION_ROOT_FIELDS = _CONFIG_ROOT_FIELDS | {"back_translation"}
 _NOTIFICATION_ROOT_FIELDS = _BACK_TRANSLATION_ROOT_FIELDS | {
     "completion_notifications"
 }
-_ROOT_FIELDS = _NOTIFICATION_ROOT_FIELDS | {"ui_language"}
+_LANGUAGE_ROOT_FIELDS = _NOTIFICATION_ROOT_FIELDS | {"ui_language"}
+_ROOT_FIELDS = _LANGUAGE_ROOT_FIELDS | {"snip_shortcut"}
 _API_CONFIG_FIELDS = frozenset(
     {"base_url", "model", "supports_vision", "disable_thinking"}
 )
@@ -178,6 +179,11 @@ DEFAULT_SHOW_WINDOW_SHORTCUT = keyboard_shortcut(
     ("ctrl", "alt"),
     "Ctrl+Alt+W",
 )
+DEFAULT_SNIP_SHORTCUT = keyboard_shortcut(
+    0x4F,
+    ("ctrl", "alt"),
+    "Ctrl+Alt+O",
+)
 
 
 @dataclass(frozen=True)
@@ -192,6 +198,9 @@ class AppSettings:
     back_translation: bool = False
     completion_notifications: bool = True
     ui_language: str = DEFAULT_UI_LANGUAGE
+    snip_shortcut: ShortcutBinding | None = field(
+        default_factory=lambda: DEFAULT_SNIP_SHORTCUT
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
@@ -213,6 +222,10 @@ class AppSettings:
             raise SettingsDataError(
                 "show_window_shortcut must be a ShortcutBinding or None"
             )
+        if self.snip_shortcut is not None and not isinstance(
+            self.snip_shortcut, ShortcutBinding
+        ):
+            raise SettingsDataError("snip_shortcut must be a ShortcutBinding or None")
         if (
             not isinstance(self.api_provider, str)
             or self.api_provider not in API_PROVIDER_IDS
@@ -305,6 +318,7 @@ def _decode_settings(value: object) -> AppSettings:
         _CONFIG_ROOT_FIELDS,
         _BACK_TRANSLATION_ROOT_FIELDS,
         _NOTIFICATION_ROOT_FIELDS,
+        _LANGUAGE_ROOT_FIELDS,
         _ROOT_FIELDS,
     ):
         api_provider = value["api_provider"]
@@ -330,6 +344,14 @@ def _decode_settings(value: object) -> AppSettings:
     if ui_language not in UI_LANGUAGE_CODES:
         # A language from a newer release must not discard every other setting.
         ui_language = DEFAULT_UI_LANGUAGE
+    # Files written before the snip shortcut was added get the default one.
+    snip_shortcut = DEFAULT_SNIP_SHORTCUT
+    if "snip_shortcut" in value:
+        snip_shortcut = (
+            None
+            if value["snip_shortcut"] is None
+            else _decode_shortcut(value["snip_shortcut"])
+        )
     return AppSettings(
         enabled=value["enabled"],
         shortcut=_decode_shortcut(value["shortcut"]),
@@ -339,6 +361,7 @@ def _decode_settings(value: object) -> AppSettings:
         back_translation=back_translation,
         completion_notifications=completion_notifications,
         ui_language=ui_language,
+        snip_shortcut=snip_shortcut,
     )
 
 
@@ -373,11 +396,21 @@ def load_settings(path: Path) -> AppSettings:
         raise SettingsDataError("settings could not be loaded") from exc
 
 
+def _encode_shortcut(binding: ShortcutBinding | None) -> dict[str, object] | None:
+    if binding is None:
+        return None
+    return {
+        "kind": binding.kind,
+        "mouse_button": binding.mouse_button,
+        "virtual_key": binding.virtual_key,
+        "modifiers": list(binding.modifiers),
+        "display": binding.display,
+    }
+
+
 def _encode_settings(settings: AppSettings) -> dict[str, object]:
     if not isinstance(settings, AppSettings):
         raise SettingsDataError("settings must be an AppSettings instance")
-    shortcut = settings.shortcut
-    show_window_shortcut = settings.show_window_shortcut
     return {
         "enabled": settings.enabled,
         "api_provider": settings.api_provider,
@@ -393,24 +426,9 @@ def _encode_settings(settings: AppSettings) -> dict[str, object]:
         "back_translation": settings.back_translation,
         "completion_notifications": settings.completion_notifications,
         "ui_language": settings.ui_language,
-        "shortcut": {
-            "kind": shortcut.kind,
-            "mouse_button": shortcut.mouse_button,
-            "virtual_key": shortcut.virtual_key,
-            "modifiers": list(shortcut.modifiers),
-            "display": shortcut.display,
-        },
-        "show_window_shortcut": (
-            None
-            if show_window_shortcut is None
-            else {
-                "kind": show_window_shortcut.kind,
-                "mouse_button": show_window_shortcut.mouse_button,
-                "virtual_key": show_window_shortcut.virtual_key,
-                "modifiers": list(show_window_shortcut.modifiers),
-                "display": show_window_shortcut.display,
-            }
-        ),
+        "shortcut": _encode_shortcut(settings.shortcut),
+        "show_window_shortcut": _encode_shortcut(settings.show_window_shortcut),
+        "snip_shortcut": _encode_shortcut(settings.snip_shortcut),
     }
 
 
@@ -442,6 +460,7 @@ __all__ = [
     "DEFAULT_SETTINGS",
     "DEFAULT_SHOW_WINDOW_SHORTCUT",
     "DEFAULT_SHORTCUT",
+    "DEFAULT_SNIP_SHORTCUT",
     "MOUSE_BUTTONS",
     "MODIFIERS",
     "SETTINGS_FILE_NAME",

@@ -19,6 +19,7 @@ from app_settings import (
     AppSettings,
     DEFAULT_SETTINGS,
     DEFAULT_SHOW_WINDOW_SHORTCUT,
+    DEFAULT_SNIP_SHORTCUT,
     SettingsDataError,
     ShortcutBinding,
     keyboard_shortcut,
@@ -45,6 +46,11 @@ def test_missing_settings_returns_enabled_xbutton1_default(tmp_path: Path):
         0x57,
         ("ctrl", "alt"),
         "Ctrl+Alt+W",
+    )
+    assert settings.snip_shortcut == keyboard_shortcut(
+        0x4F,
+        ("ctrl", "alt"),
+        "Ctrl+Alt+O",
     )
     assert not path.exists()
 
@@ -95,6 +101,8 @@ def test_missing_settings_returns_enabled_xbutton1_default(tmp_path: Path):
         AppSettings(back_translation=True),
         AppSettings(completion_notifications=False),
         AppSettings(ui_language="zh-CN"),
+        AppSettings(snip_shortcut=keyboard_shortcut(0x53, ("ctrl", "shift"), "Ctrl+Shift+S")),
+        AppSettings(snip_shortcut=mouse_shortcut("middle")),
     ],
 )
 def test_settings_round_trip_is_utf8_and_canonical(
@@ -115,6 +123,7 @@ def test_settings_round_trip_is_utf8_and_canonical(
         "back_translation",
         "completion_notifications",
         "ui_language",
+        "snip_shortcut",
     }
     assert payload["api_provider"] == settings.api_provider
     assert payload["back_translation"] is settings.back_translation
@@ -524,6 +533,7 @@ def test_load_migrates_window_shortcut_payload_without_configs(tmp_path: Path):
     del payload["back_translation"]
     del payload["completion_notifications"]
     del payload["ui_language"]
+    del payload["snip_shortcut"]
     _write_json(path, payload)
 
     settings = load_settings(path)
@@ -603,6 +613,7 @@ def test_load_migrates_config_payload_with_back_translation_off(tmp_path: Path):
     del payload["back_translation"]
     del payload["completion_notifications"]
     del payload["ui_language"]
+    del payload["snip_shortcut"]
     _write_json(path, payload)
 
     settings = load_settings(path)
@@ -620,6 +631,7 @@ def test_load_migrates_back_translation_payload_with_notifications_on(
     payload = json.loads(path.read_text(encoding="utf-8"))
     del payload["completion_notifications"]
     del payload["ui_language"]
+    del payload["snip_shortcut"]
     _write_json(path, payload)
 
     settings = load_settings(path)
@@ -687,6 +699,7 @@ def test_settings_written_before_the_language_option_load_as_english(tmp_path: P
     )
     payload = json.loads(path.read_text(encoding="utf-8"))
     del payload["ui_language"]
+    del payload["snip_shortcut"]
     _write_json(path, payload)
 
     settings = load_settings(path)
@@ -735,4 +748,54 @@ def test_ui_language_needs_the_notification_field(tmp_path: Path):
     _write_json(path, payload)
 
     with pytest.raises(SettingsDataError, match="schema"):
+        load_settings(path)
+
+
+def test_cleared_snip_shortcut_round_trips_as_json_null(tmp_path: Path):
+    path = tmp_path / "settings.json"
+    settings = AppSettings(snip_shortcut=None)
+
+    save_settings_atomic(path, settings)
+
+    assert json.loads(path.read_text(encoding="utf-8"))["snip_shortcut"] is None
+    restored = load_settings(path)
+    assert restored == settings
+    assert restored.snip_shortcut is None
+
+
+def test_settings_written_before_the_snip_shortcut_get_the_default(tmp_path: Path):
+    path = tmp_path / "settings.json"
+    save_settings_atomic(path, AppSettings(ui_language="zh-CN", snip_shortcut=None))
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["snip_shortcut"]
+    _write_json(path, payload)
+
+    settings = load_settings(path)
+
+    assert settings.snip_shortcut == DEFAULT_SNIP_SHORTCUT
+    assert settings.ui_language == "zh-CN"
+
+
+def test_snip_shortcut_needs_the_language_field(tmp_path: Path):
+    path = tmp_path / "settings.json"
+    save_settings_atomic(path, AppSettings())
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["ui_language"]
+    _write_json(path, payload)
+
+    with pytest.raises(SettingsDataError, match="schema"):
+        load_settings(path)
+
+
+@pytest.mark.parametrize("value", [False, True, 0, "", "Ctrl+Alt+O", [], {}])
+def test_snip_shortcut_rejects_invalid_values(tmp_path: Path, value: object):
+    with pytest.raises(SettingsDataError, match="snip_shortcut"):
+        AppSettings(snip_shortcut=value)  # type: ignore[arg-type]
+    path = tmp_path / "settings.json"
+    save_settings_atomic(path, AppSettings())
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["snip_shortcut"] = value
+    _write_json(path, payload)
+
+    with pytest.raises(SettingsDataError):
         load_settings(path)

@@ -2466,6 +2466,7 @@ def test_quit_path_deactivates_shortcut_before_qapplication_quit(app, monkeypatc
             uninstall=lambda: events.append("shortcut-stop") or True
         ),
         tray_icon=SimpleNamespace(hide=lambda: events.append("tray-hide")),
+        screen_snip=SimpleNamespace(stop=lambda: events.append("snip-stop")),
         cancel_current_ocr=lambda: events.append("cancel-ocr"),
         cancel_current_translation=lambda: events.append("cancel-translation"),
         cancel_current_back_translation=lambda wait_ms=0: events.append(
@@ -2486,6 +2487,7 @@ def test_quit_path_deactivates_shortcut_before_qapplication_quit(app, monkeypatc
     assert window.force_quit is True
     assert ("cancel-back-translation", 800) in events
     assert events.index("shortcut-stop") < events.index("qt-quit")
+    assert events.index("snip-stop") < events.index("qt-quit")
     assert events[-2:] == ["tray-hide", "qt-quit"]
 
 
@@ -3860,3 +3862,373 @@ def test_streamed_translation_and_back_translation_fade_in(
     assert not window.txt_result.text_reveal.is_revealing()
     assert not window.txt_back_translation.text_reveal.is_revealing()
     window.hide()
+
+
+# ---------- reading text from images ----------
+
+
+class _Signal:
+    def __init__(self):
+        self.callbacks = []
+
+    def connect(self, callback):
+        self.callbacks.append(callback)
+
+    def emit(self, *args):
+        for callback in self.callbacks:
+            callback(*args)
+
+
+def _ocr_image(width=120, height=40):
+    from PyQt6.QtGui import QColor, QImage
+
+    image = QImage(width, height, QImage.Format.Format_RGB32)
+    image.fill(QColor("#FFFFFF"))
+    return image
+
+
+@pytest.fixture
+def ocr_window(app, edit_window, monkeypatch):
+    window, workers = edit_window
+    readers = []
+
+    class OcrWorker:
+        def __init__(self, image_data_url):
+            self.image_data_url = image_data_url
+            self.finished = _Signal()
+            self.running = False
+            self.stop_requested = False
+            readers.append(self)
+
+        def start(self):
+            self.running = True
+
+        def isRunning(self):
+            return self.running
+
+        def request_stop(self):
+            self.stop_requested = True
+
+        def wait(self, _timeout):
+            self.running = False
+            return True
+
+        def complete(self, success, text, error=""):
+            self.running = False
+            self.finished.emit(success, text, error)
+
+    monkeypatch.setattr(app, "OcrThread", OcrWorker)
+    return window, workers, readers
+
+
+def test_a_pasted_screenshot_shows_in_the_box_while_it_is_read(ocr_window, qapp):
+    window, workers, readers = ocr_window
+    window.show()
+    window.txt_origin.set_source_text("Typed before")
+    mime = QMimeData()
+    mime.setImageData(_ocr_image())
+
+    window.txt_origin.insertFromMimeData(mime)
+    qapp.processEvents()
+
+    assert len(readers) == 1
+    assert readers[0].image_data_url.startswith("data:image/png;base64,")
+    assert window.ocr_preview.isVisible()
+    assert window.txt_origin.toPlainText() == ""
+    assert window.lbl_origin.text() == "FROM IMAGE"
+    assert window.lbl_result.text() == "READING TEXT"
+    assert window.btn_stop.isVisible()
+    assert window.btn_stop.toolTip() == "Stop reading the image"
+    # The buttons keep their names while the image is read.
+    assert window.btn_translate.text() == "Translate (Ctrl+Enter)"
+    assert not window.btn_translate.isEnabled()
+    assert window.btn_copy.text() == "Copy"
+
+    readers[0].complete(True, "Recognized line")
+    qapp.processEvents()
+
+    assert window.txt_origin.source_text() == "Recognized line"
+    assert not window.txt_origin.isReadOnly()
+    assert not window.ocr_preview.isVisible()
+    assert window.origin_image_bar.isVisible()
+    assert not window.origin_image_bar.image().isNull()
+    QTest.qWait(120)
+    assert workers[-1].text == "Recognized line"
+    window.hide()
+
+
+def test_text_copied_with_a_picture_of_it_pastes_as_text(ocr_window):
+    window, _workers, readers = ocr_window
+    mime = QMimeData()
+    mime.setText("Word paragraph")
+    mime.setImageData(_ocr_image())
+
+    window.txt_origin.insertFromMimeData(mime)
+
+    assert readers == []
+    assert "Word paragraph" in window.txt_origin.toPlainText()
+
+
+def test_stopping_a_read_gives_back_what_was_typed(ocr_window):
+    window, _workers, readers = ocr_window
+    window.txt_origin.set_source_text("Typed before")
+
+    window.start_image_ocr(_ocr_image())
+    window.btn_stop.click()
+
+    assert readers[0].stop_requested
+    assert window.txt_origin.source_text() == "Typed before"
+    assert not window.txt_origin.isReadOnly()
+    assert window.lbl_notice.text() == "Stopped"
+    assert window.btn_stop.isHidden()
+    # A late answer from the stopped reader changes nothing.
+    readers[0].complete(True, "Late text")
+    assert window.txt_origin.source_text() == "Typed before"
+
+
+def test_a_failed_read_can_be_retried_with_the_same_image(ocr_window):
+    window, _workers, readers = ocr_window
+    window.txt_origin.set_source_text("Typed before")
+
+    window.start_image_ocr(_ocr_image())
+    readers[0].complete(False, "", "network down")
+
+    assert "network down" in window.lbl_notice.text()
+    assert not window.btn_retry.isHidden()
+    assert window.txt_origin.source_text() == "Typed before"
+    window.btn_retry.click()
+    assert len(readers) == 2
+    assert readers[1].image_data_url == readers[0].image_data_url
+
+
+def test_an_image_without_text_offers_no_retry(ocr_window):
+    window, _workers, readers = ocr_window
+
+    window.start_image_ocr(_ocr_image())
+    readers[0].complete(True, "   ")
+
+    assert "OCR failed" in window.lbl_notice.text()
+    assert window.btn_retry.isHidden()
+
+
+def test_a_new_image_replaces_one_still_being_read(ocr_window):
+    window, _workers, readers = ocr_window
+
+    window.start_image_ocr(_ocr_image())
+    window.start_image_ocr(_ocr_image(60, 20))
+    readers[0].complete(True, "Old text")
+
+    assert len(readers) == 2
+    assert window.ocr_thread is readers[1]
+    assert window.txt_origin.toPlainText() == ""
+    readers[1].complete(True, "New text")
+    assert window.txt_origin.source_text() == "New text"
+
+
+def test_clear_drops_the_image_bar(ocr_window):
+    window, _workers, readers = ocr_window
+    window.start_image_ocr(_ocr_image())
+    readers[0].complete(True, "Recognized line")
+    window.cancel_current_translation()
+
+    window.clear_manual_origin()
+
+    assert window.origin_image_bar.isHidden()
+    assert window.origin_image_bar.image().isNull()
+
+
+def test_copy_text_copies_the_text_read(ocr_window):
+    window, _workers, readers = ocr_window
+    window.start_image_ocr(_ocr_image())
+    readers[0].complete(True, "Recognized line")
+
+    window.origin_image_bar.btn_copy.click()
+
+    assert QApplication.clipboard().text() == "Recognized line"
+    assert window.origin_image_bar.btn_copy.text() == "Copied"
+
+
+def test_snip_steps_the_window_aside_and_brings_it_back_if_cancelled(
+    app, ocr_window, monkeypatch, qapp
+):
+    window, _workers, _readers = ocr_window
+    window.show()
+    qapp.processEvents()
+    starts = []
+    shown = []
+    monkeypatch.setattr(
+        window.screen_snip,
+        "start",
+        lambda key=None, *, delay=0.0: starts.append((key, delay)) or True,
+    )
+    monkeypatch.setattr(app.TranslationWindow, "force_show_window", lambda self: shown.append(True))
+
+    window.start_snip(trigger_key=0x4F)
+
+    assert starts == [(0x4F, app.SNIP_HIDE_SETTLE_SECONDS)]
+    assert not window.isVisible()
+    window.on_snip_cancelled()
+    assert shown == [True]
+
+
+def test_snip_from_a_hidden_window_leaves_it_hidden_when_cancelled(
+    app, ocr_window, monkeypatch
+):
+    window, _workers, _readers = ocr_window
+    starts = []
+    shown = []
+    monkeypatch.setattr(
+        window.screen_snip,
+        "start",
+        lambda key=None, *, delay=0.0: starts.append((key, delay)) or True,
+    )
+    monkeypatch.setattr(app.TranslationWindow, "force_show_window", lambda self: shown.append(True))
+
+    window.start_snip()
+    window.on_snip_cancelled()
+
+    assert starts == [(None, 0.0)]
+    assert shown == []
+
+
+def test_snip_needs_a_provider_that_reads_images(app, ocr_window, monkeypatch):
+    window, _workers, _readers = ocr_window
+    window.app_settings = replace(window.app_settings, api_provider=DEEPSEEK_API_PROVIDER)
+    monkeypatch.setattr(
+        window.screen_snip, "start", lambda *_args, **_kwargs: pytest.fail("no snip")
+    )
+
+    window.start_snip()
+
+    assert "doesn't support image OCR" in window.lbl_notice.text()
+
+
+def test_a_snip_that_cannot_open_suggests_win_shift_s(ocr_window):
+    window, _workers, _readers = ocr_window
+
+    window.on_snip_unavailable()
+
+    assert "Win+Shift+S" in window.lbl_notice.text()
+
+
+def test_a_captured_snip_is_read(ocr_window):
+    window, _workers, readers = ocr_window
+
+    window.on_snip_captured(_ocr_image())
+
+    assert len(readers) == 1
+    assert not window.ocr_preview.image().isNull()
+
+
+def test_screen_snip_hands_back_the_snip_and_restores_the_clipboard(
+    app, qapp, monkeypatch
+):
+    clipboard = QApplication.clipboard()
+    clipboard.setText("kept text")
+    sequence = [100]
+    opened = []
+
+    def open_overlay():
+        opened.append(True)
+        clipboard.setImage(_ocr_image())
+        sequence[0] += 1
+        return True
+
+    monkeypatch.setattr(app, "get_clipboard_sequence_number", lambda: sequence[0])
+    monkeypatch.setattr(app, "copy_keys_released", lambda _key=None: True)
+    monkeypatch.setattr(app, "open_snip_overlay", open_overlay)
+    monkeypatch.setattr(app, "SnipOverlayTracker", lambda: SimpleNamespace(is_open=lambda: True))
+    snip = app.ScreenSnip()
+    captured = []
+    snip.captured.connect(captured.append)
+
+    assert snip.start()
+    assert snip.start() is False
+    QTest.qWait(300)
+
+    assert opened == [True]
+    assert len(captured) == 1
+    assert captured[0].size() == _ocr_image().size()
+    assert clipboard.text() == "kept text"
+    assert not snip.is_active()
+
+
+def test_screen_snip_reports_a_closed_overlay_as_cancelled(app, qapp, monkeypatch):
+    import windows_snip
+
+    overlay = {"open": True}
+    monkeypatch.setattr(windows_snip, "CLIPBOARD_SETTLE_SECONDS", 0.0)
+    monkeypatch.setattr(app, "get_clipboard_sequence_number", lambda: 5)
+    monkeypatch.setattr(app, "copy_keys_released", lambda _key=None: True)
+    monkeypatch.setattr(app, "open_snip_overlay", lambda: True)
+    monkeypatch.setattr(
+        app, "SnipOverlayTracker", lambda: SimpleNamespace(is_open=lambda: overlay["open"])
+    )
+    snip = app.ScreenSnip()
+    outcomes = []
+    snip.cancelled.connect(lambda: outcomes.append("cancelled"))
+    snip.captured.connect(lambda _image: outcomes.append("captured"))
+
+    snip.start()
+    QTest.qWait(200)
+    overlay["open"] = False
+    QTest.qWait(250)
+
+    assert outcomes == ["cancelled"]
+    assert not snip.is_active()
+
+
+def test_screen_snip_reports_when_windows_cannot_open_it(app, qapp, monkeypatch):
+    monkeypatch.setattr(app, "copy_keys_released", lambda _key=None: True)
+    monkeypatch.setattr(app, "open_snip_overlay", lambda: False)
+    snip = app.ScreenSnip()
+    outcomes = []
+    snip.unavailable.connect(lambda: outcomes.append("unavailable"))
+
+    snip.start()
+    QTest.qWait(200)
+
+    assert outcomes == ["unavailable"]
+
+
+def test_screen_snip_waits_for_the_shortcut_keys_to_be_released(app, qapp, monkeypatch):
+    released = {"keys": False}
+    opened = []
+    monkeypatch.setattr(app, "copy_keys_released", lambda _key=None: released["keys"])
+    monkeypatch.setattr(app, "open_snip_overlay", lambda: opened.append(True) or True)
+    monkeypatch.setattr(app, "SnipOverlayTracker", lambda: SimpleNamespace(is_open=lambda: True))
+    snip = app.ScreenSnip()
+
+    snip.start(0x4F)
+    QTest.qWait(200)
+    assert opened == []
+    released["keys"] = True
+    QTest.qWait(200)
+    assert opened == [True]
+    snip.stop()
+
+
+def test_snip_shortcut_must_differ_from_the_others(app, edit_window, monkeypatch):
+    window, _workers = edit_window
+    warnings = []
+    monkeypatch.setattr(app, "show_warning", lambda _parent, title, text: warnings.append(text))
+
+    for clash in (window.app_settings.shortcut, window.app_settings.show_window_shortcut):
+        assert window.apply_settings(replace(window.app_settings, snip_shortcut=clash)) is False
+
+    assert len(warnings) == 2
+    assert "snip-and-read" in warnings[0]
+
+
+def test_settings_dialog_records_the_snip_shortcut(app, qapp):
+    binding = keyboard_shortcut(0x53, ("ctrl", "shift"), "Ctrl+Shift+S")
+    dialog = app.SettingsDialog(
+        replace(DEFAULT_SETTINGS, snip_shortcut=binding),
+        api_key_configured=False,
+        environment_key_active=False,
+    )
+    try:
+        assert dialog.snip_shortcut_button.binding == binding
+        assert dialog.candidate_settings().snip_shortcut == binding
+    finally:
+        dialog.reject()

@@ -395,12 +395,15 @@ def test_setup_with_removed_shortcut_disables_manager_without_warning(app, monke
         tray_icon=SimpleNamespace(showMessage=lambda *args: warnings.append(args)),
         on_translation_shortcut_triggered=lambda: None,
         on_show_window_shortcut_triggered=lambda: None,
+        on_snip_shortcut_triggered=lambda: None,
         refresh_shortcut_status=lambda: None,
     )
 
     app.TranslationWindow.setup_translation_shortcut(window)
 
-    assert len(managers) == 2
+    assert len(managers) == 3
     assert managers[1].binding is None
     assert managers[1].calls == [(None, False)]
+    # The snip shortcut keeps its own binding.
+    assert managers[2].calls == [(DEFAULT_SETTINGS.snip_shortcut, True)]
     assert warnings == []

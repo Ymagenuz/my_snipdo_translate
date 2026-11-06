@@ -91,6 +91,23 @@ class _WidgetStub:
     def clear(self):
         self.values.append("clear")
 
+    def setPlaceholderText(self, value):
+        self.values.append(value)
+
+
+class _PreviewStub:
+    def __init__(self):
+        self.shown = []
+
+    def show_image(self, image):
+        self.shown.append(image)
+
+    def image(self):
+        return self.shown[-1] if self.shown else None
+
+    def hide_image(self):
+        self.shown.append(None)
+
 
 class _CursorStub:
     def __init__(self):
@@ -167,9 +184,14 @@ def _ocr_window(app):
         lbl_result=_WidgetStub(),
         btn_copy=_WidgetStub(),
         btn_edit_origin=_WidgetStub(),
+        btn_ocr_clipboard=_WidgetStub(),
+        ocr_preview=_PreviewStub(),
+        ocr_threads=set(),
         result_char_fmt=object(),
         ensure_api_key=lambda *, allow_prompt=True: True,
         cancel_current_translation=lambda: None,
+        clear_origin_image=lambda: None,
+        refresh_stop_button=lambda: None,
         setup_result_format=lambda: None,
         ensure_large_window_size=lambda: None,
         force_show_window=lambda: None,
@@ -195,6 +217,7 @@ def _translation_window(app):
         ensure_api_key=lambda *, allow_prompt=True: True,
         cancel_current_ocr=lambda: None,
         cancel_current_translation=lambda: None,
+        clear_origin_image=lambda: None,
         resolve_effective_mode=lambda _text: "auto",
         apply_snipdo_mode_ui=lambda: None,
         ensure_large_window_size=lambda: None,

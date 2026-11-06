@@ -66,12 +66,13 @@ _ENGLISH = {
     "settings.about.changelog.missing": "The changelog isn't included in this copy of the app.",
     "settings.shortcuts": "Shortcuts",
     "settings.shortcuts.hint": (
-        "While recording, press Esc to remove the show-window shortcut. The "
-        "translation shortcut can't be removed; Esc only cancels the change. "
+        "While recording, press Esc to remove the show-window or snip-and-read "
+        "shortcut. The translation shortcut can't be removed; Esc only cancels the change. "
         "Mouse shortcuts block the button's usual Back, Forward or middle-click action."
     ),
     "settings.shortcut.translate.row": "Translation shortcut",
     "settings.shortcut.show_window.row": "Show-window shortcut",
+    "settings.shortcut.snip.row": "Snip-and-read shortcut",
     "settings.translation": "Translation",
     "settings.translation.hint": (
         "Back-translation translates the result back into the source language "
@@ -178,7 +179,8 @@ _ENGLISH = {
     "tray.show_window_with_shortcut": "Show main window ({shortcut})",
     "tray.disable": "Disable",
     "tray.settings": "Settings…",
-    "tray.ocr_clipboard": "OCR clipboard image",
+    "tray.snip": "Snip and read text",
+    "tray.snip_with_shortcut": "Snip and read text ({shortcut})",
     "tray.check_updates": "Check for updates…",
     "tray.about": "About SnipDo Translate ({version})",
     "tray.quit": "Quit",
@@ -193,6 +195,9 @@ _ENGLISH = {
     "notify.show_window_shortcut_failed": (
         "Couldn't register the show-window shortcut. Choose another one in Settings."
     ),
+    "notify.snip_shortcut_failed": (
+        "Couldn't register the snip-and-read shortcut. Choose another one in Settings."
+    ),
     "notify.release_shortcut": "Release the shortcut, then try selection translation again.",
     "notify.no_selection": (
         "No selected text found. Make sure the text can be copied from that "
@@ -206,7 +211,7 @@ _ENGLISH = {
     ),
     "warning.shortcut_conflict.title": "Shortcut conflict",
     "warning.shortcut_conflict.text": (
-        "The translation shortcut and the show-window shortcut can't be the same."
+        "The translation, show-window and snip-and-read shortcuts must all be different."
     ),
     "warning.invalid_key.title": "Invalid API key",
     "warning.invalid_key.text": "Enter a valid API key. Your other settings weren't changed.",
@@ -216,6 +221,7 @@ _ENGLISH = {
     ),
     "warning.shortcut_unavailable.title": "Shortcut unavailable",
     "warning.show_window_shortcut_unavailable.title": "Show-window shortcut unavailable",
+    "warning.snip_shortcut_unavailable.title": "Snip-and-read shortcut unavailable",
     "warning.shortcut_unavailable.text": (
         "Another program may be using this shortcut. The previous shortcut stays active."
     ),
@@ -254,13 +260,13 @@ _ENGLISH = {
     "main.language.target_tooltip": "Translation/definition language",
     "main.label.original_auto": "ORIGINAL (AUTO DETECT)",
     "main.label.original": "ORIGINAL",
-    "main.label.ocr_image": "OCR IMAGE",
+    "main.label.ocr_image": "FROM IMAGE",
     "main.label.auto_translation": "AUTO TRANSLATION",
     "main.label.chinese_translation": "CHINESE TRANSLATION",
     "main.label.english_translation": "ENGLISH TRANSLATION",
     "main.label.language_translation": "{language} TRANSLATION",
     "main.label.dictionary": "DICTIONARY",
-    "main.label.ocr": "OCR",
+    "main.label.ocr": "READING TEXT",
     "main.label.back_translation": "BACK TRANSLATION",
     "main.label.back_translation_into": "BACK TRANSLATION · {language}",
     "main.back_translation": "Back-translate",
@@ -275,8 +281,19 @@ _ENGLISH = {
     "main.edit.tooltip": "Edit the source text and translate again",
     "main.clear": "Clear",
     "main.ocr": "OCR",
-    "main.ocr.tooltip": "Read the text in the clipboard image and translate it",
-    "main.ocr.busy": "OCR...",
+    "main.ocr.tooltip": (
+        "Snip part of the screen, then read and translate its text.\n"
+        "You can also paste or drop an image in the box."
+    ),
+    "main.ocr.tooltip_with_shortcut": (
+        "Snip part of the screen, then read and translate its text ({shortcut}).\n"
+        "You can also paste or drop an image in the box."
+    ),
+    "main.image.from": "From image",
+    "main.image.show": "Show image",
+    "main.image.copy_text": "Copy text",
+    "main.image.copied": "Copied",
+    "main.image.drop": "Drop to read the text in this image",
     "main.history": "History",
     "main.history.empty": "No history",
     "main.history.clear": "Clear history",
@@ -290,6 +307,7 @@ _ENGLISH = {
     "main.looking_up": "Looking up...",
     "main.stop": "Stop",
     "main.stop.tooltip": "Stop translating and keep what has arrived",
+    "main.stop.ocr_tooltip": "Stop reading the image",
     "main.copy": "Copy",
     "main.copied": "Copied",
     "main.hide": "Hide",
@@ -330,6 +348,10 @@ _ENGLISH = {
         "one that does in Settings."
     ),
     "message.ocr_no_key": "No API key is set, so OCR was cancelled.",
+    "message.snip_unavailable": (
+        "Couldn't open the Windows snip. Press Win+Shift+S, then paste the "
+        "snip here with Ctrl+V."
+    ),
     "message.translation_no_key": "No API key is set, so the translation was cancelled.",
     "message.translation_error": "Translation failed: {error}",
     "message.stopped": "Stopped",
@@ -353,9 +375,6 @@ _ENGLISH = {
     "error.no_text_found": "no text found",
     "error.no_api_key": "No {provider} API key is set",
     "error.ocr_unsupported": "{provider} doesn't support image OCR",
-    "error.clipboard_no_image": "the clipboard has no image",
-    "error.clipboard_unreadable": "couldn't read the clipboard image",
-    "error.clipboard_not_png": "couldn't convert the clipboard image to PNG",
     # Dictionary and target languages in the main window
     "language.auto": "Auto",
     "language.default": "Default",
@@ -474,11 +493,12 @@ _SIMPLIFIED_CHINESE = {
     "settings.about.changelog.missing": "此程序副本未包含更新日志。",
     "settings.shortcuts": "快捷键",
     "settings.shortcuts.hint": (
-        "录入时按 Esc 可移除显示窗口快捷键；翻译快捷键不可移除，Esc 仅取消修改。"
+        "录入时按 Esc 可移除显示窗口或截图识字快捷键；翻译快捷键不可移除，Esc 仅取消修改。"
         "鼠标快捷键会拦截对应的后退、前进或中键动作。"
     ),
     "settings.shortcut.translate.row": "翻译快捷键",
     "settings.shortcut.show_window.row": "显示窗口快捷键",
+    "settings.shortcut.snip.row": "截图识字快捷键",
     "settings.translation": "翻译",
     "settings.translation.hint": "回译会把译文再翻译回原文语言，便于核对译文是否准确传达了原意。",
     "settings.back_translation.row": "回译",
@@ -546,7 +566,8 @@ _SIMPLIFIED_CHINESE = {
     "tray.show_window_with_shortcut": "显示主窗口（{shortcut}）",
     "tray.disable": "禁用",
     "tray.settings": "设置…",
-    "tray.ocr_clipboard": "OCR 剪贴板图片",
+    "tray.snip": "截图识别文字",
+    "tray.snip_with_shortcut": "截图识别文字（{shortcut}）",
     "tray.check_updates": "检查更新…",
     "tray.about": "关于 SnipDo Translate（{version}）",
     "tray.quit": "彻底退出",
@@ -557,18 +578,20 @@ _SIMPLIFIED_CHINESE = {
     "notify.translation_finished": "翻译完成",
     "notify.shortcut_failed": "快捷键注册失败；请在设置中选择其他快捷键。",
     "notify.show_window_shortcut_failed": "显示窗口快捷键注册失败；请在设置中选择其他快捷键。",
+    "notify.snip_shortcut_failed": "截图识字快捷键注册失败；请在设置中选择其他快捷键。",
     "notify.release_shortcut": "请松开快捷键后重试划词翻译。",
     "notify.no_selection": "未检测到选中文字，请确认原窗口可复制文本，松开快捷键后重试。",
     "warning.startup.title": "开机启动设置失败",
     "warning.startup.text": "其他设置已保存，但无法更改开机启动设置。请稍后重试。",
     "warning.shortcut_conflict.title": "快捷键冲突",
-    "warning.shortcut_conflict.text": "翻译快捷键和显示窗口快捷键不能相同。",
+    "warning.shortcut_conflict.text": "翻译、显示窗口和截图识字快捷键必须互不相同。",
     "warning.invalid_key.title": "API Key 无效",
     "warning.invalid_key.text": "请输入有效的 API Key；其他设置尚未更改。",
     "warning.provider_busy.title": "接口暂未切换",
     "warning.provider_busy.text": "当前请求尚未结束。请稍后再次保存接口设置。",
     "warning.shortcut_unavailable.title": "快捷键不可用",
     "warning.show_window_shortcut_unavailable.title": "显示窗口快捷键不可用",
+    "warning.snip_shortcut_unavailable.title": "截图识字快捷键不可用",
     "warning.shortcut_unavailable.text": "该快捷键可能已被其他程序占用。原快捷键仍保持激活。",
     "warning.save_failed.title": "设置保存失败",
     "warning.save_failed.text": "无法保存设置，已恢复原来的启用状态和快捷键。",
@@ -595,13 +618,13 @@ _SIMPLIFIED_CHINESE = {
     # These headings and the buttons below have always been English.
     "main.label.original_auto": "ORIGINAL (AUTO DETECT)",
     "main.label.original": "ORIGINAL",
-    "main.label.ocr_image": "OCR IMAGE",
+    "main.label.ocr_image": "FROM IMAGE",
     "main.label.auto_translation": "AUTO TRANSLATION",
     "main.label.chinese_translation": "CHINESE TRANSLATION",
     "main.label.english_translation": "ENGLISH TRANSLATION",
     "main.label.language_translation": "{language} TRANSLATION",
     "main.label.dictionary": "DICTIONARY",
-    "main.label.ocr": "OCR",
+    "main.label.ocr": "READING TEXT",
     "main.label.back_translation": "BACK TRANSLATION",
     "main.label.back_translation_into": "BACK TRANSLATION · {language}",
     "main.back_translation": "回译",
@@ -615,8 +638,15 @@ _SIMPLIFIED_CHINESE = {
     "main.edit.tooltip": "编辑原文后重新翻译",
     "main.clear": "Clear",
     "main.ocr": "OCR",
-    "main.ocr.tooltip": "识别剪贴板图片文字，并自动翻译",
-    "main.ocr.busy": "OCR...",
+    "main.ocr.tooltip": "截取屏幕的一部分，识别并翻译其中的文字。\n也可以把图片粘贴或拖放到输入框。",
+    "main.ocr.tooltip_with_shortcut": (
+        "截取屏幕的一部分，识别并翻译其中的文字（{shortcut}）。\n也可以把图片粘贴或拖放到输入框。"
+    ),
+    "main.image.from": "来自图片",
+    "main.image.show": "查看图片",
+    "main.image.copy_text": "复制文字",
+    "main.image.copied": "已复制",
+    "main.image.drop": "松开即可识别图片中的文字",
     "main.history": "History",
     "main.history.empty": "No history",
     "main.history.clear": "Clear history",
@@ -629,6 +659,7 @@ _SIMPLIFIED_CHINESE = {
     "main.looking_up": "Looking up...",
     "main.stop": "Stop",
     "main.stop.tooltip": "停止翻译，保留已收到的译文",
+    "main.stop.ocr_tooltip": "停止识别图片",
     "main.copy": "Copy",
     "main.copied": "Copied",
     "main.hide": "Hide",
@@ -656,6 +687,7 @@ _SIMPLIFIED_CHINESE = {
     "message.ocr_error": "OCR 出错：{error}",
     "message.ocr_unsupported": "当前 {provider} 接口不支持图片 OCR；请在设置中切换到支持图片的接口。",
     "message.ocr_no_key": "未设置 API Key，已取消 OCR。",
+    "message.snip_unavailable": "无法打开 Windows 截图。请按 Win+Shift+S 截图，然后在这里按 Ctrl+V 粘贴。",
     "message.translation_no_key": "未设置 API Key，已取消翻译。",
     "message.translation_error": "翻译出错：{error}",
     "message.stopped": "已停止",
@@ -673,9 +705,6 @@ _SIMPLIFIED_CHINESE = {
     "error.no_text_found": "未识别到文字",
     "error.no_api_key": "未设置 {provider} API Key",
     "error.ocr_unsupported": "{provider} 不支持图片 OCR",
-    "error.clipboard_no_image": "剪贴板中没有图片",
-    "error.clipboard_unreadable": "无法读取剪贴板图片",
-    "error.clipboard_not_png": "无法把剪贴板图片转换为 PNG",
     "language.auto": "Auto",
     "language.default": "默认",
     "language.zh": "中文",
