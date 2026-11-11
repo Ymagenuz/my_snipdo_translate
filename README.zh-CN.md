@@ -8,7 +8,7 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 
 ## 版本与应用内更新
 
-- 应用版本统一定义在 `app_version.py`，当前版本为 `13.1.0`：在设为 150% 等缩放比例的屏幕上文字笔画更均匀，窗口会在你上次离开的位置重新打开，详见[更新日志](CHANGELOG.zh-CN.md)。主窗口标题、设置标题、设置“关于”页、托盘“关于”菜单及打包 EXE 的 Windows 文件属性均显示版本。
+- 应用版本统一定义在 `app_version.py`，当前版本为 `13.1.1`：Clear 按钮固定在左下角，划词后 Edit 出现在它的右侧，详见[更新日志](CHANGELOG.zh-CN.md)。主窗口标题、设置标题、设置“关于”页、托盘“关于”菜单及打包 EXE 的 Windows 文件属性均显示版本。
 - 正常启动主实例 5 秒后，程序会在后台检查本项目的 [GitHub Releases](https://github.com/Ymagenuz/my_snipdo_translate/releases)。自动检查每台设备最多每 6 小时一次，重启程序不会提前检查；但如果上次检查发现了新版本，启动后会立即重新确认，以便“设置”按钮显示下载图标。保持运行时也会每 6 小时检查一次。托盘菜单中的“检查更新…”或设置“关于”页中的“检查更新”可随时手动检查。
 - 只有正式版版本号更高、且已上传有效的 `SnipDoTranslate.exe` 和 `SnipDoTranslate.exe.sha256` 附件时才视为有新版本。草稿、预发布版本、只有源码的 Release、缺少校验文件和旧版本均不会显示。
 - 更新不再弹窗打扰。有新版本时，主窗口“设置”按钮上的齿轮图标会变为蓝色下载图标；将鼠标悬停在图标上可查看版本号，点击图标会直接打开设置中的“关于”页。“关于”页显示当前版本和可用的新版本，提供“更新并重启”“发行说明”和“检查更新”，并附有更新日志，其中已安装的版本标有“当前版本”；有新版本时，其 GitHub 发行说明显示在更新日志顶部，标有“可安装”。点击“更新并重启”会先保存在设置中所做的修改并关闭设置，然后在应用内下载更新并显示进度，无需打开浏览器；“发行说明”在浏览器中打开该版本的 Release 页面，也可在该页面手动下载，无法打开浏览器时会显示页面地址。托盘菜单的“关于”同样打开此页；“检查更新…”会打开此页并立即检查，结果直接显示在页面上。
@@ -20,13 +20,13 @@ SnipDoTranslate 是面向 Windows 10/11 x64 的桌面翻译、查词和图片 OC
 
 ### 发布新版本
 
-1. 修改 `app_version.py` 中的 `APP_VERSION`，采用 `主版本.次版本.修订版本` 格式，例如 `13.1.0`，每段为 `0`–`65535` 的整数。同时在 `CHANGELOG.md` 和 `CHANGELOG.zh-CN.md` 顶部添加该版本的条目（`## <版本号> — <YYYY-MM-DD>` 加要点列表）；程序会在“关于”页显示更新日志，任一文件未以新版本开头时离线自检会失败。
+1. 修改 `app_version.py` 中的 `APP_VERSION`，采用 `主版本.次版本.修订版本` 格式，例如 `13.1.1`，每段为 `0`–`65535` 的整数。同时在 `CHANGELOG.md` 和 `CHANGELOG.zh-CN.md` 顶部添加该版本的条目（`## <版本号> — <YYYY-MM-DD>` 加要点列表）；程序会在“关于”页显示更新日志，任一文件未以新版本开头时离线自检会失败。
 2. 运行下方 Windows 构建流程，得到已校验的 `dist\SnipDoTranslate.exe` 和 SHA-256 文件；构建检查会验证 EXE 中的版本资源与源码一致。
-3. 在本项目 GitHub Releases 中创建对应标签（例如 `v13.1.0`）的正式 Release，上传 `SnipDoTranslate.exe` 和 `SnipDoTranslate.exe.sha256`，填写更新说明，再发布并标记为最新版本。校验文件使用构建脚本生成的 `SHA256  SnipDoTranslate.exe` 格式。只推送代码或创建 Git 标签不会发布应用更新。
+3. 在本项目 GitHub Releases 中创建对应标签（例如 `v13.1.1`）的正式 Release，上传 `SnipDoTranslate.exe` 和 `SnipDoTranslate.exe.sha256`，填写更新说明，再发布并标记为最新版本。校验文件使用构建脚本生成的 `SHA256  SnipDoTranslate.exe` 格式。只推送代码或创建 Git 标签不会发布应用更新。
 
 Release 标题和发行说明使用英文撰写：
 
-- **标题**：`SnipDo Translate v<版本号>`，例如 `SnipDo Translate v13.1.0`。
+- **标题**：`SnipDo Translate v<版本号>`，例如 `SnipDo Translate v13.1.1`。
 - **`## What's changed`**（更新内容）：每项用户可见的改动一条，说明改了什么、有什么影响。
 - **`## Upgrading`**（升级）：说明升级方式（例如已安装 `12.3.0` 或更新版本时选择“更新并重启”——`12.5.0` 及以前在更新提醒中，`12.6.0` 起在设置“关于”页中），说明设置、历史记录和 API Key 会保留，以及设置文件格式是否改变。
 - **`## Download and verification`**（下载与校验）：逐项列出附件——`SnipDoTranslate.exe`（Windows x64 单文件程序，无需安装 Python 或项目依赖）和 `SnipDoTranslate.exe.sha256`（EXE 的 SHA-256 校验文件）；随后在 `text` 代码块中给出 EXE 的 SHA-256，用一行说明通过的自动测试数量、打包程序已通过离线自检以及构建版本和对应提交，最后附上 `[Full changelog](https://github.com/Ymagenuz/my_snipdo_translate/compare/v<上一版本>...v<版本号>)` 链接。

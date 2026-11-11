@@ -4,6 +4,11 @@
 
 What changed in each SnipDo Translate release. The app shows this list on the **About** page in Settings.
 
+## 13.1.1 — 2026-11-11
+
+- **Clear stays in its corner.** **Clear** keeps its place at the bottom left whatever you're doing, so it's always where you expect it. When you select text elsewhere, **Edit** appears to its right instead of taking its place.
+- **Clear works on a selection too.** Clicking **Clear** on selected text stops its translation and empties both boxes, leaving the input box ready to type in.
+
 ## 13.1.0 — 2026-11-11
 
 - **Even text on scaled screens.** On a screen set to 150% or another scale, text keeps the true shapes of its letters, so the strokes of a Chinese character are no longer one pixel thick in some places and two in others. On a 100% screen text stays crisp, also while a scaled screen is connected, and it switches as you move the window between them.
