@@ -4945,12 +4945,7 @@ class TranslationWindow(QWidget):
         btn_layout.setContentsMargins(0, 10, 0, 0)
         btn_layout.setSpacing(10)
 
-        self.btn_edit_origin = QPushButton(tr("main.edit"))
-        self.btn_edit_origin.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_edit_origin.setToolTip(tr("main.edit.tooltip"))
-        self.btn_edit_origin.clicked.connect(self.edit_selected_text)
-        btn_layout.addWidget(self.btn_edit_origin)
-
+        # Clear keeps the corner in every mode; Edit joins it for a selection.
         self.btn_clear_origin = QPushButton(tr("main.clear"))
         self.btn_clear_origin.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_clear_origin.clicked.connect(self.clear_manual_origin)
@@ -4970,8 +4965,14 @@ class TranslationWindow(QWidget):
                 color: #303133;
             }
         """)
-        self.btn_edit_origin.setStyleSheet(self.btn_clear_origin.styleSheet())
         btn_layout.addWidget(self.btn_clear_origin)
+
+        self.btn_edit_origin = QPushButton(tr("main.edit"))
+        self.btn_edit_origin.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_edit_origin.setToolTip(tr("main.edit.tooltip"))
+        self.btn_edit_origin.clicked.connect(self.edit_selected_text)
+        self.btn_edit_origin.setStyleSheet(self.btn_clear_origin.styleSheet())
+        btn_layout.addWidget(self.btn_edit_origin)
         btn_layout.addStretch(1)
 
         self.btn_ocr_clipboard = QPushButton(tr("main.ocr"))
@@ -5729,10 +5730,10 @@ class TranslationWindow(QWidget):
         self.btn_copy.setText(tr("main.copy"))
         self.btn_copy.setEnabled(False)
         self.btn_edit_origin.setEnabled(False)
+        self.btn_clear_origin.setEnabled(False)
         self.btn_ocr_clipboard.setEnabled(False)
 
         if self.source_mode == "manual":
-            self.btn_clear_origin.setEnabled(False)
             self.btn_translate.setEnabled(False)
             self.btn_translate.setText(tr("main.translate"))
 
@@ -5787,9 +5788,9 @@ class TranslationWindow(QWidget):
         self.ocr_preview.hide_image()
 
         if self.source_mode == "manual":
-            self.btn_clear_origin.setEnabled(True)
             self.btn_translate.setEnabled(True)
             self.btn_translate.setText(tr("main.translate"))
+        self.btn_clear_origin.setEnabled(True)
         self.btn_ocr_clipboard.setEnabled(True)
 
         self.btn_copy.setText(tr("main.copy"))
@@ -5942,10 +5943,14 @@ class TranslationWindow(QWidget):
         self.txt_origin.setFocus()
 
     def clear_manual_origin(self):
-        if self.source_mode != "manual":
+        if self.ocr_thread and self.ocr_thread.isRunning():
             return
 
         self.cancel_current_translation()
+        if self.source_mode != "manual":
+            # Clearing a selection leaves an empty box to type in.
+            self.pending_snipdo_text = ""
+            self.apply_manual_mode_ui()
         self.reset_origin_editor()
         self.clear_origin_image()
         self.original_paragraphs = []
@@ -6919,7 +6924,8 @@ class TranslationWindow(QWidget):
         self.btn_content_mode.show()
         self.update_content_mode_button_text()
         self.btn_translate.hide()
-        self.btn_clear_origin.hide()
+        self.btn_clear_origin.show()
+        self.btn_clear_origin.setEnabled(True)
         self.btn_edit_origin.show()
         self.refresh_result_hint()
         self.refresh_stop_button()

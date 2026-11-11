@@ -1219,13 +1219,16 @@ def test_edit_selection_preserves_source_syntax_and_completed_result(
     rendered_result = window.txt_result.toHtml()
     assert window.txt_origin.toPlainText() != source
     assert not window.btn_edit_origin.isHidden()
-    assert window.btn_clear_origin.isHidden()
+    assert not window.btn_clear_origin.isHidden()
     if not use_pending_text:
         window.pending_snipdo_text = ""
 
     window.show()
     qapp.processEvents()
-    edit_position = window.btn_edit_origin.pos()
+    clear_position = window.btn_clear_origin.pos()
+    # Clear holds the corner; Edit sits just to its right.
+    assert window.btn_edit_origin.x() > window.btn_clear_origin.geometry().right()
+    assert window.btn_edit_origin.y() == window.btn_clear_origin.y()
     window.btn_edit_origin.click()
     qapp.processEvents()
 
@@ -1245,7 +1248,7 @@ def test_edit_selection_preserves_source_syntax_and_completed_result(
     assert 0 < window.result_opacity_effect.opacity() < 1
     assert window.btn_edit_origin.isHidden()
     assert not window.btn_clear_origin.isHidden()
-    assert window.btn_clear_origin.pos() == edit_position
+    assert window.btn_clear_origin.pos() == clear_position
     assert window.btn_clear_origin.isEnabled()
     assert not window.btn_translate.isHidden()
     assert window.btn_translate.isEnabled()
@@ -1429,7 +1432,7 @@ def test_edit_result_dimming_is_reset_by_replacing_content(edit_window, next_act
         assert window.handle_new_request("A newly selected sentence.")
         assert window.source_mode == "snipdo"
         assert not window.btn_edit_origin.isHidden()
-        assert window.btn_clear_origin.isHidden()
+        assert not window.btn_clear_origin.isHidden()
         assert window.txt_origin.isReadOnly()
         assert window.txt_result.toPlainText() == ""
     else:
@@ -1440,6 +1443,34 @@ def test_edit_result_dimming_is_reset_by_replacing_content(edit_window, next_act
         assert window.txt_result.toPlainText() == "Historical translation"
         assert window.btn_copy.isEnabled()
     assert not window.result_opacity_effect.isEnabled()
+
+
+@pytest.mark.parametrize("finished", [True, False])
+def test_clearing_a_selection_leaves_an_empty_box_to_type_in(edit_window, finished):
+    window, workers = edit_window
+    assert window.handle_new_request("The selected original sentence.")
+    worker = workers[-1]
+    worker.chunk_received.emit("Previous translation")
+    if finished:
+        worker.complete()
+    assert window.btn_clear_origin.isEnabled()
+
+    window.btn_clear_origin.click()
+    worker.chunk_received.emit(" stale text")
+
+    assert window.source_mode == "manual"
+    assert not window.txt_origin.isReadOnly()
+    assert window.txt_origin.toPlainText() == ""
+    assert window.txt_result.toPlainText() == ""
+    assert window.full_translation == ""
+    assert window.original_paragraphs == []
+    assert window.pending_snipdo_text == ""
+    assert window.trans_thread is None
+    assert window.btn_edit_origin.isHidden()
+    assert not window.btn_clear_origin.isHidden()
+    assert not window.btn_translate.isHidden()
+    assert window.btn_translate.isEnabled()
+    assert not window.btn_copy.isEnabled()
 
 
 @pytest.mark.parametrize(

@@ -184,6 +184,7 @@ def _ocr_window(app):
         lbl_result=_WidgetStub(),
         btn_copy=_WidgetStub(),
         btn_edit_origin=_WidgetStub(),
+        btn_clear_origin=_WidgetStub(),
         btn_ocr_clipboard=_WidgetStub(),
         ocr_preview=_PreviewStub(),
         ocr_threads=set(),
