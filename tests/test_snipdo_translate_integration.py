@@ -193,7 +193,6 @@ def _ocr_window(app):
         clear_origin_image=lambda: None,
         refresh_stop_button=lambda: None,
         setup_result_format=lambda: None,
-        ensure_large_window_size=lambda: None,
         force_show_window=lambda: None,
         set_result_message=lambda _message: None,
         on_ocr_finished=lambda *_args: None,
@@ -220,7 +219,6 @@ def _translation_window(app):
         clear_origin_image=lambda: None,
         resolve_effective_mode=lambda _text: "auto",
         apply_snipdo_mode_ui=lambda: None,
-        ensure_large_window_size=lambda: None,
         populate_original_text=lambda: None,
         setup_result_format=lambda: None,
         hide=lambda: None,
@@ -676,7 +674,6 @@ def test_completed_stream_is_reparsed_as_full_markdown(app, monkeypatch):
     events = []
     rendered = []
     history = []
-    size_requests = []
     notifications = []
     back_translations = []
     monkeypatch.setattr(app, "record_event", events.append)
@@ -700,7 +697,6 @@ def test_completed_stream_is_reparsed_as_full_markdown(app, monkeypatch):
         add_history_entry=lambda *args: history.append(args),
         notify_translation_completed=lambda: notifications.append(True),
         start_back_translation=lambda: back_translations.append(True),
-        ensure_large_window_size=lambda: size_requests.append(True),
         live_render_timer=SimpleNamespace(stop=lambda: None),
         refresh_stop_button=lambda: None,
     )
@@ -718,7 +714,6 @@ def test_completed_stream_is_reparsed_as_full_markdown(app, monkeypatch):
             "en2zh",
         )
     ]
-    assert size_requests == [True]
     assert notifications == [True]
     assert back_translations == [True]
     assert events == [app.AppEvent.TRANSLATION_COMPLETED]
@@ -781,21 +776,6 @@ def test_plain_text_result_spaces_display_formulas_by_margins(app, qapp):
         100,
         140,
     ]
-
-
-def test_large_window_size_is_fixed_unless_maximized(app):
-    resizes = []
-    window = SimpleNamespace(
-        isMaximized=lambda: False,
-        resize=lambda width, height: resizes.append((width, height)),
-    )
-
-    app.TranslationWindow.ensure_large_window_size(window)
-    assert resizes == [(app.NORMAL_WINDOW_WIDTH, app.NORMAL_WINDOW_HEIGHT)]
-
-    window.isMaximized = lambda: True
-    app.TranslationWindow.ensure_large_window_size(window)
-    assert resizes == [(app.NORMAL_WINDOW_WIDTH, app.NORMAL_WINDOW_HEIGHT)]
 
 
 def test_translation_completion_notification_requires_unfocused_window(app):

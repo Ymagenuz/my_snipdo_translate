@@ -19,6 +19,7 @@ import uuid
 import threading
 from ctypes import wintypes
 from dataclasses import dataclass, replace
+from pathlib import Path
 from datetime import datetime, timedelta
 from html import unescape
 from html.parser import HTMLParser
@@ -149,6 +150,14 @@ from ui_ocr import (
     incoming_image,
 )
 from ui_rich_text import MarkdownEditing, is_markdown_structured_text
+from window_placement import (
+    WINDOW_PLACEMENT_FILE_NAME,
+    WindowPlacement,
+    can_be_grabbed,
+    fresh_place,
+    load_window_placement,
+    save_window_placement_atomic,
+)
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QTextEdit,
@@ -159,7 +168,7 @@ from PyQt6.QtWidgets import (
     QTextBrowser, QGraphicsScene, QGraphicsPathItem
 )
 from PyQt6.QtGui import (
-    QColor, QScreen, QTextCursor, QTextCharFormat,
+    QColor, QCursor, QScreen, QTextCursor, QTextCharFormat,
     QTextBlockFormat, QTextFormat, QFont, QAction, QIcon, QImage,
     QKeySequence, QPainter, QPen, QPainterPath, QPixmap, QRegion, QTransform
 )
@@ -3549,6 +3558,7 @@ class TranslationWindow(QWidget):
         self.setup_tray_icon()
         self.setup_translation_shortcut()
         self.apply_manual_mode_ui()
+        self.restore_window_placement()
         # Do not create a native HWND solely for a debug message.  Native
         # handle creation synchronously dispatches Windows messages, so keep
         # construction free of that unnecessary platform side effect.  A
@@ -4432,6 +4442,8 @@ class TranslationWindow(QWidget):
         self.cancel_current_back_translation(wait_ms=800)
         self.shutdown_translation_shortcut()
         self.tray_icon.hide()
+        # It may be open, and quitting doesn't hide it.
+        self.save_window_placement()
         QApplication.quit()
 
     def cancel_current_translation(self):
@@ -4470,24 +4482,14 @@ class TranslationWindow(QWidget):
 
         try:
             was_visible = self.isVisible()
-            # Moving a hidden maximized window un-maximizes it, so it keeps its place.
+            # It reopens where it was left. Moving a hidden maximized window
+            # un-maximizes it, so that one is left as it is.
             if not was_visible and not self.isMaximized():
-                screen = QApplication.primaryScreen()
-                if screen:
-                    available = screen.availableGeometry()
-                    x = available.x() + max(
-                        40,
-                        (available.width() - self.width()) // 2,
-                    )
-                    y = available.y() + max(
-                        40,
-                        (available.height() - self.height()) // 2,
-                    )
-                    self.move(x, y)
+                self.keep_window_on_screen()
                 # Qt rescales a hidden window wrongly once it reappears on a
                 # monitor with another display scale (e.g. 150% -> 100%);
                 # resizeEvent puts this geometry back.
-                self._show_geometry = (self.pos(), self.size())
+                self._show_geometry = self.geometry()
 
             if self.isMinimized():
                 self.showNormal()
@@ -4541,12 +4543,74 @@ class TranslationWindow(QWidget):
         super().resizeEvent(event)
         if self._show_geometry is None or not event.spontaneous():
             return
-        pos, size = self._show_geometry
-        if event.size() == size or self.isMaximized():
+        geometry = self._show_geometry
+        if event.size() == geometry.size() or self.isMaximized():
             return
         self._show_geometry = None
-        self.resize(size)
-        self.move(pos)
+        self.setGeometry(geometry)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self.save_window_placement()
+
+    # ---------- Window placement ----------
+    @property
+    def window_placement_path(self) -> Path | None:
+        if self.app_paths is None:
+            return None
+        return self.app_paths.data_dir / WINDOW_PLACEMENT_FILE_NAME
+
+    def save_window_placement(self) -> None:
+        """Remember where the window is, so it reopens there."""
+        path = self.window_placement_path
+        if path is None:
+            return
+        # A maximized or minimized window remembers its ordinary area too.
+        area = self.normalGeometry()
+        if area.isEmpty():
+            area = self.geometry()
+        placement = WindowPlacement(
+            area.x(), area.y(), area.width(), area.height(), self.isMaximized()
+        )
+        try:
+            save_window_placement_atomic(path, placement)
+        except OSError:
+            log("[UI] window placement not saved")
+
+    def restore_window_placement(self) -> None:
+        """Put the window where it was last time, else on the mouse's screen."""
+        path = self.window_placement_path
+        placement = load_window_placement(path) if path is not None else None
+        if placement is None:
+            self.place_on_pointer_screen()
+            return
+        self.setGeometry(placement.x, placement.y, placement.width, placement.height)
+        self.keep_window_on_screen()
+        if placement.maximized:
+            self.setWindowState(self.windowState() | Qt.WindowState.WindowMaximized)
+
+    def keep_window_on_screen(self) -> None:
+        """Move the window only if no screen shows enough of it to drag it by."""
+        frame = self.frameGeometry()
+        screens = [screen.availableGeometry() for screen in QApplication.screens()]
+        if not can_be_grabbed(
+            (frame.x(), frame.y(), frame.width(), frame.height()),
+            [(area.x(), area.y(), area.width(), area.height()) for area in screens],
+        ):
+            self.place_on_pointer_screen()
+
+    def place_on_pointer_screen(self) -> None:
+        screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        x, y, width, height = fresh_place(
+            (area.x(), area.y(), area.width(), area.height()),
+            (self.width(), self.height()),
+        )
+        if (width, height) != (self.width(), self.height()):
+            self.resize(width, height)
+        self.move(x, y)
 
     # ---------- UI ----------
     def init_ui(self):
@@ -4560,13 +4624,6 @@ class TranslationWindow(QWidget):
         self.setStyleSheet(
             "#translationWindow { background-color: #F3F6FA; }" + TOOLTIP_STYLE
         )
-
-        screen = QApplication.primaryScreen()
-        if screen:
-            center_point = screen.availableGeometry().center()
-            frame_geometry = self.frameGeometry()
-            frame_geometry.moveCenter(center_point)
-            self.move(frame_geometry.topLeft())
 
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(12, 12, 12, 12)
@@ -5680,7 +5737,6 @@ class TranslationWindow(QWidget):
             self.btn_translate.setText(tr("main.translate"))
 
         self.result_busy.start(tr("message.ocr_running"))
-        self.ensure_large_window_size()
         self.force_show_window()
         self.ocr_preview.show_image(preview)
 
@@ -7019,10 +7075,6 @@ class TranslationWindow(QWidget):
         self.txt_origin.moveCursor(QTextCursor.MoveOperation.Start)
         self.fit_origin_height()
 
-    def ensure_large_window_size(self):
-        if not self.isMaximized():
-            self.resize(NORMAL_WINDOW_WIDTH, NORMAL_WINDOW_HEIGHT)
-
     # ---------- 请求入口 ----------
     def handle_new_request(self, raw_text, *, allow_key_prompt: bool = True):
         try:
@@ -7054,7 +7106,6 @@ class TranslationWindow(QWidget):
             log(f"[UI] effective_mode={effective_mode}, total_text={repr(total_text[:300])}")
 
             self.apply_snipdo_mode_ui()
-            self.ensure_large_window_size()
             self.populate_original_text()
             self.setup_result_format()
 
@@ -7154,7 +7205,6 @@ class TranslationWindow(QWidget):
         self.original_paragraphs = [p.strip() for p in re.split(r'\n+', normalize_newlines(text_to_translate)) if p.strip()]
         self.full_translation = ""
         self.setup_result_format()
-        self.ensure_large_window_size()
 
         self.set_dictionary_language_controls_visible(True)
         self.show_heading_labels(effective_mode)
@@ -7340,9 +7390,6 @@ class TranslationWindow(QWidget):
         self.btn_copy.setText(tr("main.copy"))
         self.btn_copy.setEnabled(bool(self.full_translation.strip()))
         self.refresh_stop_button()
-
-        if self.source_mode == "snipdo":
-            self.ensure_large_window_size()
 
     def refresh_stop_button(self):
         """Stop shows beside the heading while a translation runs or an image is read."""

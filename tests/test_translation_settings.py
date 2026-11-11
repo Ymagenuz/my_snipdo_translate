@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 import httpx
 from openai import OpenAI as SdkOpenAI
-from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, QSize, Qt
+from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, QRect, QSize, Qt
 from PyQt6.QtGui import (
     QHelpEvent,
     QPalette,
@@ -50,6 +50,7 @@ from app_settings import (
 from app_i18n import set_ui_language
 import ui_controls
 from ui_controls import ModernScrollBar, suit_text_to_screen
+from window_placement import WindowPlacement, fresh_place, save_window_placement_atomic
 
 
 @pytest.fixture(scope="module")
@@ -2486,6 +2487,7 @@ def test_quit_path_deactivates_shortcut_before_qapplication_quit(app, monkeypatc
         cancel_current_back_translation=lambda wait_ms=0: events.append(
             ("cancel-back-translation", wait_ms)
         ),
+        save_window_placement=lambda: events.append("placement-saved"),
     )
     window.shutdown_translation_shortcut = lambda: (
         app.TranslationWindow.shutdown_translation_shortcut(window)
@@ -2502,7 +2504,7 @@ def test_quit_path_deactivates_shortcut_before_qapplication_quit(app, monkeypatc
     assert ("cancel-back-translation", 800) in events
     assert events.index("shortcut-stop") < events.index("qt-quit")
     assert events.index("snip-stop") < events.index("qt-quit")
-    assert events[-2:] == ["tray-hide", "qt-quit"]
+    assert events[-3:] == ["tray-hide", "placement-saved", "qt-quit"]
 
 
 def test_shutdown_shortcut_is_idempotent_for_explicit_and_about_to_quit_paths(
@@ -2693,26 +2695,18 @@ def test_force_show_keeps_an_already_visible_window_state_while_focusing(
 
 
 @pytest.mark.parametrize("maximized", [False, True])
-def test_force_show_centres_a_hidden_window_and_remembers_its_geometry(
+def test_force_show_leaves_a_hidden_window_where_it_was_left(
     app, monkeypatch, maximized
 ):
-    moves = []
-    available = SimpleNamespace(
-        x=lambda: 0,
-        y=lambda: 0,
-        width=lambda: 2560,
-        height=lambda: 1392,
-    )
+    checks = []
+    geometry = QRect(2700, 80, 640, 760)
     window = SimpleNamespace(
         _show_geometry=None,
         isVisible=lambda: False,
         isMinimized=lambda: False,
         isMaximized=lambda: maximized,
-        width=lambda: 560,
-        height=lambda: 700,
-        pos=lambda: moves[-1] if moves else (40, 40),
-        size=lambda: (560, 700),
-        move=lambda x, y: moves.append((x, y)),
+        geometry=lambda: QRect(geometry),
+        keep_window_on_screen=lambda: checks.append("keep-on-screen"),
         showNormal=lambda: None,
         show=lambda: None,
         setHidden=lambda _hidden: None,
@@ -2725,15 +2719,6 @@ def test_force_show_centres_a_hidden_window_and_remembers_its_geometry(
     )
     monkeypatch.setattr(
         app,
-        "QApplication",
-        SimpleNamespace(
-            primaryScreen=lambda: SimpleNamespace(
-                availableGeometry=lambda: available
-            )
-        ),
-    )
-    monkeypatch.setattr(
-        app,
         "QTimer",
         SimpleNamespace(singleShot=lambda _delay, _callback: None),
     )
@@ -2743,11 +2728,12 @@ def test_force_show_centres_a_hidden_window_and_remembers_its_geometry(
 
     if maximized:
         # Moving would un-maximize it and leave it shifted off-screen.
-        assert moves == []
+        assert checks == []
         assert window._show_geometry is None
     else:
-        assert moves == [(1000, 346)]
-        assert window._show_geometry == ((1000, 346), (560, 700))
+        # It is only checked, not centred on the primary screen.
+        assert checks == ["keep-on-screen"]
+        assert window._show_geometry == geometry
 
 
 def test_reshown_window_undoes_a_monitor_scale_resize(
@@ -2764,22 +2750,20 @@ def test_reshown_window_undoes_a_monitor_scale_resize(
     monkeypatch.setattr(app, "win32_force_foreground", lambda _hwnd: True)
     window = app.TranslationWindow(_app_paths(tmp_path), object())
     size = QSize(app.NORMAL_WINDOW_WIDTH, app.NORMAL_WINDOW_HEIGHT)
-    pos = QPoint(1000, 346)
+    geometry = QRect(QPoint(1000, 346), size)
     rescaled = QSize(636, 717)
     try:
-        window.move(pos)
-        window._show_geometry = (pos, size)
+        window.setGeometry(geometry)
+        window._show_geometry = QRect(geometry)
 
         # Qt's own resizes and ones that already match are left alone.
         window.resizeEvent(QResizeEvent(rescaled, size))
         window.resizeEvent(SystemResizeEvent(size, size))
-        assert window._show_geometry == (pos, size)
+        assert window._show_geometry == geometry
 
-        window.resize(rescaled)
-        window.move(997, 331)
+        window.setGeometry(997, 331, rescaled.width(), rescaled.height())
         window.resizeEvent(SystemResizeEvent(rescaled, size))
-        assert window.size() == size
-        assert window.pos() == pos
+        assert window.geometry() == geometry
         assert window._show_geometry is None
 
         # Once settled, later resizes (e.g. by the user) are kept.
@@ -2787,7 +2771,7 @@ def test_reshown_window_undoes_a_monitor_scale_resize(
         window.resizeEvent(SystemResizeEvent(QSize(820, 900), size))
         assert window.size() == QSize(820, 900)
 
-        window._show_geometry = (pos, size)
+        window._show_geometry = QRect(geometry)
         window._force_activate_only()
         assert window._show_geometry is None
     finally:
@@ -4290,3 +4274,95 @@ def test_empty_translation_box_hint_keeps_its_size_after_history_and_clear(
         assert window.txt_result.font().pixelSize() == -1
     finally:
         qapp.setFont(original)
+
+
+@pytest.fixture
+def make_window(app, monkeypatch, qapp, tmp_path):
+    monkeypatch.setattr(app.TranslationWindow, "setup_tray_icon", lambda self: None)
+    monkeypatch.setattr(
+        app.TranslationWindow, "setup_translation_shortcut", lambda self: None
+    )
+    monkeypatch.setattr(app, "win32_force_foreground", lambda _hwnd: True)
+    windows = []
+
+    def make():
+        window = app.TranslationWindow(_app_paths(tmp_path), object())
+        windows.append(window)
+        return window
+
+    yield make
+    for window in windows:
+        window.hide()
+        window.update_notifications.stop()
+        window.deleteLater()
+    qapp.processEvents()
+
+
+def test_window_reopens_where_it_was_left_even_after_a_restart(app, make_window, qapp):
+    area = QApplication.primaryScreen().availableGeometry()
+    left = QRect(area.x() + 50, area.y() + 60, 640, 760)
+    window = make_window()
+    window.show()
+    qapp.processEvents()
+    window.setGeometry(left)
+
+    window.hide()
+    window.force_show_window()
+    assert window.geometry() == left
+
+    window.hide()
+    restarted = make_window()
+    assert restarted.geometry() == left
+    assert not restarted.isMaximized()
+
+
+def test_maximized_window_reopens_maximized_after_a_restart(app, make_window, qapp):
+    area = QApplication.primaryScreen().availableGeometry()
+    left = QRect(area.x() + 50, area.y() + 60, 640, 760)
+    window = make_window()
+    window.show()
+    qapp.processEvents()
+    window.setGeometry(left)
+    window.showMaximized()
+    qapp.processEvents()
+
+    window.hide()
+    restarted = make_window()
+
+    assert restarted.isMaximized()
+    assert restarted.geometry() == left
+
+
+def test_window_left_on_a_screen_now_gone_opens_on_the_mouse_screen(
+    app, make_window, monkeypatch, tmp_path
+):
+    # It was on a monitor that has been unplugged since.
+    save_window_placement_atomic(
+        _app_paths(tmp_path).data_dir / app.WINDOW_PLACEMENT_FILE_NAME,
+        WindowPlacement(5000, 80, 640, 760),
+    )
+    pointer = QPoint(3000, 400)
+    pointer_area = QRect(2560, 0, 1707, 960)
+    monkeypatch.setattr(app, "QCursor", SimpleNamespace(pos=lambda: pointer))
+    monkeypatch.setattr(
+        app.QApplication,
+        "screenAt",
+        lambda point: SimpleNamespace(availableGeometry=lambda: pointer_area)
+        if point == pointer
+        else None,
+    )
+
+    window = make_window()
+
+    expected = fresh_place((2560, 0, 1707, 960), (640, 760))
+    assert (window.x(), window.y()) == expected[:2]
+    assert window.size() == QSize(640, 760)
+
+
+def test_new_translation_keeps_the_size_the_user_gave_the_window(edit_window):
+    window, _workers = edit_window
+    window.resize(900, 820)
+
+    assert window.handle_new_request("A plain sentence to translate.")
+
+    assert window.size() == QSize(900, 820)
