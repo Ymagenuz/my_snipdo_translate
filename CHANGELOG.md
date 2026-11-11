@@ -4,6 +4,11 @@
 
 What changed in each SnipDo Translate release. The app shows this list on the **About** page in Settings.
 
+## 13.1.0 — 2026-11-11
+
+- **Even text on scaled screens.** On a screen set to 150% or another scale, text keeps the true shapes of its letters, so the strokes of a Chinese character are no longer one pixel thick in some places and two in others. On a 100% screen text stays crisp, also while a scaled screen is connected, and it switches as you move the window between them.
+- **The window stays where you put it.** It reopens where you left it, at the size you gave it and maximized if it was, also after a restart, instead of in the middle of the main screen, and a new translation no longer resizes it. If the monitor it was on is unplugged, it opens in the middle of the screen with the mouse pointer.
+
 ## 13.0.0 — 2026-11-06
 
 - **Snip and read text.** Press `Ctrl+Alt+O`, click **OCR** or choose **Snip and read text** in the tray to snip part of the screen with Windows' own snip; the text in it is read and translated. The window steps aside while you snip, shows the snip in the input box while it's read and offers **Stop**. The text arrives marked **From image**, with **Show image** and **Copy text**; fix a misread word and press `Ctrl+Enter` to translate again. Change or remove the shortcut on the **Shortcuts** page in Settings.
