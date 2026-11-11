@@ -14,9 +14,22 @@ import pytest
 import httpx
 from openai import OpenAI as SdkOpenAI
 from PyQt6.QtCore import QEvent, QMimeData, QPoint, QPointF, QSize, Qt
-from PyQt6.QtGui import QHelpEvent, QPalette, QResizeEvent, QTextCursor, QWheelEvent
+from PyQt6.QtGui import (
+    QHelpEvent,
+    QPalette,
+    QResizeEvent,
+    QTextCursor,
+    QTextFormat,
+    QWheelEvent,
+)
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QDialogButtonBox, QStyledItemDelegate, QToolTip
+from PyQt6.QtWidgets import (
+    QApplication,
+    QDialogButtonBox,
+    QStyledItemDelegate,
+    QToolTip,
+    QWidget,
+)
 
 from app_paths import AppPaths
 from api_providers import (
@@ -35,7 +48,8 @@ from app_settings import (
     mouse_shortcut,
 )
 from app_i18n import set_ui_language
-from ui_controls import ModernScrollBar
+import ui_controls
+from ui_controls import ModernScrollBar, suit_text_to_screen
 
 
 @pytest.fixture(scope="module")
@@ -4232,3 +4246,47 @@ def test_settings_dialog_records_the_snip_shortcut(app, qapp):
         assert dialog.candidate_settings().snip_shortcut == binding
     finally:
         dialog.reject()
+
+
+def test_plain_source_text_keeps_following_the_screen_hinting(edit_window):
+    # Text that fixed its hinting when it arrived would keep 100% hinting
+    # after the window moves to a 150% screen.
+    window, _workers = edit_window
+
+    assert window.handle_new_request("A plain sentence to translate.")
+
+    char_format = window.txt_origin.document().firstBlock().begin().fragment().charFormat()
+    assert window.txt_origin.toPlainText() == "A plain sentence to translate."
+    assert char_format.hasProperty(QTextFormat.Property.FontPixelSize)
+    assert not char_format.hasProperty(QTextFormat.Property.FontHintingPreference)
+
+
+def test_empty_translation_box_hint_keeps_its_size_after_history_and_clear(
+    edit_window, monkeypatch, qapp
+):
+    # A history entry renders at 15 px; once the window had moved screens,
+    # Clear left the hint in the empty box at that size.
+    window, _workers = edit_window
+    monkeypatch.setattr(window, "start_back_translation", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        ui_controls.QApplication,
+        "allWidgets",
+        lambda: [window, *window.findChildren(QWidget)],
+    )
+    hint_font = window.txt_result.viewport().font()
+    started = (hint_font.pixelSize(), hint_font.pointSizeF())
+    original = qapp.font()
+    try:
+        window.load_history_entry(
+            {"time": "2026-11-11 01:20:00", "mode": "auto", "source": "Hello", "result": "你好"}
+        )
+        suit_text_to_screen(SimpleNamespace(devicePixelRatio=lambda: 1.5))
+
+        window.clear_manual_origin()
+
+        hint_font = window.txt_result.viewport().font()
+        assert window.txt_result.toPlainText() == ""
+        assert (hint_font.pixelSize(), hint_font.pointSizeF()) == started
+        assert window.txt_result.font().pixelSize() == -1
+    finally:
+        qapp.setFont(original)

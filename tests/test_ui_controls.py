@@ -2,10 +2,11 @@ import gc
 from types import SimpleNamespace
 
 from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
-from PyQt6.QtGui import QColor, QEnterEvent
+from PyQt6.QtGui import QColor, QEnterEvent, QFont
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
     QApplication,
+    QLabel,
     QListView,
     QStyle,
     QStyledItemDelegate,
@@ -28,6 +29,8 @@ from ui_controls import (
     POPUP_LIST_STYLE,
     style_menu,
     style_popup_list,
+    suit_text_to_screen,
+    use_even_text_strokes,
     use_modern_scroll_bar,
     wrapped_tooltip,
 )
@@ -410,3 +413,93 @@ def test_text_menus_look_like_the_history_menu(qapp):
     assert all(action.icon().isNull() for action in menu.actions())
     menu.deleteLater()
     view.deleteLater()
+
+
+class _Screen:
+    def __init__(self, ratio):
+        self._ratio = ratio
+
+    def devicePixelRatio(self):
+        return self._ratio
+
+
+@pytest.fixture
+def styled_window(qapp, monkeypatch):
+    """A window under a style sheet, as the app's are, with its kinds of text."""
+    original = qapp.font()
+    window = QWidget()
+    window.setObjectName("styledWindow")
+    window.setStyleSheet("#styledWindow { background-color: #F3F6FA; }")
+    sized_font = QFont()
+    sized_font.setFamilies(["Segoe UI", "Microsoft YaHei UI", "sans-serif"])
+    sized_font.setPixelSize(15)
+    sized = QLabel("Translation", window)
+    sized.setFont(sized_font)
+    styled = QLabel("ORIGINAL", window)
+    styled.setStyleSheet("font-size: 10px; font-weight: 700;")
+    view = QTextEdit(window)
+    view.setFont(sized_font)
+    view.document().setDefaultFont(sized_font)
+    view.setHtml("<h2>Heading</h2><p>Body <b>bold</b></p>")
+    for widget in (window, *window.findChildren(QWidget)):
+        widget.ensurePolished()
+    # Leave other tests' widgets alone.
+    monkeypatch.setattr(
+        ui_controls.QApplication,
+        "allWidgets",
+        lambda: [window, *window.findChildren(QWidget)],
+    )
+    yield SimpleNamespace(window=window, sized=sized, styled=styled, view=view)
+    window.deleteLater()
+    qapp.setFont(original)
+
+
+def _hinting(text):
+    return [
+        text.sized.font().hintingPreference(),
+        text.styled.font().hintingPreference(),
+        text.view.font().hintingPreference(),
+        text.view.document().defaultFont().hintingPreference(),
+    ]
+
+
+def test_text_on_a_scaled_screen_keeps_the_true_shapes_of_its_strokes(styled_window, qapp):
+    # Hinting at 150% snaps some strokes of a Chinese character to one
+    # pixel and others to two.
+    unhinted = QFont.HintingPreference.PreferNoHinting
+
+    suit_text_to_screen(_Screen(1.5))
+
+    assert qapp.font().hintingPreference() == unhinted
+    assert _hinting(styled_window) == [unhinted] * 4
+    assert styled_window.styled.font().pixelSize() == 10
+    assert styled_window.styled.font().weight() == 700
+    assert styled_window.sized.font().pixelSize() == 15
+    later = QLabel("Later", styled_window.window)
+    later.ensurePolished()
+    assert later.font().hintingPreference() == unhinted
+
+
+def test_text_at_100_percent_is_hinted_to_whole_pixels_again(styled_window, qapp):
+    # Unhinted, the same letter lands crisp in one place and smeared in
+    # the next on a 100% screen.
+    hinted = QFont.HintingPreference.PreferFullHinting
+
+    suit_text_to_screen(_Screen(1.5))
+    suit_text_to_screen(_Screen(1.0))
+
+    assert qapp.font().hintingPreference() == hinted
+    assert _hinting(styled_window) == [hinted] * 4
+    assert styled_window.styled.font().pixelSize() == 10
+
+
+def test_text_follows_the_window_to_another_screen(qapp, monkeypatch):
+    screens = []
+    monkeypatch.setattr(ui_controls, "suit_text_to_screen", screens.append)
+    window = QWidget()
+
+    use_even_text_strokes(window)
+    QApplication.sendEvent(window, QEvent(QEvent.Type.DevicePixelRatioChange))
+
+    assert screens == [window.screen(), window.screen()]
+    window.deleteLater()

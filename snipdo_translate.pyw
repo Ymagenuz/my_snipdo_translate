@@ -133,6 +133,7 @@ from ui_controls import (
     DropdownComboBox,
     ModernCheckBox,
     style_popup_list,
+    use_even_text_strokes,
     use_modern_context_menu,
     use_modern_scroll_bar,
     use_modern_tooltips,
@@ -194,6 +195,11 @@ SNIP_KEY_RELEASE_TIMEOUT_SECONDS = 1.0
 SNIP_HIDE_SETTLE_SECONDS = 0.2
 NORMAL_WINDOW_WIDTH = 560
 NORMAL_WINDOW_HEIGHT = 700
+# Text formats take only a font's family and size, so their text keeps
+# following the app's hinting as the window moves between screens.
+ONLY_SET_FONT_PROPERTIES = (
+    QTextCharFormat.FontPropertiesInheritanceBehavior.FontPropertiesSpecifiedOnly
+)
 
 APP_PATHS: AppPaths | None = None
 CREDENTIAL_STORE: WindowsCredentialStore | None = None
@@ -5089,13 +5095,19 @@ class TranslationWindow(QWidget):
         self.live_render_timer.stop()
         self._live_render_due = 0.0
         self.txt_result.clear()
+        # Rendering a translation sets the box's font to the text's 15 px,
+        # and a move between screens can hand that on to the viewport,
+        # which draws the empty box's hint; both go back to the size the
+        # hint started with.
+        self.txt_result.setFont(QFont())
+        self.txt_result.viewport().setFont(QFont())
 
         font = QFont()
         font.setFamilies(["Segoe UI", "Microsoft YaHei UI", "sans-serif"])
         font.setPixelSize(15)
 
         self.result_char_fmt = QTextCharFormat()
-        self.result_char_fmt.setFont(font)
+        self.result_char_fmt.setFont(font, ONLY_SET_FONT_PROPERTIES)
         self.result_char_fmt.setForeground(QColor("#2c3e50"))
 
     def apply_markdown_document_style(self, widget, source_name: str):
@@ -6993,7 +7005,7 @@ class TranslationWindow(QWidget):
         block_fmt.setBottomMargin(8)
 
         char_fmt = QTextCharFormat()
-        char_fmt.setFont(font)
+        char_fmt.setFont(font, ONLY_SET_FONT_PROPERTIES)
         char_fmt.setForeground(QColor("#606266" if self.source_mode == "snipdo" else "#303133"))
 
         cursor.beginEditBlock()
@@ -7571,6 +7583,7 @@ def main(argv: list[str] | None = None) -> int:
             store,
             initial_settings=startup_settings,
         )
+        use_even_text_strokes(window)
         app.setApplicationVersion(APP_VERSION)
         app.aboutToQuit.connect(window.shutdown_translation_shortcut)
         app.aboutToQuit.connect(window.update_notifications.stop)

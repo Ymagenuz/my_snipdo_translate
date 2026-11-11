@@ -359,6 +359,9 @@ class _MainHarness:
         monkeypatch.setattr(app, "QtIpcRequestBridge", lambda: self.bridge)
         monkeypatch.setattr(app, "SingleInstanceServer", lambda *_args: self.server)
         monkeypatch.setattr(app, "TranslationWindow", create_window)
+        monkeypatch.setattr(
+            app, "use_even_text_strokes", lambda window: self.events.append(("even-text", window))
+        )
         monkeypatch.setattr(app, "send_request", send_request)
         monkeypatch.setattr(app, "QTimer", SimpleNamespace(
             singleShot=lambda _delay, callback: self.callbacks.append(callback)
@@ -378,6 +381,7 @@ def test_primary_startup_enters_event_loop_without_initial_show_or_key_prompt(la
 
     assert len(launcher.windows) == 1
     assert ("bind", launcher.windows[0]) in launcher.events
+    assert ("even-text", launcher.windows[0]) in launcher.events
     assert launcher.requests == []
     assert launcher.forwarded == []
     assert "notifications-start" in launcher.events

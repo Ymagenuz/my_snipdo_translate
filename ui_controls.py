@@ -23,6 +23,7 @@ from PyQt6.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
+    QScreen,
 )
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -526,6 +527,59 @@ class ModernCheckBox(QCheckBox):
             tick.lineTo(left + 11.9, top + 5.4)
             painter.drawPath(tick)
         painter.end()
+
+
+def suit_text_to_screen(screen: QScreen | None) -> None:
+    """Hint the app's text to suit the scale of screen.
+
+    At 100%, text is hinted to whole pixels, as Windows draws its own;
+    Qt left to itself stops hinting on every screen once any one is
+    scaled, and drew the same letter crisp in one place and smeared in
+    the next. On a scaled screen, such as a 150% portable monitor,
+    hinting snaps some strokes of a Chinese character to one pixel and
+    others to two, so there letters keep their true shapes.
+
+    Widgets made later take this from the app's font. Under a style sheet
+    Qt doesn't pass a new app font on to widgets that already exist, so
+    each gets its own font with the hinting set; its other font
+    properties stay as they are now, style sheets' included. Text
+    documents follow their widget's font.
+    """
+    scaled = screen is not None and screen.devicePixelRatio() > 1
+    hinting = (
+        QFont.HintingPreference.PreferNoHinting
+        if scaled
+        else QFont.HintingPreference.PreferFullHinting
+    )
+
+    def give(owner) -> None:
+        font = owner.font()
+        if font.hintingPreference() != hinting:
+            font.setHintingPreference(hinting)
+            owner.setFont(font)
+
+    give(QApplication.instance())
+    for widget in QApplication.allWidgets():
+        give(widget)
+
+
+class _ScreenText(QObject):
+    def eventFilter(self, watched, event):
+        if event.type() in (QEvent.Type.Show, QEvent.Type.DevicePixelRatioChange):
+            suit_text_to_screen(watched.screen())
+        return False
+
+
+_screen_text: _ScreenText | None = None
+
+
+def use_even_text_strokes(window: QWidget) -> None:
+    """Draw the app's text to suit the screen window is on, wherever it moves."""
+    global _screen_text
+    if _screen_text is None:
+        _screen_text = _ScreenText()
+    suit_text_to_screen(window.screen())
+    window.installEventFilter(_screen_text)
 
 
 def wrapped_tooltip(text: str) -> str:
