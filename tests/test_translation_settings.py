@@ -1275,6 +1275,161 @@ def test_pasted_rich_text_is_translated_as_markdown(edit_window):
     assert window.original_paragraphs == ["## Notes", "- **First** point", "- Second"]
 
 
+_PAST_ENTRIES = [
+    {"time": "2026-11-12 14:02:11", "mode": "en2zh",
+     "source": "Attention cost grows with length.", "result": "注意力开销随长度增长。"},
+    {"time": "2026-11-11 22:18:40", "mode": "zh2en",
+     "source": "请把合同发给法务部门。", "result": "Please send the contract to legal."},
+]
+
+
+def _history_rows(panel):
+    return [
+        panel.list.item(row) for row in range(panel.list.count())
+        if panel.list.item(row).data(Qt.ItemDataRole.UserRole) is not None
+    ]
+
+
+def test_history_opens_over_the_window_and_the_translation_keeps_running(
+    edit_window, qapp
+):
+    window, workers = edit_window
+    window.translation_history = [dict(entry) for entry in _PAST_ENTRIES]
+    window.show()
+    qapp.processEvents()
+    window.txt_origin.setPlainText("这是第一句。")
+    window.start_manual_translation()
+    worker = workers[-1]
+    worker.chunk_received.emit("This is the first")
+
+    window.btn_history.click()
+    qapp.processEvents()
+    panel = window.history_panel
+
+    # A panel over the card, above the button, rather than a menu.
+    assert panel.isVisible()
+    assert window.btn_history.isChecked()
+    button_top = window.btn_history.mapTo(window, QPoint(0, 0)).y()
+    assert panel.geometry().bottom() < button_top
+    assert window.rect().contains(panel.geometry())
+    assert "Translation keeps running" in panel.status.text()
+
+    # Reading an entry leaves the window and the translation alone.
+    row = _history_rows(panel)[1]
+    QTest.mouseClick(
+        panel.list.viewport(), Qt.MouseButton.LeftButton,
+        pos=panel.list.visualItemRect(row).center(),
+    )
+    assert panel.result_view.toPlainText() == "Please send the contract to legal."
+    assert not worker.stop_requested
+    assert window.trans_thread is worker
+    assert window.txt_origin.source_text() == "这是第一句。"
+
+    worker.chunk_received.emit(" sentence.")
+    worker.complete()
+    qapp.processEvents()
+
+    # It lands at the top of History while the entry stays open to read.
+    assert window.translation_history[0]["result"] == "This is the first sentence."
+    assert panel.shown_entry()["source"] == "请把合同发给法务部门。"
+    panel.show_list()
+    assert _history_rows(panel)[0].data(Qt.ItemDataRole.UserRole) == 0
+    assert "Finished translation added to the top" in panel.status.text()
+
+    window.btn_history.click()
+    assert panel.isHidden()
+    assert not window.btn_history.isChecked()
+    window.hide()
+
+
+def test_opening_a_history_entry_asks_before_it_stops_a_translation(edit_window, qapp):
+    window, workers = edit_window
+    window.translation_history = [dict(entry) for entry in _PAST_ENTRIES]
+    window.show()
+    window.txt_origin.setPlainText("这是第一句。")
+    window.start_manual_translation()
+    worker = workers[-1]
+    window.btn_history.click()
+    panel = window.history_panel
+    panel.show_entry(window.translation_history[0])
+
+    panel.btn_open.click()
+    assert not worker.stop_requested
+    assert not panel.open_bar.isHidden()
+
+    panel.open_bar.yes.click()
+    qapp.processEvents()
+
+    assert worker.stop_requested
+    assert panel.isHidden()
+    assert not window.btn_history.isChecked()
+    assert window.txt_origin.source_text() == "Attention cost grows with length."
+    assert window.full_translation == "注意力开销随长度增长。"
+    window.hide()
+
+
+def test_history_makes_way_for_a_new_selection_and_for_hiding(edit_window, qapp):
+    window, _workers = edit_window
+    window.translation_history = [dict(entry) for entry in _PAST_ENTRIES]
+    window.show()
+    window.btn_history.click()
+    assert window.history_panel.isVisible()
+
+    assert window.handle_new_request("A selected sentence to translate.")
+    assert window.history_panel.isHidden()
+    assert not window.btn_history.isChecked()
+
+    window.btn_history.click()
+    window.btn_hide.click()
+    window.show()
+    qapp.processEvents()
+    assert window.history_panel.isHidden()
+    window.hide()
+
+
+def test_a_click_elsewhere_in_the_window_closes_history(edit_window, qapp):
+    window, _workers = edit_window
+    window.translation_history = [dict(entry) for entry in _PAST_ENTRIES]
+    window.show()
+    qapp.processEvents()
+    panel = window.history_panel
+
+    window.btn_history.click()
+    assert panel.isVisible()
+    # A click in the source box closes History and lands in the box.
+    QTest.mouseClick(window.txt_origin.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(8, 8))
+    assert panel.isHidden()
+    assert not window.btn_history.isChecked()
+    assert window.focusWidget() is window.txt_origin
+
+    # The History button opens and closes it, without the press reopening it.
+    QTest.mouseClick(window.btn_history, Qt.MouseButton.LeftButton)
+    assert panel.isVisible()
+    assert window.btn_history.isChecked()
+    QTest.mouseClick(window.btn_history, Qt.MouseButton.LeftButton)
+    assert panel.isHidden()
+    assert not window.btn_history.isChecked()
+    window.hide()
+
+
+def test_clearing_history_from_the_panel_empties_the_file(edit_window, qapp):
+    window, _workers = edit_window
+    window.translation_history = [dict(entry) for entry in _PAST_ENTRIES]
+    window.save_translation_history()
+    window.show()
+    window.btn_history.click()
+    panel = window.history_panel
+
+    panel.btn_clear.click()
+    panel.clear_bar.yes.click()
+
+    assert window.translation_history == []
+    assert json.loads(window.app_paths.history_path.read_text(encoding="utf-8")) == []
+    assert not panel.empty.isHidden()
+    assert panel.empty.text() == "Translations you finish show up here"
+    window.hide()
+
+
 def test_history_entry_with_markdown_keeps_its_source(edit_window):
     window, workers = edit_window
     source = "# Heading\n\n* starred item\n\nEnergy: $a_1*b$."

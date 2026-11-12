@@ -10,19 +10,22 @@ from __future__ import annotations
 
 import ctypes
 import html
+import math
 from ctypes import wintypes
 from functools import lru_cache
 
-from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, QTimer
+from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer
 from PyQt6.QtGui import (
     QColor,
     QFont,
     QFontMetrics,
     QGuiApplication,
     QIcon,
+    QImage,
     QPainter,
     QPainterPath,
     QPen,
+    QPixmap,
     QScreen,
 )
 from PyQt6.QtWidgets import (
@@ -31,6 +34,9 @@ from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QGraphicsDropShadowEffect,
+    QGraphicsPathItem,
+    QGraphicsScene,
     QLineEdit,
     QMenu,
     QScrollBar,
@@ -107,7 +113,7 @@ TOOLTIP_STYLE = """
 
 TOOLTIP_WIDTH = 320
 
-# The History and tray menus, and the right-click menus on text.
+# The tray menu and the right-click menus on text.
 MENU_STYLE = """
     QMenu {
         background-color: #FFFFFF;
@@ -339,6 +345,52 @@ def use_native_popup_frame(window: QWidget) -> None:
         ctypes.byref(preference),
         ctypes.sizeof(preference),
     )
+
+
+def render_soft_shadow(
+    size: QSize,
+    dpr: float,
+    *,
+    radius: float,
+    blur: float,
+    offset: tuple[float, float],
+    color: QColor,
+) -> tuple[QPixmap, QPoint]:
+    """Render a rounded card's soft shadow once, for a widget to paint.
+
+    A graphics effect on the card itself would redraw and blur everything
+    in it on every repaint. Returns the image and its offset from the
+    card's corner; the image holds the card's white face too.
+    """
+    card = QRectF(0, 0, size.width(), size.height())
+    outline = QPainterPath()
+    outline.addRoundedRect(card, radius, radius)
+    face = QGraphicsPathItem(outline)
+    face.setBrush(QColor("#FFFFFF"))
+    face.setPen(QPen(Qt.PenStyle.NoPen))
+    shadow = QGraphicsDropShadowEffect()
+    shadow.setBlurRadius(blur)
+    shadow.setOffset(*offset)
+    shadow.setColor(color)
+    face.setGraphicsEffect(shadow)
+    scene = QGraphicsScene()
+    scene.addItem(face)
+
+    bounds = shadow.boundingRectFor(card).toAlignedRect()
+    image = QImage(
+        math.ceil(bounds.width() * dpr),
+        math.ceil(bounds.height() * dpr),
+        QImage.Format.Format_ARGB32_Premultiplied,
+    )
+    image.setDevicePixelRatio(dpr)
+    image.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    scene.render(
+        painter, QRectF(0, 0, bounds.width(), bounds.height()), QRectF(bounds)
+    )
+    painter.end()
+    return QPixmap.fromImage(image), bounds.topLeft()
 
 
 def style_popup_list(view: QAbstractItemView) -> None:
@@ -683,7 +735,7 @@ class BusyPlaceholder(QObject):
 
 
 def style_menu(menu: QMenu) -> None:
-    """The History menu's look, without the line icons Qt's text menus carry."""
+    """The tray menu's look, without the line icons Qt's text menus carry."""
     menu.setStyleSheet(MENU_STYLE)
     for action in menu.actions():
         action.setIcon(QIcon())
@@ -712,7 +764,7 @@ _modern_context_menus: _ModernContextMenus | None = None
 
 
 def use_modern_context_menu(widget: QTextEdit | QLineEdit) -> None:
-    """Give a text view or field's right-click menu the History menu's look."""
+    """Give a text view or field's right-click menu the tray menu's look."""
     global _modern_context_menus
     if _modern_context_menus is None:
         _modern_context_menus = _ModernContextMenus()

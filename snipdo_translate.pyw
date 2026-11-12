@@ -20,7 +20,6 @@ import threading
 from ctypes import wintypes
 from dataclasses import dataclass, replace
 from pathlib import Path
-from datetime import datetime, timedelta
 from html import unescape
 from html.parser import HTMLParser
 from urllib.parse import unquote
@@ -135,11 +134,13 @@ from ui_controls import (
     ModernCheckBox,
     style_popup_list,
     use_even_text_strokes,
+    render_soft_shadow,
     use_modern_context_menu,
     use_modern_scroll_bar,
     use_modern_tooltips,
 )
 from ui_dialogs import BUTTON_STYLE, ask_text, show_warning
+from ui_history import HistoryPanel, history_time_label
 from ui_motion import SmoothScroller, TextReveal, fade_in, fade_opacity
 from ui_ocr import (
     ImageDropHint,
@@ -595,35 +596,9 @@ def render_card_shadow(size: QSize, dpr: float) -> tuple[QPixmap, QPoint]:
     and blurred the whole card on every repaint: each scroll frame took up to
     ten times longer. Returns the image and its offset from the card's corner.
     """
-    card = QRectF(0, 0, size.width(), size.height())
-    outline = QPainterPath()
-    outline.addRoundedRect(card, 12, 12)
-    face = QGraphicsPathItem(outline)
-    face.setBrush(QColor("#FFFFFF"))
-    face.setPen(QPen(Qt.PenStyle.NoPen))
-    shadow = QGraphicsDropShadowEffect()
-    shadow.setBlurRadius(20)
-    shadow.setOffset(8, 4)
-    shadow.setColor(QColor(0, 0, 0, 12))
-    face.setGraphicsEffect(shadow)
-    scene = QGraphicsScene()
-    scene.addItem(face)
-
-    bounds = shadow.boundingRectFor(card).toAlignedRect()
-    image = QImage(
-        math.ceil(bounds.width() * dpr),
-        math.ceil(bounds.height() * dpr),
-        QImage.Format.Format_ARGB32_Premultiplied,
+    return render_soft_shadow(
+        size, dpr, radius=12, blur=20, offset=(8, 4), color=QColor(0, 0, 0, 12)
     )
-    image.setDevicePixelRatio(dpr)
-    image.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(image)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    scene.render(
-        painter, QRectF(0, 0, bounds.width(), bounds.height()), QRectF(bounds)
-    )
-    painter.end()
-    return QPixmap.fromImage(image), bounds.topLeft()
 
 
 def create_unread_badge_icon(base_icon: QIcon) -> QIcon:
@@ -1907,25 +1882,6 @@ def keyboard_shortcut_display(qt_key: int, modifiers: tuple[str, ...]) -> str:
         "win": "Win",
     }
     return "+".join([*(modifier_labels[name] for name in modifiers), key_name])
-
-
-def history_time_label(stamp: str, now: datetime | None = None) -> str:
-    """"Today 04:00" for a History entry saved as "2026-11-05 04:00:07"."""
-    try:
-        moment = datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S")
-    except (TypeError, ValueError):
-        return stamp or ""
-    now = now or datetime.now()
-    time_text = moment.strftime("%H:%M")
-    if moment.date() == now.date():
-        return tr("main.history.today", time=time_text)
-    if moment.date() == (now - timedelta(days=1)).date():
-        return tr("main.history.yesterday", time=time_text)
-    locale = QLocale(ui_language().replace("-", "_"))
-    if moment.year == now.year:
-        day = locale.toString(moment.date(), tr("main.history.day_format"))
-        return f"{day} {time_text}"
-    return locale.toString(moment.date(), tr("main.history.year_format"))
 
 
 def shortcut_label(binding: ShortcutBinding) -> str:
@@ -4425,6 +4381,7 @@ class TranslationWindow(QWidget):
 
     def show_manual_window(self):
         log("[UI] show_manual_window called")
+        self.close_history_panel()
         self.cancel_current_ocr()
         self.cancel_current_translation()
         self.source_mode = "manual"
@@ -4541,6 +4498,8 @@ class TranslationWindow(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if hasattr(self, "history_panel") and not self.history_panel.isHidden():
+            self.position_history_panel()
         if self._show_geometry is None or not event.spontaneous():
             return
         geometry = self._show_geometry
@@ -4551,6 +4510,9 @@ class TranslationWindow(QWidget):
 
     def hideEvent(self, event):
         super().hideEvent(event)
+        # The window reopens on its panes, not on History.
+        if not event.spontaneous():
+            self.close_history_panel()
         self.save_window_placement()
 
     # ---------- Window placement ----------
@@ -5003,7 +4965,9 @@ class TranslationWindow(QWidget):
 
         self.btn_history = QPushButton(tr("main.history"))
         self.btn_history.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_history.clicked.connect(self.show_history_menu)
+        # Pressed in while the History panel is open; a click closes it.
+        self.btn_history.setCheckable(True)
+        self.btn_history.clicked.connect(self.toggle_history_panel)
         self.btn_history.setStyleSheet("""
             QPushButton {
                 background-color: #F2F4F7;
@@ -5018,6 +4982,11 @@ class TranslationWindow(QWidget):
             QPushButton:hover {
                 background-color: #E6EAF0;
                 color: #303133;
+            }
+            QPushButton:checked {
+                background-color: #E6EAF0;
+                color: #303133;
+                border-color: #C9D1DC;
             }
         """)
         btn_layout.addWidget(self.btn_history)
@@ -5132,6 +5101,16 @@ class TranslationWindow(QWidget):
         main_layout.addLayout(btn_layout)
         self.setLayout(main_layout)
         self.setMinimumSize(420, 300)
+
+        # Over the card, above the History button; made last so it sits on top.
+        self.history_panel = HistoryPanel(
+            self, self.render_history_text, toggle=self.btn_history
+        )
+        self.history_panel.open_requested.connect(self.open_history_entry)
+        self.history_panel.clear_requested.connect(self.clear_translation_history)
+        self.history_panel.closed.connect(lambda: self.btn_history.setChecked(False))
+        self.history_panel.set_entries(self.translation_history)
+
         self.keep_translate_width()
         use_modern_tooltips(self)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
@@ -5407,12 +5386,6 @@ class TranslationWindow(QWidget):
         except (HistoryDataError, OSError):
             record_event(AppEvent.HISTORY_UNAVAILABLE)
 
-    def history_preview(self, text: str, limit: int = 54) -> str:
-        preview = re.sub(r"\s+", " ", (text or "").strip())
-        if len(preview) > limit:
-            preview = preview[:limit - 3].rstrip() + "..."
-        return preview or "(empty)"
-
     def add_history_entry(self, source_text: str, result_text: str, mode: str):
         source_text = (source_text or "").strip()
         result_text = (result_text or "").strip()
@@ -5433,33 +5406,45 @@ class TranslationWindow(QWidget):
         self.translation_history.insert(0, entry)
         self.translation_history = self.translation_history[:MAX_HISTORY_ITEMS]
         self.save_translation_history()
+        self.history_panel.set_entries(self.translation_history, added=True)
 
-    def show_history_menu(self):
-        menu = QMenu(self)
-        menu.setStyleSheet(MENU_STYLE)
-
-        if not self.translation_history:
-            empty_action = QAction(tr("main.history.empty"), self)
-            empty_action.setEnabled(False)
-            menu.addAction(empty_action)
+    # ---------- History panel ----------
+    def toggle_history_panel(self):
+        if self.history_panel.isHidden():
+            self.show_history_panel()
         else:
-            for entry in self.translation_history[:12]:
-                when = history_time_label(entry.get("time", ""))
-                title = f"{when}  {self.history_preview(entry.get('source', ''))}"
-                action = QAction(title, self)
-                action.triggered.connect(lambda _checked=False, item=entry: self.load_history_entry(item))
-                menu.addAction(action)
+            self.close_history_panel()
 
-            menu.addSeparator()
-            clear_action = QAction(tr("main.history.clear"), self)
-            clear_action.triggered.connect(self.clear_translation_history)
-            menu.addAction(clear_action)
+    def show_history_panel(self):
+        """Open History over the window; a running translation carries on."""
+        self.history_panel.set_entries(self.translation_history)
+        self.history_panel.set_translating(self.trans_thread is not None)
+        self.position_history_panel()
+        self.history_panel.open_panel()
+        self.btn_history.setChecked(True)
 
-        menu.exec(self.btn_history.mapToGlobal(self.btn_history.rect().bottomLeft()))
+    def close_history_panel(self):
+        self.history_panel.close_panel()
+        self.btn_history.setChecked(False)
+
+    def position_history_panel(self):
+        anchor = self.btn_history.geometry()
+        anchor.moveTopLeft(self.btn_history.mapTo(self, QPoint(0, 0)))
+        self.history_panel.place(anchor, self.card_frame.geometry())
+
+    def render_history_text(self, widget, markdown_text: str, source_name: str):
+        """Show an entry in the panel the way the window's panes show text."""
+        self.render_markdown_text(widget, markdown_text, source_name)
+
+    def open_history_entry(self, entry):
+        """Open from the panel: the panel has asked if a translation was running."""
+        self.close_history_panel()
+        self.load_history_entry(entry)
 
     def clear_translation_history(self):
         self.translation_history = []
         self.save_translation_history()
+        self.history_panel.set_entries(self.translation_history)
 
     def load_history_entry(self, entry):
         source_text = (entry.get("source") or "").strip()
@@ -7031,6 +7016,7 @@ class TranslationWindow(QWidget):
         self.origin_image_bar.set_texts(self.origin_image_texts())
         self.image_drop_hint.text = tr("main.image.drop")
         self.btn_history.setText(tr("main.history"))
+        self.history_panel.retranslate()
         self.btn_stop.setText(tr("main.stop"))
         self.refresh_stop_button()
         self.btn_hide.setText(tr("main.hide"))
@@ -7088,6 +7074,8 @@ class TranslationWindow(QWidget):
             if not isinstance(raw_text, str):
                 return False
 
+            # A new selection is shown, not hidden under History.
+            self.close_history_panel()
             self.cancel_current_ocr()
             self.cancel_current_translation()
             self.clear_origin_image()
@@ -7405,6 +7393,8 @@ class TranslationWindow(QWidget):
         self.btn_stop.setVisible(self.trans_thread is not None or reading)
         self.btn_stop.setToolTip(tr("main.stop.ocr_tooltip" if reading else "main.stop.tooltip"))
         self.btn_translate.setVisible(self.source_mode == "manual")
+        if hasattr(self, "history_panel"):
+            self.history_panel.set_translating(self.trans_thread is not None)
 
     def on_stop_clicked(self):
         if self.ocr_thread is not None:

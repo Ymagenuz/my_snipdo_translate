@@ -215,6 +215,7 @@ def _translation_window(app):
         result_busy=_BusyPlaceholderStub(),
         result_char_fmt=object(),
         ensure_api_key=lambda *, allow_prompt=True: True,
+        close_history_panel=lambda: None,
         cancel_current_ocr=lambda: None,
         cancel_current_translation=lambda: None,
         clear_origin_image=lambda: None,
