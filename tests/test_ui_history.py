@@ -450,7 +450,9 @@ def _yellow_pixels(widget):
 def test_search_words_are_marked_in_the_list(panel, qapp):
     assert _yellow_pixels(panel.list.viewport()) == 0
 
-    panel.search.setText("contract")
+    # A word at the start of a row, so it shows even where the row is cut
+    # short: without fonts, as in the build, offscreen Qt draws wide boxes.
+    panel.search.setText("please")
     qapp.processEvents()
 
     assert _yellow_pixels(panel.list.viewport()) > 0
