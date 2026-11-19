@@ -4,6 +4,13 @@
 
 What changed in each SnipDo Translate release. The app shows this list on the **About** page in Settings.
 
+## 13.3.0 — 2026-11-18
+
+- **History opens beside the window.** **History** is now a small window of its own next to the main window, so you can keep it open and refer to it while you type; clicking or typing in the main window no longer closes it. It opens on whichever side has room, as tall as the main window, and moves with it.
+- **Snap it back.** Moved History somewhere else? Drop it near either side of the main window and it docks there again and moves with it.
+- **See what you searched for.** Words you search for are marked in yellow in the list and in an open entry, which scrolls to the first one.
+- **Locate in History.** Select text in an open entry's original or translation and click **Locate in translation** or **Locate in original** to highlight the matching text in the other, as in the main window.
+
 ## 13.2.0 — 2026-11-12
 
 - **History opens as a panel.** **History** now opens a panel over the window instead of a short menu. It lists every saved entry, not just the last twelve, grouped by day, each with the start of its source and translation, its direction or **Dictionary** and its time, and a search box finds entries by any words in the source or the translation.
