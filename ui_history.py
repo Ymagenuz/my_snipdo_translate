@@ -13,11 +13,22 @@ from __future__ import annotations
 import html
 import math
 import re
+from ctypes import wintypes
 from datetime import datetime, timedelta
 from typing import Callable, Iterable, Mapping
 
 from PyQt6.QtCore import QLocale, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPen, QPixmap
+from PyQt6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QIcon,
+    QPainter,
+    QPen,
+    QPixmap,
+    QTextCharFormat,
+    QTextCursor,
+)
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -49,6 +60,10 @@ MIN_HEIGHT = 320
 GAP = 8
 # Moves smaller than this are rounding between screen scales, not a drag.
 DOCK_SLACK = 3
+# Dropped this close to its place beside the main window, it snaps back.
+SNAP_DISTANCE = 40
+# Windows' message once a drag or resize of the window by its frame ends.
+WM_EXITSIZEMOVE = 0x0232
 
 FONT_FAMILIES = ["Segoe UI", "Microsoft YaHei UI"]
 TEXT = "#303133"
@@ -57,6 +72,9 @@ MUTED = "#909399"
 ACCENT = "#2F62D6"
 HOVER_ROW = "#F2F6FE"
 CHOSEN_ROW = "#EAF1FE"
+# Search words, on a highlighter's yellow apart from Locate's blue and teal.
+SEARCH_MARK = "#FFEBA8"
+MARKED_TEXT = "#1F2D3D"
 
 _RESULT_LABELS = {
     "en2zh": "main.label.chinese_translation",
@@ -146,6 +164,15 @@ def history_mode_label(mode: str) -> str:
     return tr(_MODE_LABELS.get(mode, "main.history.mode.auto"))
 
 
+def history_marks(text: str, words: Iterable[str]) -> list[tuple[int, int]]:
+    """Where the search words appear in text, ignoring case, in order."""
+    words = sorted({word for word in words if word}, key=len, reverse=True)
+    if not words:
+        return []
+    pattern = re.compile("|".join(re.escape(word) for word in words), re.IGNORECASE)
+    return [match.span() for match in pattern.finditer(text)]
+
+
 def history_matches(entry: Mapping[str, str], query: str) -> bool:
     """Every word of query appears in the entry's source or translation."""
     words = query.casefold().split()
@@ -155,22 +182,25 @@ def history_matches(entry: Mapping[str, str], query: str) -> bool:
     return all(word in haystack for word in words)
 
 
-def beside_frame(owner: QRect, area: QRect, width: int, gap: int = GAP) -> QRect:
+def beside_frame(
+    owner: QRect, area: QRect, width: int, gap: int = GAP, prefer: str = "right"
+) -> QRect:
     """Where History's frame goes beside owner's frame, within area.
 
     It takes owner's height and top, kept on the screen, and goes to the
-    right if it fits there, else to the left. With room on neither side,
-    as for a maximized window, it covers the edge of owner on the side
-    with more room.
+    side it prefers if it fits there, else to the other one. With room on
+    neither side, as for a maximized window, it covers the edge of owner
+    on the side with more room.
     """
     height = min(owner.height(), area.height())
     top = max(area.top(), min(owner.top(), area.bottom() + 1 - height))
     right = owner.right() + 1 + gap
     left = owner.left() - gap - width
-    if right + width - 1 <= area.right():
-        x = right
-    elif left >= area.left():
-        x = left
+    fits = {"right": right + width - 1 <= area.right(), "left": left >= area.left()}
+    sides = ("left", "right") if prefer == "left" else ("right", "left")
+    fitting = [side for side in sides if fits[side]]
+    if fitting:
+        x = right if fitting[0] == "right" else left
     elif area.right() - owner.right() >= owner.left() - area.left():
         x = area.right() + 1 - width
     else:
@@ -331,10 +361,17 @@ _CLOCK = Qt.ItemDataRole.UserRole + 5
 
 
 class _HistoryRows(QStyledItemDelegate):
-    """Draws a day's heading, or an entry's source over its translation."""
+    """Draws a day's heading, or an entry's source over its translation.
+
+    words, the search's, are marked in yellow where they show.
+    """
 
     ROW_HEIGHT = 52
     DAY_HEIGHT = 26
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.words: list[str] = []
 
     def sizeHint(self, option, index):
         return QSize(0, self.DAY_HEIGHT if index.data(_DAY) is not None else self.ROW_HEIGHT)
@@ -399,26 +436,53 @@ class _HistoryRows(QStyledItemDelegate):
         source_font = _sized(option.font, 13)
         source_metrics = QFontMetrics(source_font)
         painter.setFont(source_font)
-        painter.setPen(QColor(TEXT))
-        painter.drawText(
+        self._draw_marked(
+            painter,
             QRect(inner.left(), inner.top(), width, source_metrics.height()),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
             source_metrics.elidedText(index.data(_SOURCE) or "", Qt.TextElideMode.ElideRight, width),
+            QColor(TEXT),
         )
         result_font = _sized(option.font, 12)
         result_metrics = QFontMetrics(result_font)
         painter.setFont(result_font)
-        painter.setPen(QColor(MUTED))
-        painter.drawText(
+        self._draw_marked(
+            painter,
             QRect(
                 inner.left(),
                 inner.bottom() + 1 - result_metrics.height(),
                 width,
                 result_metrics.height(),
             ),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
             result_metrics.elidedText(index.data(_RESULT) or "", Qt.TextElideMode.ElideRight, width),
+            QColor(MUTED),
         )
+
+    def _draw_marked(self, painter, rect: QRect, text: str, color: QColor) -> None:
+        """One line of text in rect, its search words on the yellow marker."""
+        align = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        spans = history_marks(text, self.words)
+        if not spans:
+            painter.setPen(color)
+            painter.drawText(rect, align, text)
+            return
+        # Piece by piece, so a match can take dark text on its marker.
+        metrics = painter.fontMetrics()
+        x = rect.left()
+        position = 0
+        for start, end in [*spans, (len(text), len(text))]:
+            for piece, marked in ((text[position:start], False), (text[start:end], True)):
+                if not piece:
+                    continue
+                width = metrics.horizontalAdvance(piece)
+                piece_rect = QRect(x, rect.top(), width, rect.height())
+                if marked:
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QColor(SEARCH_MARK))
+                    painter.drawRoundedRect(QRectF(piece_rect).adjusted(-1, 0, 1, 0), 2, 2)
+                painter.setPen(QColor(MARKED_TEXT) if marked else color)
+                painter.drawText(piece_rect, align.value | Qt.TextFlag.TextDontClip.value, piece)
+                x += width
+            position = end
 
 
 # ---------- Panel ----------
@@ -481,6 +545,8 @@ class HistoryPanel(QFrame):
     open_requested = pyqtSignal(dict)
     clear_requested = pyqtSignal()
     closed = pyqtSignal()
+    # Another entry, the list or nothing is shown now; Locate starts over.
+    entry_changed = pyqtSignal()
 
     COPIED_MS = 900
 
@@ -496,8 +562,9 @@ class HistoryPanel(QFrame):
         self._entry: dict | None = None
         self._translating = False
         self._added = False
-        # The frame it was last put beside the main window at.
+        # The frame it was last put beside the main window at, and on which side.
         self._placed: QRect | None = None
+        self._side: str | None = None
 
         self.pages = QStackedWidget(self)
         layout = QVBoxLayout(self)
@@ -510,6 +577,12 @@ class HistoryPanel(QFrame):
         self._copied_timer.setSingleShot(True)
         self._copied_timer.setInterval(self.COPIED_MS)
         self._copied_timer.timeout.connect(self._show_copy_text)
+
+        # Once a drag by the title bar ends, outside Windows' own move loop.
+        self._settle_timer = QTimer(self)
+        self._settle_timer.setSingleShot(True)
+        self._settle_timer.setInterval(0)
+        self._settle_timer.timeout.connect(self.snap_if_near)
 
         self.retranslate()
         self.hide()
@@ -542,7 +615,8 @@ class HistoryPanel(QFrame):
         layout.addWidget(self.status)
 
         self.list = QListWidget()
-        self.list.setItemDelegate(_HistoryRows(self.list))
+        self._rows = _HistoryRows(self.list)
+        self.list.setItemDelegate(self._rows)
         self.list.setFrameShape(QFrame.Shape.NoFrame)
         self.list.setStyleSheet("QListWidget { background: transparent; border: none; outline: 0; }")
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -701,8 +775,12 @@ class HistoryPanel(QFrame):
     def is_translating(self) -> bool:
         return self._translating
 
-    def place_beside(self, owner: QWidget) -> None:
-        """Put the window beside owner, as tall as it, on owner's screen."""
+    def place_beside(self, owner: QWidget, side: str | None = None) -> None:
+        """Put the window beside owner, as tall as it, on owner's screen.
+
+        It keeps to side, else the side it was last put on, while that
+        side has room.
+        """
         # With its native window made, Qt knows how wide its frame is.
         self.winId()
         handle = self.windowHandle()
@@ -713,10 +791,42 @@ class HistoryPanel(QFrame):
         screen = owner.screen()
         area = screen.availableGeometry() if screen is not None else owner_frame
         width = self.width()
-        frame = beside_frame(owner_frame, area, width + sides)
+        frame = beside_frame(
+            owner_frame, area, width + sides, prefer=side or self._side or "right"
+        )
         self.resize(width, max(self.minimumHeight(), frame.height() - ends))
         self.move(frame.topLeft())
         self._placed = QRect(self.frameGeometry())
+        self._side = "right" if frame.left() > owner_frame.left() else "left"
+
+    def snap_if_near(self) -> bool:
+        """Dock it again if it was dropped near its place beside the main window.
+
+        Either side counts, as long as it has room there. Its width stays as
+        you left it; it takes the main window's height and moves with it again.
+        """
+        owner = self.parentWidget()
+        if owner is None or self.isHidden():
+            return False
+        frame = self.frameGeometry()
+        owner_frame = owner.frameGeometry()
+        screen = owner.screen()
+        area = screen.availableGeometry() if screen is not None else owner_frame
+        for side in ("right", "left"):
+            spot = beside_frame(owner_frame, area, frame.width(), prefer=side)
+            on_that_side = (
+                spot.left() > owner_frame.right()
+                if side == "right"
+                else spot.right() < owner_frame.left()
+            )
+            if (
+                on_that_side
+                and abs(frame.left() - spot.left()) <= SNAP_DISTANCE
+                and abs(frame.top() - spot.top()) <= SNAP_DISTANCE
+            ):
+                self.place_beside(owner, side)
+                return True
+        return False
 
     def is_docked(self) -> bool:
         """Whether it is still where it was put beside the main window."""
@@ -777,6 +887,7 @@ class HistoryPanel(QFrame):
         self._added = False
         self._copied_timer.stop()
         self.closed.emit()
+        self.entry_changed.emit()
 
     def retranslate(self) -> None:
         self.setWindowTitle(tr("main.history.window_title"))
@@ -803,6 +914,7 @@ class HistoryPanel(QFrame):
         self.pages.setCurrentIndex(0)
         self._refill()
         self.search.setFocus()
+        self.entry_changed.emit()
 
     def show_entry(self, entry: Mapping[str, str]) -> None:
         self._entry = dict(entry)
@@ -818,10 +930,58 @@ class HistoryPanel(QFrame):
         for view in (self.source_view, self.result_view):
             view.verticalScrollBar().setValue(0)
         self._fit_source()
+        # The search's words are marked, and the first one brought into view.
+        for view in (self.source_view, self.result_view):
+            view.setExtraSelections(self.search_selections(view))
+            self._reveal_first_mark(view)
         self.setFocus()
+        self.entry_changed.emit()
 
     def shown_entry(self) -> dict | None:
         return self._entry
+
+    def search_words(self) -> list[str]:
+        return list(dict.fromkeys(self.search.text().split()))
+
+    def search_selections(self, view: QTextEdit) -> list:
+        """The search's words in the shown entry's view, on the yellow marker."""
+        words = self.search_words()
+        if not words or self._entry is None:
+            return []
+        mark = QTextCharFormat()
+        mark.setBackground(QColor(SEARCH_MARK))
+        mark.setForeground(QColor(MARKED_TEXT))
+        document = view.document()
+        selections = []
+        for word in words:
+            # Plain-text search, ignoring case, as the list's is.
+            found = document.find(word)
+            while not found.isNull():
+                selection = QTextEdit.ExtraSelection()
+                selection.cursor = QTextCursor(found)
+                selection.format = mark
+                selections.append(selection)
+                found = document.find(word, found)
+        selections.sort(key=lambda selection: selection.cursor.selectionStart())
+        return selections
+
+    def _reveal_first_mark(self, view: QTextEdit) -> None:
+        marks = view.extraSelections()
+        if not marks:
+            return
+        cursor = view.textCursor()
+        cursor.setPosition(marks[0].cursor.selectionStart())
+        view.setTextCursor(cursor)
+        view.ensureCursorVisible()
+
+    def locate_available(self) -> bool:
+        """Whether Locate can pair the shown entry's texts: not for dictionary entries."""
+        return (
+            self._entry is not None
+            and not self.isHidden()
+            and self.pages.currentIndex() == 1
+            and self._entry.get("mode") != "dictionary"
+        )
 
     def _label_entry(self, entry: Mapping[str, str]) -> None:
         mode = entry.get("mode", "")
@@ -845,6 +1005,7 @@ class HistoryPanel(QFrame):
 
     def _refill(self) -> None:
         query = self.search.text()
+        self._rows.words = self.search_words()
         bar = self.list.verticalScrollBar()
         position = bar.value()
         current = self.list.currentItem()
@@ -991,6 +1152,17 @@ class HistoryPanel(QFrame):
             self.open_requested.emit(dict(self._entry))
 
     # ----- Events -----
+
+    def nativeEvent(self, event_type, message):
+        # Windows ends a drag or resize by the frame with WM_EXITSIZEMOVE;
+        # Qt has no event of its own for that.
+        if bytes(event_type) == b"windows_generic_MSG" and message:
+            msg = wintypes.MSG.from_address(int(message))
+            if msg.message == WM_EXITSIZEMOVE:
+                self._settle_timer.start()
+        # Qt's own does nothing here, and PyQt 6.11 crashes calling it while
+        # the native window is made.
+        return False, 0
 
     def closeEvent(self, event):
         # Its title bar's close button.

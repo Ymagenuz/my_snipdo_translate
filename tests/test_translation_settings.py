@@ -1682,6 +1682,81 @@ def _select_text(widget, text, app):
     widget.setTextCursor(cursor)
 
 
+def test_history_window_entries_offer_locate_and_keep_search_marks(
+    app, edit_window, monkeypatch, qapp
+):
+    alignments = []
+
+    class AlignmentWorker:
+        def __init__(self, source_text, target_text, selected_text, *_args):
+            alignments.append((source_text, target_text, selected_text))
+            self.finished = SimpleNamespace(connect=self.connect)
+            self.workers.append(self)
+
+        def connect(self, callback):
+            self.callback = callback
+
+        def start(self):
+            return None
+
+        def isRunning(self):
+            return False
+
+    AlignmentWorker.workers = []
+    monkeypatch.setattr(app, "AlignmentThread", AlignmentWorker)
+    window, workers = edit_window
+    window.translation_history = [
+        {"time": "2026-11-12 14:02:11", "mode": "en2zh",
+         "source": "First sentence. Second sentence.", "result": "第一句。第二句。"},
+        {"time": "2026-11-12 13:47:00", "mode": "dictionary",
+         "source": "ubiquitous", "result": "adj. 无处不在的"},
+    ]
+    window.show()
+    # A translation running in the main window doesn't stand in the way.
+    window.txt_origin.setPlainText("这是第一句。")
+    window.start_manual_translation()
+    window.btn_history.click()
+    panel = window.history_panel
+    locator = window.history_locator
+    panel.search.setText("second")
+    panel.show_entry(window.translation_history[0])
+    qapp.processEvents()
+
+    _select_text(panel.source_view, "Second sentence.", app)
+    assert not locator.button.isHidden()
+    assert locator.button.text() == "Locate in translation"
+    assert locator.button.parentWidget() is panel
+    assert window.btn_align_selection.isHidden()
+
+    locator.button.click()
+    AlignmentWorker.workers[-1].callback(True, {"text": "第二句。"}, "")
+
+    assert alignments == [
+        ("First sentence. Second sentence.", "第一句。第二句。", "Second sentence.")
+    ]
+    located = [
+        (item.cursor.selectedText(), item.format.background().color().name())
+        for item in panel.result_view.extraSelections()
+    ]
+    assert located == [("第二句。", "#d2f1ed")]
+    # The search's mark in the source stays, and the main window is untouched.
+    assert [item.cursor.selectedText() for item in panel.source_view.extraSelections()] == ["Second"]
+    assert locator.button.isHidden()
+    assert window.txt_result.extraSelections() == []
+    assert not workers[-1].stop_requested
+
+    # A click in either text drops the located pair but keeps the search marks.
+    QTest.mouseClick(panel.result_view.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(4, 4))
+    assert panel.result_view.extraSelections() == []
+    assert [item.cursor.selectedText() for item in panel.source_view.extraSelections()] == ["Second"]
+
+    # Dictionary entries don't offer it, as in the main window.
+    panel.show_entry(window.translation_history[1])
+    _select_text(panel.source_view, "ubiquitous", app)
+    assert locator.button.isHidden()
+    window.hide()
+
+
 def test_history_entry_locates_the_counterpart_text(
     app, edit_window, monkeypatch, qapp
 ):

@@ -3421,6 +3421,322 @@ RESULT_INFO_NOTICE_STYLE = """
 """
 
 
+class CounterpartLocator(QObject):
+    """Locate: highlight in one text what is selected in the other.
+
+    Select text in the source or the translation and a floating button
+    offers to find it in the other one. A whole sentence that appears
+    there as it is is found at once; anything else asks the model. A
+    click in either text drops the highlight; scrolling keeps it.
+
+    host is the main window, for its text matching and API key; origin and
+    result are the pair of views, which glide with a smooth_scroller; the
+    button floats in container; enabled says whether the pair can be
+    located now; keep gives a view's own highlights, such as search
+    matches, which Locate keeps when it draws or clears its own.
+    """
+
+    def __init__(self, host, origin, result, container, enabled, keep=None):
+        super().__init__(container)
+        self.host = host
+        self.origin = origin
+        self.result = result
+        self.container = container
+        self.enabled = enabled
+        self.keep = keep or (lambda _view: [])
+        self.align_thread = None
+        self.selection_source = None
+        self.selection_range = None
+        self.highlight_source = None
+        self.target_widget = None
+        self.selected_text = ""
+        self.selected_sentence = ""
+        self.selection_is_sentence = False
+
+        self.button = QPushButton(container)
+        self.button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.button.setFixedHeight(26)
+        self.button.setStyleSheet(LOCATE_BUTTON_STYLE.format(color="#0E8A7D", hover="#0B7A6F"))
+        self.button.clicked.connect(self.locate)
+        self.button.hide()
+
+        origin.selectionChanged.connect(lambda: self.on_selection_changed("origin"))
+        result.selectionChanged.connect(lambda: self.on_selection_changed("result"))
+        # Mouse presses on the text itself; wheel and scroll bars stay out.
+        origin.viewport().installEventFilter(self)
+        result.viewport().installEventFilter(self)
+
+    def reset(self, clear_highlights=True):
+        self.cancel()
+        self.selection_source = None
+        self.selection_range = None
+        self.target_widget = None
+        self.selected_text = ""
+        self.selected_sentence = ""
+        self.selection_is_sentence = False
+        self.button.setEnabled(True)
+        self.button.hide()
+        if clear_highlights:
+            self.clear_highlights()
+
+    def cancel(self):
+        if self.align_thread and self.align_thread.isRunning():
+            log("[UI] cancel_current_alignment")
+            self.align_thread.request_stop()
+            self.align_thread.wait(300)
+
+    def clear_highlights(self):
+        for view in (self.origin, self.result):
+            view.setExtraSelections(self.keep(view))
+        self.highlight_source = None
+
+    def eventFilter(self, watched, event):
+        if (
+            event.type() == QEvent.Type.MouseButtonPress
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            if watched is self.origin.viewport():
+                self.dismiss(self.result)
+            elif watched is self.result.viewport():
+                self.dismiss(self.origin)
+        return super().eventFilter(watched, event)
+
+    def dismiss(self, other_widget):
+        """A click in either text drops the located pair; scrolling keeps it."""
+        if self.align_thread is not None and self.align_thread.isRunning():
+            # Do not block the click; a late answer finds no target and is dropped.
+            self.align_thread.request_stop()
+        self.target_widget = None
+        self.button.setEnabled(True)
+        self.button.hide()
+        self.clear_highlights()
+
+        # The clicked text clears its own selection; the other one keeps its view.
+        cursor = other_widget.textCursor()
+        if cursor.hasSelection():
+            scroll_bar = other_widget.verticalScrollBar()
+            position = scroll_bar.value()
+            cursor.clearSelection()
+            other_widget.setTextCursor(cursor)
+            scroll_bar.setValue(position)
+
+    def on_selection_changed(self, source_name):
+        if not self.enabled():
+            self.reset()
+            return
+
+        source_widget = self.origin if source_name == "origin" else self.result
+        cursor = source_widget.textCursor()
+        if not cursor.hasSelection():
+            self.button.hide()
+            return
+
+        start = min(cursor.selectionStart(), cursor.selectionEnd())
+        end = max(cursor.selectionStart(), cursor.selectionEnd())
+        if start == end:
+            self.button.hide()
+            return
+
+        self.clear_highlights()
+        self.selection_source = source_name
+        self.selection_range = (start, end)
+
+        button = self.button
+        button.setText(
+            tr("main.locate.translation" if source_name == "origin" else "main.locate.original")
+        )
+        color, hover = ("#0E8A7D", "#0B7A6F") if source_name == "origin" else ("#2F62D6", "#2756C2")
+        button.setStyleSheet(LOCATE_BUTTON_STYLE.format(color=color, hover=hover))
+        button.adjustSize()
+
+        rect = source_widget.cursorRect(cursor)
+        global_pos = source_widget.viewport().mapToGlobal(rect.topRight())
+        pos = self.container.mapFromGlobal(global_pos)
+
+        margin = 6
+        x = min(max(margin, pos.x() + 8), max(margin, self.container.width() - button.width() - margin))
+        y = min(max(margin, pos.y() - button.height() - 8), max(margin, self.container.height() - button.height() - margin))
+
+        appearing = button.isHidden()
+        button.move(x, y)
+        button.show()
+        button.raise_()
+        if appearing:
+            fade_in(button)
+
+    def highlight_range(self, widget, start, end):
+        cursor = widget.textCursor()
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+
+        selection = QTextEdit.ExtraSelection()
+        selection.cursor = cursor
+        selection.format = QTextCharFormat()
+        # A tint of the side's own colour: blue in the source, teal in the translation.
+        selection.format.setBackground(
+            QColor("#DCE7FD" if widget is self.origin else "#D2F1ED")
+        )
+        selection.format.setForeground(QColor("#1F2D3D"))
+        widget.setExtraSelections([*self.keep(widget), selection])
+
+        view_cursor = widget.textCursor()
+        view_cursor.setPosition(start)
+        # Glide to the located text instead of jumping to it.
+        with widget.smooth_scroller.glide():
+            widget.setTextCursor(view_cursor)
+            widget.ensureCursorVisible()
+
+    def locate(self):
+        host = self.host
+        if not self.enabled():
+            self.reset()
+            return
+
+        if not self.selection_source or not self.selection_range:
+            self.button.hide()
+            return
+
+        selection_start, selection_end = self.selection_range
+        origin_text = self.origin.toPlainText()
+        result_text = self.result.toPlainText()
+
+        if self.selection_source == "origin":
+            source_text = origin_text
+            target_text = result_text
+            self.target_widget = self.result
+            self.origin.setExtraSelections(self.keep(self.origin))
+        else:
+            source_text = result_text
+            target_text = origin_text
+            self.target_widget = self.origin
+            self.result.setExtraSelections(self.keep(self.result))
+
+        selected_text = source_text[selection_start:selection_end].strip()
+        if not selected_text or not target_text.strip():
+            self.button.hide()
+            return
+
+        if not host.meaningful_selection(source_text, selection_start, selection_end):
+            self.button.hide()
+            return
+
+        sentence_start, sentence_end = host.containing_sentence_range(source_text, selection_start, selection_end)
+        selected_sentence = source_text[sentence_start:sentence_end].strip()
+        selected_start_in_sentence = max(0, selection_start - sentence_start)
+        selected_end_in_sentence = max(selected_start_in_sentence, selection_end - sentence_start)
+        selection_is_sentence = host.selection_is_whole_sentence(
+            source_text,
+            selection_start,
+            selection_end,
+            sentence_start,
+            sentence_end,
+        )
+
+        self.selected_text = selected_text
+        self.selected_sentence = selected_sentence
+        self.selection_is_sentence = selection_is_sentence
+
+        direct_ranges = host.find_text_ranges(target_text, selected_text) if selection_is_sentence else []
+        if selection_is_sentence and len(direct_ranges) == 1:
+            direct_range = direct_ranges[0]
+            self.highlight_range(self.target_widget, direct_range[0], direct_range[1])
+            self.highlight_source = "result" if self.target_widget is self.result else "origin"
+            self.button.hide()
+            return
+
+        if not host.ensure_api_key():
+            self.button.hide()
+            return
+
+        self.cancel()
+        self.button.setEnabled(False)
+        self.button.setText(tr("main.locate.busy"))
+        self.button.adjustSize()
+
+        left_context, right_context = host.selection_context(source_text, selection_start, selection_end)
+        self.align_thread = AlignmentThread(
+            source_text,
+            target_text,
+            selected_text,
+            selected_sentence,
+            selected_start_in_sentence,
+            selected_end_in_sentence,
+            left_context,
+            right_context,
+        )
+        self.align_thread.finished.connect(self.on_alignment_finished)
+        self.align_thread.start()
+
+    def on_alignment_finished(self, success, match_data, error_msg):
+        sender = self.sender()
+        if sender is not None and sender is not self.align_thread:
+            return
+
+        host = self.host
+        self.button.setEnabled(True)
+
+        if not success:
+            log(f"[UI] alignment failed: {error_msg}")
+            self.button.hide()
+            return
+
+        target_widget = self.target_widget
+        if target_widget is None:
+            self.button.hide()
+            return
+
+        if isinstance(match_data, dict):
+            matched_text = match_data.get("text", "")
+            target_sentence = match_data.get("target_sentence", "")
+            left_context = match_data.get("target_left_context", "")
+            right_context = match_data.get("target_right_context", "")
+            occurrence_index = match_data.get("occurrence_index", 0)
+        else:
+            matched_text = str(match_data or "")
+            target_sentence = ""
+            left_context = ""
+            right_context = ""
+            occurrence_index = 0
+
+        target_text = target_widget.toPlainText()
+        search_text = target_text
+        search_offset = 0
+
+        sentence_range = host.find_text_range(target_text, target_sentence) if target_sentence else None
+        if sentence_range:
+            search_offset = sentence_range[0]
+            search_text = target_text[sentence_range[0]:sentence_range[1]]
+        elif target_sentence:
+            log(f"[UI] alignment target sentence not found: {repr(target_sentence[:120])}")
+
+        if not matched_text and self.selection_is_sentence and target_sentence:
+            matched_text = target_sentence
+
+        target_range = host.find_text_range(
+            search_text,
+            matched_text,
+            left_context,
+            right_context,
+            occurrence_index,
+        )
+        if target_range:
+            target_range = (target_range[0] + search_offset, target_range[1] + search_offset)
+
+        if not target_range:
+            log(f"[UI] alignment match not found in target text: {repr(matched_text[:120])}")
+            self.button.hide()
+            return
+
+        if host.match_too_broad(self.selected_text, matched_text):
+            log(f"[UI] alignment match rejected as too broad: {repr(matched_text[:120])}")
+            self.button.hide()
+            return
+
+        self.highlight_range(target_widget, target_range[0], target_range[1])
+        self.highlight_source = "result" if target_widget is self.result else "origin"
+        self.button.hide()
+
+
 class TranslationWindow(QWidget):
     def __init__(
         self,
@@ -3457,7 +3773,6 @@ class TranslationWindow(QWidget):
         self._show_geometry = None
         self.trans_thread = None
         self.translation_threads = set()
-        self.align_thread = None
         self.ocr_thread = None
         # ocr_threads keeps a stopped reader alive until it finishes.
         self.ocr_threads = set()
@@ -3471,13 +3786,6 @@ class TranslationWindow(QWidget):
         self.screen_snip.captured.connect(self.on_snip_captured)
         self.screen_snip.cancelled.connect(self.on_snip_cancelled)
         self.screen_snip.unavailable.connect(self.on_snip_unavailable)
-        self.alignment_selection_source = None
-        self.alignment_selection_range = None
-        self.alignment_highlight_source = None
-        self.alignment_target_widget = None
-        self.alignment_selected_text = ""
-        self.alignment_selected_sentence = ""
-        self.alignment_selection_is_sentence = False
         self.selection_capture_busy = False
         self._selection_capture_hwnd = 0
         self._selection_capture_binding = None
@@ -4411,11 +4719,22 @@ class TranslationWindow(QWidget):
             worker.wait(800)
         self.refresh_stop_button()
 
+    # Locate lives in self.locator; these keep its old names for the window.
+    @property
+    def btn_align_selection(self):
+        return self.locator.button
+
+    @property
+    def align_thread(self):
+        return self.locator.align_thread
+
+    @align_thread.setter
+    def align_thread(self, worker):
+        self.locator.align_thread = worker
+
     def cancel_current_alignment(self):
-        if self.align_thread and self.align_thread.isRunning():
-            log("[UI] cancel_current_alignment")
-            self.align_thread.request_stop()
-            self.align_thread.wait(300)
+        if hasattr(self, "locator"):
+            self.locator.cancel()
 
     def cancel_current_ocr(self):
         worker = self.ocr_thread
@@ -4721,7 +5040,6 @@ class TranslationWindow(QWidget):
 
         self.txt_origin = SourceTextEdit()
         self.txt_origin.submit_signal.connect(self.start_manual_translation)
-        self.txt_origin.selectionChanged.connect(lambda: self.on_text_selection_changed("origin"))
         self.txt_origin.setMaximumHeight(180)
 
         self.origin_font = QFont()
@@ -4803,7 +5121,6 @@ class TranslationWindow(QWidget):
 
         self.txt_result = InteractiveTextEdit()
         self.txt_result.setReadOnly(True)
-        self.txt_result.selectionChanged.connect(lambda: self.on_text_selection_changed("result"))
         # No box of its own; its text lines up with the boxes' text.
         self.txt_result.setStyleSheet("""
             QTextEdit {
@@ -4894,18 +5211,11 @@ class TranslationWindow(QWidget):
         self.back_translation_panel.hide()
         card_layout.addWidget(self.back_translation_panel)
 
-        # Mouse presses on the text itself; wheel and scroll bars stay out.
-        self.txt_origin.viewport().installEventFilter(self)
-        self.txt_result.viewport().installEventFilter(self)
-
-        self.btn_align_selection = QPushButton(self.card_frame)
-        self.btn_align_selection.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_align_selection.setFixedHeight(26)
-        self.btn_align_selection.setStyleSheet(
-            LOCATE_BUTTON_STYLE.format(color="#0E8A7D", hover="#0B7A6F")
+        # Select text in either pane to find its counterpart in the other.
+        self.locator = CounterpartLocator(
+            self, self.txt_origin, self.txt_result, self.card_frame,
+            self.alignment_feature_enabled,
         )
-        self.btn_align_selection.clicked.connect(self.highlight_selected_counterpart)
-        self.btn_align_selection.hide()
 
         main_layout.addWidget(self.card_frame)
 
@@ -5114,6 +5424,13 @@ class TranslationWindow(QWidget):
         self.history_panel.clear_requested.connect(self.clear_translation_history)
         self.history_panel.closed.connect(lambda: self.btn_history.setChecked(False))
         self.history_panel.set_entries(self.translation_history)
+        # Locate in an entry shown there, keeping its search words marked.
+        panel = self.history_panel
+        self.history_locator = CounterpartLocator(
+            self, panel.source_view, panel.result_view, panel,
+            panel.locate_available, keep=panel.search_selections,
+        )
+        panel.entry_changed.connect(self.history_locator.reset)
 
         self.keep_translate_width()
         use_modern_tooltips(self)
@@ -6112,57 +6429,18 @@ class TranslationWindow(QWidget):
                 self.start_manual_translation()
 
     # ---------- Selection alignment ----------
+    # CounterpartLocator does the work, for the panes here and for History;
+    # the text matching below is shared by both.
     def reset_alignment_ui(self, clear_highlights=True):
-        if hasattr(self, "align_thread"):
-            self.cancel_current_alignment()
-        self.alignment_selection_source = None
-        self.alignment_selection_range = None
-        self.alignment_target_widget = None
-        self.alignment_selected_text = ""
-        self.alignment_selected_sentence = ""
-        self.alignment_selection_is_sentence = False
-        if hasattr(self, "btn_align_selection"):
-            self.btn_align_selection.setEnabled(True)
-            self.btn_align_selection.hide()
-        if clear_highlights:
-            self.clear_alignment_highlights()
+        if hasattr(self, "locator"):
+            self.locator.reset(clear_highlights)
 
     def clear_alignment_highlights(self):
-        if hasattr(self, "txt_origin"):
-            self.txt_origin.setExtraSelections([])
-        if hasattr(self, "txt_result"):
-            self.txt_result.setExtraSelections([])
-        self.alignment_highlight_source = None
-
-    def eventFilter(self, watched, event):
-        if (
-            event.type() == QEvent.Type.MouseButtonPress
-            and event.button() == Qt.MouseButton.LeftButton
-        ):
-            if watched is self.txt_origin.viewport():
-                self.dismiss_alignment_highlight(self.txt_result)
-            elif watched is self.txt_result.viewport():
-                self.dismiss_alignment_highlight(self.txt_origin)
-        return super().eventFilter(watched, event)
+        if hasattr(self, "locator"):
+            self.locator.clear_highlights()
 
     def dismiss_alignment_highlight(self, other_widget):
-        """A click in either text drops the located pair; scrolling keeps it."""
-        if self.align_thread is not None and self.align_thread.isRunning():
-            # Do not block the click; a late answer finds no target and is dropped.
-            self.align_thread.request_stop()
-        self.alignment_target_widget = None
-        self.btn_align_selection.setEnabled(True)
-        self.btn_align_selection.hide()
-        self.clear_alignment_highlights()
-
-        # The clicked text clears its own selection; the other one keeps its view.
-        cursor = other_widget.textCursor()
-        if cursor.hasSelection():
-            scroll_bar = other_widget.verticalScrollBar()
-            position = scroll_bar.value()
-            cursor.clearSelection()
-            other_widget.setTextCursor(cursor)
-            scroll_bar.setValue(position)
+        self.locator.dismiss(other_widget)
 
     def alignment_feature_enabled(self):
         if self.source_mode != "snipdo":
@@ -6183,50 +6461,8 @@ class TranslationWindow(QWidget):
         return self.resolve_effective_mode(total_text) != "dictionary"
 
     def on_text_selection_changed(self, source_name):
-        if not hasattr(self, "btn_align_selection"):
-            return
-
-        if not self.alignment_feature_enabled():
-            self.reset_alignment_ui()
-            return
-
-        source_widget = self.txt_origin if source_name == "origin" else self.txt_result
-        cursor = source_widget.textCursor()
-        if not cursor.hasSelection():
-            self.btn_align_selection.hide()
-            return
-
-        start = min(cursor.selectionStart(), cursor.selectionEnd())
-        end = max(cursor.selectionStart(), cursor.selectionEnd())
-        if start == end:
-            self.btn_align_selection.hide()
-            return
-
-        self.clear_alignment_highlights()
-        self.alignment_selection_source = source_name
-        self.alignment_selection_range = (start, end)
-
-        self.btn_align_selection.setText(
-            tr("main.locate.translation" if source_name == "origin" else "main.locate.original")
-        )
-        color, hover = ("#0E8A7D", "#0B7A6F") if source_name == "origin" else ("#2F62D6", "#2756C2")
-        self.btn_align_selection.setStyleSheet(LOCATE_BUTTON_STYLE.format(color=color, hover=hover))
-        self.btn_align_selection.adjustSize()
-
-        rect = source_widget.cursorRect(cursor)
-        global_pos = source_widget.viewport().mapToGlobal(rect.topRight())
-        pos = self.card_frame.mapFromGlobal(global_pos)
-
-        margin = 6
-        x = min(max(margin, pos.x() + 8), max(margin, self.card_frame.width() - self.btn_align_selection.width() - margin))
-        y = min(max(margin, pos.y() - self.btn_align_selection.height() - 8), max(margin, self.card_frame.height() - self.btn_align_selection.height() - margin))
-
-        appearing = self.btn_align_selection.isHidden()
-        self.btn_align_selection.move(x, y)
-        self.btn_align_selection.show()
-        self.btn_align_selection.raise_()
-        if appearing:
-            fade_in(self.btn_align_selection)
+        if hasattr(self, "locator"):
+            self.locator.on_selection_changed(source_name)
 
     def find_text_range(self, text, snippet, left_context="", right_context="", occurrence_index=0):
         ranges = self.find_text_ranges(text, snippet)
@@ -6509,174 +6745,10 @@ class TranslationWindow(QWidget):
         return looks_like_sentence and too_long
 
     def highlight_text_range(self, widget, start, end):
-        cursor = widget.textCursor()
-        cursor.setPosition(start)
-        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
-
-        selection = QTextEdit.ExtraSelection()
-        selection.cursor = cursor
-        selection.format = QTextCharFormat()
-        # A tint of the side's own colour: blue in the source, teal in the translation.
-        selection.format.setBackground(
-            QColor("#DCE7FD" if widget is self.txt_origin else "#D2F1ED")
-        )
-        selection.format.setForeground(QColor("#1F2D3D"))
-        widget.setExtraSelections([selection])
-
-        view_cursor = widget.textCursor()
-        view_cursor.setPosition(start)
-        # Glide to the located text instead of jumping to it.
-        with widget.smooth_scroller.glide():
-            widget.setTextCursor(view_cursor)
-            widget.ensureCursorVisible()
+        self.locator.highlight_range(widget, start, end)
 
     def highlight_selected_counterpart(self):
-        if not self.alignment_feature_enabled():
-            self.reset_alignment_ui()
-            return
-
-        if not self.alignment_selection_source or not self.alignment_selection_range:
-            self.btn_align_selection.hide()
-            return
-
-        selection_start, selection_end = self.alignment_selection_range
-        origin_text = self.txt_origin.toPlainText()
-        result_text = self.txt_result.toPlainText()
-
-        if self.alignment_selection_source == "origin":
-            source_text = origin_text
-            target_text = result_text
-            self.alignment_target_widget = self.txt_result
-            self.txt_origin.setExtraSelections([])
-        else:
-            source_text = result_text
-            target_text = origin_text
-            self.alignment_target_widget = self.txt_origin
-            self.txt_result.setExtraSelections([])
-
-        selected_text = source_text[selection_start:selection_end].strip()
-        if not selected_text or not target_text.strip():
-            self.btn_align_selection.hide()
-            return
-
-        if not self.meaningful_selection(source_text, selection_start, selection_end):
-            self.btn_align_selection.hide()
-            return
-
-        sentence_start, sentence_end = self.containing_sentence_range(source_text, selection_start, selection_end)
-        selected_sentence = source_text[sentence_start:sentence_end].strip()
-        selected_start_in_sentence = max(0, selection_start - sentence_start)
-        selected_end_in_sentence = max(selected_start_in_sentence, selection_end - sentence_start)
-        selection_is_sentence = self.selection_is_whole_sentence(
-            source_text,
-            selection_start,
-            selection_end,
-            sentence_start,
-            sentence_end,
-        )
-
-        self.alignment_selected_text = selected_text
-        self.alignment_selected_sentence = selected_sentence
-        self.alignment_selection_is_sentence = selection_is_sentence
-
-        direct_ranges = self.find_text_ranges(target_text, selected_text) if selection_is_sentence else []
-        if selection_is_sentence and len(direct_ranges) == 1:
-            direct_range = direct_ranges[0]
-            self.highlight_text_range(self.alignment_target_widget, direct_range[0], direct_range[1])
-            self.alignment_highlight_source = "result" if self.alignment_target_widget is self.txt_result else "origin"
-            self.btn_align_selection.hide()
-            return
-
-        if not self.ensure_api_key():
-            self.btn_align_selection.hide()
-            return
-
-        self.cancel_current_alignment()
-        self.btn_align_selection.setEnabled(False)
-        self.btn_align_selection.setText(tr("main.locate.busy"))
-        self.btn_align_selection.adjustSize()
-
-        left_context, right_context = self.selection_context(source_text, selection_start, selection_end)
-        self.align_thread = AlignmentThread(
-            source_text,
-            target_text,
-            selected_text,
-            selected_sentence,
-            selected_start_in_sentence,
-            selected_end_in_sentence,
-            left_context,
-            right_context,
-        )
-        self.align_thread.finished.connect(self.on_alignment_finished)
-        self.align_thread.start()
-
-    def on_alignment_finished(self, success, match_data, error_msg):
-        sender = self.sender()
-        if sender is not None and sender is not self.align_thread:
-            return
-
-        self.btn_align_selection.setEnabled(True)
-
-        if not success:
-            log(f"[UI] alignment failed: {error_msg}")
-            self.btn_align_selection.hide()
-            return
-
-        target_widget = getattr(self, "alignment_target_widget", None)
-        if target_widget is None:
-            self.btn_align_selection.hide()
-            return
-
-        if isinstance(match_data, dict):
-            matched_text = match_data.get("text", "")
-            target_sentence = match_data.get("target_sentence", "")
-            left_context = match_data.get("target_left_context", "")
-            right_context = match_data.get("target_right_context", "")
-            occurrence_index = match_data.get("occurrence_index", 0)
-        else:
-            matched_text = str(match_data or "")
-            target_sentence = ""
-            left_context = ""
-            right_context = ""
-            occurrence_index = 0
-
-        target_text = target_widget.toPlainText()
-        search_text = target_text
-        search_offset = 0
-
-        sentence_range = self.find_text_range(target_text, target_sentence) if target_sentence else None
-        if sentence_range:
-            search_offset = sentence_range[0]
-            search_text = target_text[sentence_range[0]:sentence_range[1]]
-        elif target_sentence:
-            log(f"[UI] alignment target sentence not found: {repr(target_sentence[:120])}")
-
-        if not matched_text and self.alignment_selection_is_sentence and target_sentence:
-            matched_text = target_sentence
-
-        target_range = self.find_text_range(
-            search_text,
-            matched_text,
-            left_context,
-            right_context,
-            occurrence_index,
-        )
-        if target_range:
-            target_range = (target_range[0] + search_offset, target_range[1] + search_offset)
-
-        if not target_range:
-            log(f"[UI] alignment match not found in target text: {repr(matched_text[:120])}")
-            self.btn_align_selection.hide()
-            return
-
-        if self.match_too_broad(self.alignment_selected_text, matched_text):
-            log(f"[UI] alignment match rejected as too broad: {repr(matched_text[:120])}")
-            self.btn_align_selection.hide()
-            return
-
-        self.highlight_text_range(target_widget, target_range[0], target_range[1])
-        self.alignment_highlight_source = "result" if target_widget is self.txt_result else "origin"
-        self.btn_align_selection.hide()
+        self.locator.locate()
 
     # ---------- 回译 ----------
     def toggle_back_translation(self, checked):

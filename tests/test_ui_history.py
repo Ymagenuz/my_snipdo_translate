@@ -9,8 +9,10 @@ from PyQt6.QtWidgets import QApplication, QLineEdit, QPushButton, QWidget
 from app_i18n import set_ui_language
 from ui_motion import SmoothScroller
 from ui_history import (
+    SEARCH_MARK,
     HistoryPanel,
     beside_frame,
+    history_marks,
     history_clock,
     history_day_label,
     history_groups,
@@ -287,6 +289,83 @@ def test_history_moves_with_the_main_window_until_moved_by_hand(panel, qapp):
     assert panel.frameGeometry() == moved
 
 
+def test_dropped_near_its_place_history_snaps_back_and_follows_again(panel, qapp):
+    parent = panel.parentWidget()
+    docked = panel.frameGeometry()
+
+    # Dragged away, it stays put...
+    panel.move(panel.x() + 150, panel.y() + 90)
+    assert not panel.snap_if_near()
+    assert not panel.is_docked()
+
+    # ...and dropped close to where it was, it clicks back into place.
+    panel.move(docked.left() + 25, docked.top() - 30)
+    assert panel.snap_if_near()
+    assert panel.frameGeometry() == docked
+    assert panel.is_docked()
+    parent.move(parent.x(), parent.y() + 20)
+    panel.follow()
+    assert panel.frameGeometry().top() == parent.frameGeometry().top()
+
+
+def test_history_snaps_to_whichever_side_it_is_dropped_by(qapp):
+    parent = QWidget()
+    # Narrow and central, so History fits on either side of it offscreen.
+    parent.setGeometry(340, 10, 100, 420)
+    panel = HistoryPanel(parent, lambda *_args: None)
+    panel.resize(320, 400)
+    parent.show()
+    panel.open_panel()
+    qapp.processEvents()
+    owner = parent.frameGeometry()
+    assert panel.frameGeometry().left() > owner.right()
+
+    left_spot = owner.left() - 8 - panel.frameGeometry().width()
+    panel.move(left_spot - 20, owner.top() + 15)
+    assert panel.snap_if_near()
+    assert panel.frameGeometry().right() < owner.left()
+
+    # It keeps to that side as the main window moves.
+    parent.move(parent.x() + 10, parent.y())
+    panel.follow()
+    assert panel.frameGeometry().right() == parent.frameGeometry().left() - 8 - 1
+    panel.close_panel()
+    parent.deleteLater()
+
+
+def test_the_end_of_a_drag_by_the_title_bar_snaps_it_back(panel, qapp):
+    import ctypes
+    from ctypes import wintypes
+
+    from PyQt6 import sip
+    from PyQt6.QtCore import QByteArray
+
+    docked = panel.frameGeometry()
+    panel.move(docked.left() + 20, docked.top() + 20)
+    message = wintypes.MSG()
+    message.message = 0x0232  # WM_EXITSIZEMOVE
+
+    panel.nativeEvent(QByteArray(b"windows_generic_MSG"), sip.voidptr(ctypes.addressof(message)))
+    qapp.processEvents()
+
+    assert panel.frameGeometry() == docked
+
+
+@pytest.mark.parametrize(
+    ("prefer", "expected_left"),
+    [("right", 668), ("left", 172)],
+    ids=["prefers-right", "prefers-left"],
+)
+def test_history_keeps_to_the_side_it_prefers_while_it_fits(prefer, expected_left):
+    # A narrow main window in the middle, with room on both sides.
+    area = QRect(0, 0, 1920, 1040)
+    owner = QRect(600, 80, 60, 700)
+
+    frame = beside_frame(owner, area, 420, prefer=prefer)
+
+    assert frame.left() == expected_left
+
+
 def test_the_close_button_closes_history(panel):
     closed = []
     panel.closed.connect(lambda: closed.append(True))
@@ -348,6 +427,75 @@ def test_the_list_and_entry_glide_like_the_window(qapp, motion_on, wait_until):
         assert view.findChild(SmoothScroller) is view.smooth_scroller
     panel.close_panel()
     parent.deleteLater()
+
+
+def test_search_words_are_found_wherever_they_show_ignoring_case():
+    text = "Please send the Contract to legal; contracts too."
+
+    assert history_marks(text, ["contract", "LEGAL"]) == [(16, 24), (28, 33), (35, 43)]
+    assert history_marks(text, []) == []
+    # The longer of two overlapping words wins.
+    assert history_marks("contracting", ["contract", "contracting"]) == [(0, 11)]
+
+
+def _yellow_pixels(widget):
+    image = widget.grab().toImage()
+    return sum(
+        image.pixelColor(x, y).name() == SEARCH_MARK.lower()
+        for x in range(0, image.width(), 2)
+        for y in range(0, image.height(), 2)
+    )
+
+
+def test_search_words_are_marked_in_the_list(panel, qapp):
+    assert _yellow_pixels(panel.list.viewport()) == 0
+
+    panel.search.setText("contract")
+    qapp.processEvents()
+
+    assert _yellow_pixels(panel.list.viewport()) > 0
+
+
+def test_search_words_are_marked_in_an_open_entry(panel):
+    entry_changes = []
+    panel.entry_changed.connect(lambda: entry_changes.append(True))
+    panel.search.setText("contract legal")
+
+    panel.show_entry(ENTRIES[2])
+
+    marks = panel.result_view.extraSelections()
+    assert [mark.cursor.selectedText() for mark in marks] == ["contract", "legal"]
+    assert {mark.format.background().color().name() for mark in marks} == {SEARCH_MARK.lower()}
+    assert panel.source_view.extraSelections() == []
+    assert panel.result_view.textCursor().position() == ENTRIES[2]["result"].index("contract")
+    assert entry_changes == [True]
+
+    # Without a search, nothing is marked.
+    panel.show_list()
+    panel.search.clear()
+    panel.show_entry(ENTRIES[2])
+    assert panel.result_view.extraSelections() == []
+
+
+def test_the_first_search_word_is_brought_into_view(panel):
+    long_source = "\n".join(f"Line {number}" for number in range(200)) + "\nThe needle is here."
+    entry = _entry("2026-11-12 09:00:00", long_source, "针在这里。")
+    panel.search.setText("needle")
+
+    panel.show_entry(entry)
+
+    assert panel.source_view.verticalScrollBar().value() > 0
+
+
+def test_locate_is_offered_for_translations_but_not_dictionary_entries(panel):
+    panel.show_entry(ENTRIES[0])
+    assert panel.locate_available()
+
+    panel.show_entry(ENTRIES[1])
+    assert not panel.locate_available()
+
+    panel.show_list()
+    assert not panel.locate_available()
 
 
 def test_arrow_keys_choose_entries_from_the_search_box(panel):
