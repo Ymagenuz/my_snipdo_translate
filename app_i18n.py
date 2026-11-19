@@ -295,7 +295,8 @@ _ENGLISH = {
     "main.image.copied": "Copied",
     "main.image.drop": "Drop to read the text in this image",
     "main.history": "History",
-    # The History panel, over the window.
+    # The History window, beside the main one.
+    "main.history.window_title": "History",
     "main.history.empty": "Translations you finish show up here",
     "main.history.no_match": "No entries match your search",
     "main.history.search": "Search source or translation",
@@ -671,6 +672,7 @@ _SIMPLIFIED_CHINESE = {
     "main.image.copied": "已复制",
     "main.image.drop": "松开即可识别图片中的文字",
     "main.history": "History",
+    "main.history.window_title": "历史记录",
     "main.history.empty": "完成的翻译会显示在这里",
     "main.history.no_match": "没有匹配的记录",
     "main.history.search": "搜索原文或译文",

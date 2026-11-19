@@ -1290,7 +1290,7 @@ def _history_rows(panel):
     ]
 
 
-def test_history_opens_over_the_window_and_the_translation_keeps_running(
+def test_history_opens_beside_the_window_and_the_translation_keeps_running(
     edit_window, qapp
 ):
     window, workers = edit_window
@@ -1306,12 +1306,12 @@ def test_history_opens_over_the_window_and_the_translation_keeps_running(
     qapp.processEvents()
     panel = window.history_panel
 
-    # A panel over the card, above the button, rather than a menu.
+    # A window of its own beside this one, rather than a menu or an overlay.
     assert panel.isVisible()
+    assert panel.isWindow()
+    assert panel.parentWidget() is window
     assert window.btn_history.isChecked()
-    button_top = window.btn_history.mapTo(window, QPoint(0, 0)).y()
-    assert panel.geometry().bottom() < button_top
-    assert window.rect().contains(panel.geometry())
+    assert panel.frameGeometry().top() == window.frameGeometry().top()
     assert "Translation keeps running" in panel.status.text()
 
     # Reading an entry leaves the window and the translation alone.
@@ -1361,14 +1361,17 @@ def test_opening_a_history_entry_asks_before_it_stops_a_translation(edit_window,
     qapp.processEvents()
 
     assert worker.stop_requested
-    assert panel.isHidden()
-    assert not window.btn_history.isChecked()
+    # History stays open beside the window, to keep referring to.
+    assert panel.isVisible()
+    assert window.btn_history.isChecked()
     assert window.txt_origin.source_text() == "Attention cost grows with length."
     assert window.full_translation == "注意力开销随长度增长。"
     window.hide()
 
 
-def test_history_makes_way_for_a_new_selection_and_for_hiding(edit_window, qapp):
+def test_history_stays_open_for_a_new_selection_and_closes_with_the_window(
+    edit_window, qapp
+):
     window, _workers = edit_window
     window.translation_history = [dict(entry) for entry in _PAST_ENTRIES]
     window.show()
@@ -1376,18 +1379,19 @@ def test_history_makes_way_for_a_new_selection_and_for_hiding(edit_window, qapp)
     assert window.history_panel.isVisible()
 
     assert window.handle_new_request("A selected sentence to translate.")
+    assert window.history_panel.isVisible()
+    assert window.btn_history.isChecked()
+
+    window.btn_hide.click()
     assert window.history_panel.isHidden()
     assert not window.btn_history.isChecked()
-
-    window.btn_history.click()
-    window.btn_hide.click()
     window.show()
     qapp.processEvents()
     assert window.history_panel.isHidden()
     window.hide()
 
 
-def test_a_click_elsewhere_in_the_window_closes_history(edit_window, qapp):
+def test_typing_in_the_window_leaves_history_open(edit_window, qapp):
     window, _workers = edit_window
     window.translation_history = [dict(entry) for entry in _PAST_ENTRIES]
     window.show()
@@ -1396,19 +1400,36 @@ def test_a_click_elsewhere_in_the_window_closes_history(edit_window, qapp):
 
     window.btn_history.click()
     assert panel.isVisible()
-    # A click in the source box closes History and lands in the box.
+    # Clicking and typing in the source box leaves History open beside it.
     QTest.mouseClick(window.txt_origin.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(8, 8))
-    assert panel.isHidden()
-    assert not window.btn_history.isChecked()
-    assert window.focusWidget() is window.txt_origin
-
-    # The History button opens and closes it, without the press reopening it.
-    QTest.mouseClick(window.btn_history, Qt.MouseButton.LeftButton)
+    QTest.keyClicks(window.txt_origin, "Typed beside History")
     assert panel.isVisible()
     assert window.btn_history.isChecked()
+    assert window.txt_origin.source_text() == "Typed beside History"
+
+    # The History button opens and closes it; so does its own close button.
     QTest.mouseClick(window.btn_history, Qt.MouseButton.LeftButton)
     assert panel.isHidden()
     assert not window.btn_history.isChecked()
+    QTest.mouseClick(window.btn_history, Qt.MouseButton.LeftButton)
+    assert panel.isVisible()
+    panel.close()
+    assert panel.isHidden()
+    assert not window.btn_history.isChecked()
+    window.hide()
+
+
+def test_history_follows_the_window_it_sits_beside(edit_window, qapp):
+    window, _workers = edit_window
+    window.show()
+    qapp.processEvents()
+    window.btn_history.click()
+    panel = window.history_panel
+
+    window.move(window.x() + 25, window.y() + 15)
+    qapp.processEvents()
+
+    assert panel.frameGeometry().top() == window.frameGeometry().top()
     window.hide()
 
 

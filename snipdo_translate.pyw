@@ -4381,7 +4381,6 @@ class TranslationWindow(QWidget):
 
     def show_manual_window(self):
         log("[UI] show_manual_window called")
-        self.close_history_panel()
         self.cancel_current_ocr()
         self.cancel_current_translation()
         self.source_mode = "manual"
@@ -4498,8 +4497,8 @@ class TranslationWindow(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if hasattr(self, "history_panel") and not self.history_panel.isHidden():
-            self.position_history_panel()
+        if hasattr(self, "history_panel"):
+            self.history_panel.follow()
         if self._show_geometry is None or not event.spontaneous():
             return
         geometry = self._show_geometry
@@ -4508,9 +4507,16 @@ class TranslationWindow(QWidget):
         self._show_geometry = None
         self.setGeometry(geometry)
 
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        # History beside the window comes along.
+        if hasattr(self, "history_panel"):
+            self.history_panel.follow()
+
     def hideEvent(self, event):
         super().hideEvent(event)
-        # The window reopens on its panes, not on History.
+        # Hidden to the tray, it takes History along; minimizing doesn't
+        # close it, and Windows hides and restores it with the window.
         if not event.spontaneous():
             self.close_history_panel()
         self.save_window_placement()
@@ -5102,10 +5108,8 @@ class TranslationWindow(QWidget):
         self.setLayout(main_layout)
         self.setMinimumSize(420, 300)
 
-        # Over the card, above the History button; made last so it sits on top.
-        self.history_panel = HistoryPanel(
-            self, self.render_history_text, toggle=self.btn_history
-        )
+        # A window of its own beside this one, to refer to while typing.
+        self.history_panel = HistoryPanel(self, self.render_history_text)
         self.history_panel.open_requested.connect(self.open_history_entry)
         self.history_panel.clear_requested.connect(self.clear_translation_history)
         self.history_panel.closed.connect(lambda: self.btn_history.setChecked(False))
@@ -5416,10 +5420,9 @@ class TranslationWindow(QWidget):
             self.close_history_panel()
 
     def show_history_panel(self):
-        """Open History over the window; a running translation carries on."""
+        """Open History beside the window; a running translation carries on."""
         self.history_panel.set_entries(self.translation_history)
         self.history_panel.set_translating(self.trans_thread is not None)
-        self.position_history_panel()
         self.history_panel.open_panel()
         self.btn_history.setChecked(True)
 
@@ -5427,18 +5430,15 @@ class TranslationWindow(QWidget):
         self.history_panel.close_panel()
         self.btn_history.setChecked(False)
 
-    def position_history_panel(self):
-        anchor = self.btn_history.geometry()
-        anchor.moveTopLeft(self.btn_history.mapTo(self, QPoint(0, 0)))
-        self.history_panel.place(anchor, self.card_frame.geometry())
-
     def render_history_text(self, widget, markdown_text: str, source_name: str):
-        """Show an entry in the panel the way the window's panes show text."""
+        """Show an entry in History the way the window's panes show text."""
         self.render_markdown_text(widget, markdown_text, source_name)
 
     def open_history_entry(self, entry):
-        """Open from the panel: the panel has asked if a translation was running."""
-        self.close_history_panel()
+        """Open from History, which has asked if a translation was running.
+
+        History stays open beside the window, to keep referring to.
+        """
         self.load_history_entry(entry)
 
     def clear_translation_history(self):
@@ -7074,8 +7074,6 @@ class TranslationWindow(QWidget):
             if not isinstance(raw_text, str):
                 return False
 
-            # A new selection is shown, not hidden under History.
-            self.close_history_panel()
             self.cancel_current_ocr()
             self.cancel_current_translation()
             self.clear_origin_image()

@@ -4,14 +4,13 @@ import pytest
 from PyQt6.QtCore import QPoint, QPointF, QRect, Qt
 from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QPushButton, QWidget
+from PyQt6.QtWidgets import QApplication, QLineEdit, QPushButton, QWidget
 
 from app_i18n import set_ui_language
 from ui_motion import SmoothScroller
 from ui_history import (
-    MAX_HEIGHT,
-    MAX_WIDTH,
     HistoryPanel,
+    beside_frame,
     history_clock,
     history_day_label,
     history_groups,
@@ -65,21 +64,18 @@ def test_search_needs_every_word_in_the_source_or_translation():
 @pytest.fixture
 def panel(qapp):
     parent = QWidget()
-    parent.resize(560, 700)
+    # Leaves room on its right for History on the offscreen screen.
+    parent.setGeometry(10, 10, 300, 420)
     rendered = []
 
     def render(view, text, kind):
         rendered.append((kind, text))
         view.setPlainText(text)
 
-    toggle = QPushButton("History", parent)
-    toggle.setGeometry(300, 650, 80, 32)
-    panel = HistoryPanel(parent, render, toggle=toggle)
+    panel = HistoryPanel(parent, render)
     panel.rendered = rendered
-    panel.toggle = toggle
     panel.set_entries(ENTRIES)
     parent.show()
-    panel.place(toggle.geometry(), QRect(12, 12, 536, 620))
     panel.open_panel()
     qapp.processEvents()
     yield panel
@@ -237,56 +233,97 @@ def test_escape_steps_back_then_closes(panel):
     assert closed == [True]
 
 
-def test_a_press_elsewhere_in_the_window_closes_the_panel(panel, qapp):
-    closed = []
-    panel.closed.connect(lambda: closed.append(True))
+def test_history_is_a_window_of_its_own_beside_the_main_one(panel):
     parent = panel.parentWidget()
-    beside = QPushButton("Beside", parent)
-    beside.setGeometry(20, 650, 80, 32)
-    beside.show()
+
+    assert panel.isWindow()
+    assert panel.windowFlags() & Qt.WindowType.Tool == Qt.WindowType.Tool
+    assert panel.windowTitle() == "History"
+    owner = parent.frameGeometry()
+    frame = panel.frameGeometry()
+    assert frame.left() > owner.right()
+    assert frame.top() == owner.top()
+    assert frame.height() == owner.height()
+
+
+def test_typing_in_the_main_window_leaves_history_open(panel, qapp):
+    parent = panel.parentWidget()
+    field = QLineEdit(parent)
+    field.setGeometry(10, 10, 200, 28)
+    field.show()
+    button = QPushButton("Translate", parent)
+    button.setGeometry(10, 50, 100, 28)
+    button.show()
     clicks = []
-    beside.clicked.connect(lambda: clicks.append(True))
+    button.clicked.connect(lambda: clicks.append(True))
 
-    # Presses on the panel, its search box or list leave it open.
-    QTest.mouseClick(panel.search, Qt.MouseButton.LeftButton)
-    QTest.mousePress(panel.list.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(5, 5))
-    QTest.mouseRelease(panel.list.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(5, 5))
-    QTest.mouseClick(panel, Qt.MouseButton.RightButton, pos=QPoint(3, 3))
-    assert not panel.isHidden()
+    QTest.mouseClick(field, Qt.MouseButton.LeftButton)
+    QTest.keyClicks(field, "Still typing")
+    QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+    QTest.mouseClick(parent, Qt.MouseButton.RightButton, pos=QPoint(250, 300))
 
-    # A press in another window, such as a menu or dialog, does too.
-    other = QWidget()
-    other.show()
-    QTest.mouseClick(other, Qt.MouseButton.LeftButton)
-    assert not panel.isHidden()
-    other.close()
-
-    # One beside it closes it, and the click still does its job.
-    QTest.mouseClick(beside, Qt.MouseButton.LeftButton)
-    assert panel.isHidden()
-    assert closed == [True]
+    assert panel.isVisible()
+    assert field.text() == "Still typing"
     assert clicks == [True]
 
-    # Once closed, it stops watching.
-    QTest.mouseClick(beside, Qt.MouseButton.LeftButton)
+
+def test_history_moves_with_the_main_window_until_moved_by_hand(panel, qapp):
+    parent = panel.parentWidget()
+
+    parent.move(parent.x(), parent.y() + 30)
+    panel.follow()
+    assert panel.frameGeometry().top() == parent.frameGeometry().top()
+    assert panel.is_docked()
+
+    # Moved by hand, it stays put, also when opened again.
+    panel.move(panel.x() + 40, panel.y() + 20)
+    moved = panel.frameGeometry()
+    assert not panel.is_docked()
+    parent.move(parent.x(), parent.y() - 20)
+    panel.follow()
+    assert panel.frameGeometry() == moved
+    panel.close_panel()
+    panel.open_panel()
+    assert panel.frameGeometry() == moved
+
+
+def test_the_close_button_closes_history(panel):
+    closed = []
+    panel.closed.connect(lambda: closed.append(True))
+
+    panel.close()
+
+    assert panel.isHidden()
     assert closed == [True]
 
 
-def test_the_history_button_is_left_to_open_and_close_the_panel(panel):
-    QTest.mousePress(panel.toggle, Qt.MouseButton.LeftButton)
+@pytest.mark.parametrize(
+    ("owner", "expected"),
+    [
+        # Room on the right: beside it there, a little apart, as tall as it.
+        (QRect(100, 80, 560, 700), QRect(668, 80, 420, 700)),
+        # Near the right edge: on its left instead.
+        (QRect(1300, 80, 560, 700), QRect(872, 80, 420, 700)),
+        # Maximized: over its edge on the side with more room.
+        (QRect(-8, -8, 1936, 1056), QRect(1500, 0, 420, 1040)),
+        # Taller than the screen, or partly off it: kept on it.
+        (QRect(200, -40, 560, 1200), QRect(768, 0, 420, 1040)),
+    ],
+    ids=["right", "left", "maximized", "kept-on-screen"],
+)
+def test_history_goes_beside_the_main_window_where_there_is_room(owner, expected):
+    area = QRect(0, 0, 1920, 1040)
 
-    assert not panel.isHidden()
-    QTest.mouseRelease(panel.toggle, Qt.MouseButton.LeftButton)
+    assert beside_frame(owner, area, 420) == expected
 
 
 def test_the_list_and_entry_glide_like_the_window(qapp, motion_on, wait_until):
     parent = QWidget()
-    parent.resize(560, 700)
+    parent.setGeometry(10, 10, 300, 420)
     panel = HistoryPanel(parent, lambda view, text, _kind: view.setPlainText(text))
     entries = [_entry(f"2026-11-12 10:{minute:02d}:00", f"Text {minute}", f"译文 {minute}") for minute in range(50)]
     panel.set_entries(entries)
     parent.show()
-    panel.place(QRect(300, 650, 80, 32), QRect(12, 12, 536, 620))
     panel.open_panel()
     qapp.processEvents()
     bar = panel.list.verticalScrollBar()
@@ -321,31 +358,11 @@ def test_arrow_keys_choose_entries_from_the_search_box(panel):
     assert panel.shown_entry() == ENTRIES[1]
 
 
-def test_the_panel_sits_above_the_button_inside_the_card(panel):
-    button = QRect(300, 650, 80, 32)
-    card = QRect(12, 12, 536, 620)
-
-    panel.place(button, card)
-    geometry = panel.geometry()
-    # Just above the button, within the card's sides and top.
-    assert button.top() - 10 < geometry.bottom() < button.top()
-    assert card.left() < geometry.left() and geometry.right() < card.right()
-    assert geometry.top() > card.top()
-    assert geometry.width() == card.width() - 16
-
-    # On a big window it stays a popover by the button, not a wall.
-    wide = QRect(12, 12, 2400, 1300)
-    panel.place(QRect(2000, 1340, 80, 32), wide)
-    geometry = panel.geometry()
-    assert geometry.width() == MAX_WIDTH
-    assert geometry.height() == MAX_HEIGHT
-    assert geometry.left() <= 2040 <= geometry.right()
-
-
 def test_the_panel_follows_the_interface_language(panel):
     set_ui_language("zh-CN")
     panel.retranslate()
 
+    assert panel.windowTitle() == "历史记录"
     assert panel.search.placeholderText() == "搜索原文或译文"
     assert panel.count.text() == "4 条记录"
     panel.show_entry(ENTRIES[1])

@@ -581,7 +581,15 @@ class ModernCheckBox(QCheckBox):
         painter.end()
 
 
-def suit_text_to_screen(screen: QScreen | None) -> None:
+_OWN_SCREEN = "ownScreenText"
+
+
+def _keeps_own_screen(widget: QWidget) -> bool:
+    window = widget.window()
+    return window is not None and bool(window.property(_OWN_SCREEN))
+
+
+def suit_text_to_screen(screen: QScreen | None, root: QWidget | None = None) -> None:
     """Hint the app's text to suit the scale of screen.
 
     At 100%, text is hinted to whole pixels, as Windows draws its own;
@@ -596,6 +604,11 @@ def suit_text_to_screen(screen: QScreen | None) -> None:
     each gets its own font with the hinting set; its other font
     properties stay as they are now, style sheets' included. Text
     documents follow their widget's font.
+
+    With root, only root's window and the widgets in it change: a window
+    that keeps to its own screen, such as History beside the main window
+    while one of them is on another monitor. Otherwise the app font and
+    every widget outside such windows do.
     """
     scaled = screen is not None and screen.devicePixelRatio() > 1
     hinting = (
@@ -610,27 +623,42 @@ def suit_text_to_screen(screen: QScreen | None) -> None:
             font.setHintingPreference(hinting)
             owner.setFont(font)
 
-    give(QApplication.instance())
-    for widget in QApplication.allWidgets():
+    if root is not None:
+        widgets = [root, *root.findChildren(QWidget)]
+    else:
+        give(QApplication.instance())
+        widgets = [widget for widget in QApplication.allWidgets() if not _keeps_own_screen(widget)]
+    for widget in widgets:
         give(widget)
 
 
 class _ScreenText(QObject):
     def eventFilter(self, watched, event):
         if event.type() in (QEvent.Type.Show, QEvent.Type.DevicePixelRatioChange):
-            suit_text_to_screen(watched.screen())
+            if watched.property(_OWN_SCREEN):
+                suit_text_to_screen(watched.screen(), watched)
+            else:
+                suit_text_to_screen(watched.screen())
         return False
 
 
 _screen_text: _ScreenText | None = None
 
 
-def use_even_text_strokes(window: QWidget) -> None:
-    """Draw the app's text to suit the screen window is on, wherever it moves."""
+def use_even_text_strokes(window: QWidget, *, own_screen: bool = False) -> None:
+    """Draw the app's text to suit the screen window is on, wherever it moves.
+
+    own_screen keeps window's text to the screen window itself is on,
+    apart from the rest of the app's.
+    """
     global _screen_text
     if _screen_text is None:
         _screen_text = _ScreenText()
-    suit_text_to_screen(window.screen())
+    if own_screen:
+        window.setProperty(_OWN_SCREEN, True)
+        suit_text_to_screen(window.screen(), window)
+    else:
+        suit_text_to_screen(window.screen())
     window.installEventFilter(_screen_text)
 
 

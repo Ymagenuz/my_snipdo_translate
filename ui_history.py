@@ -1,11 +1,12 @@
-"""The History panel: past translations to browse and read over the window.
+"""The History window: past translations to browse and read beside the app.
 
 The History button used to open a menu of the last twelve entries, and
 choosing one stopped any translation that was running and replaced both
-panes. The panel instead sits over the window, above the button, and
-leaves the window alone: entries are searched, read and copied in the
-panel, and reach the main window only through Open, which asks first
-while a translation is running.
+panes. History is instead a small window of its own beside the main one,
+so it can stay open to refer to while you type, and it leaves the main
+window alone: entries are searched, read and copied in it, and reach the
+main window only through Open, which asks first while a translation is
+running.
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Callable, Iterable, Mapping
 
-from PyQt6.QtCore import QEvent, QLocale, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QLocale, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -36,18 +37,18 @@ from PyQt6.QtWidgets import (
 )
 
 from app_i18n import tr, ui_language
-from ui_controls import render_soft_shadow, use_modern_context_menu, use_modern_scroll_bar
+from ui_controls import use_even_text_strokes, use_modern_context_menu, use_modern_scroll_bar
 from ui_motion import SmoothScroller
 
 STAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
-# Room the panel leaves to the card's edges and to the History button.
-EDGE = 8
-# Wide enough that a window of the usual size is covered edge to edge.
-MAX_WIDTH = 560
-MAX_HEIGHT = 520
-# On the smallest window the panel may rise past the card's top edge.
-MIN_HEIGHT = 200
+# History opens this wide, beside the main window and as tall as it.
+DEFAULT_WIDTH = 420
+MIN_HEIGHT = 320
+# Between the two windows' frames, which Qt measures to their visible edges.
+GAP = 8
+# Moves smaller than this are rounding between screen scales, not a drag.
+DOCK_SLACK = 3
 
 FONT_FAMILIES = ["Segoe UI", "Microsoft YaHei UI"]
 TEXT = "#303133"
@@ -154,6 +155,29 @@ def history_matches(entry: Mapping[str, str], query: str) -> bool:
     return all(word in haystack for word in words)
 
 
+def beside_frame(owner: QRect, area: QRect, width: int, gap: int = GAP) -> QRect:
+    """Where History's frame goes beside owner's frame, within area.
+
+    It takes owner's height and top, kept on the screen, and goes to the
+    right if it fits there, else to the left. With room on neither side,
+    as for a maximized window, it covers the edge of owner on the side
+    with more room.
+    """
+    height = min(owner.height(), area.height())
+    top = max(area.top(), min(owner.top(), area.bottom() + 1 - height))
+    right = owner.right() + 1 + gap
+    left = owner.left() - gap - width
+    if right + width - 1 <= area.right():
+        x = right
+    elif left >= area.left():
+        x = left
+    elif area.right() - owner.right() >= owner.left() - area.left():
+        x = area.right() + 1 - width
+    else:
+        x = area.left()
+    return QRect(x, top, width, height)
+
+
 def history_groups(
     entries: Iterable[Mapping[str, str]], query: str = "", now: datetime | None = None
 ) -> list[tuple[str, list[int]]]:
@@ -176,8 +200,6 @@ def history_groups(
 PANEL_STYLE = """
     #historyPanel {
         background-color: #FFFFFF;
-        border: 1px solid #DCDFE6;
-        border-radius: 8px;
     }
 """
 
@@ -445,56 +467,15 @@ class _ConfirmBar(QFrame):
         self.dismissed.emit()
 
 
-class _PanelShadow(QWidget):
-    """The panel's soft shadow, painted beneath it.
-
-    A sibling rather than part of the panel, so clicks beside the panel
-    still reach the window under the shadow.
-    """
-
-    MARGIN = 40
-
-    def __init__(self, parent: QWidget):
-        super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self._face = QSize()
-        self._key = None
-        self._image = QPixmap()
-        self._offset = QPoint()
-
-    def follow(self, face: QRect) -> None:
-        self._face = face.size()
-        margin = self.MARGIN
-        self.setGeometry(face.adjusted(-margin, -margin, margin, margin))
-        self.update()
-
-    def paintEvent(self, event):
-        if self._face.isEmpty():
-            return
-        key = (QSize(self._face), self.devicePixelRatioF())
-        if key != self._key:
-            self._image, self._offset = render_soft_shadow(
-                self._face,
-                key[1],
-                radius=8,
-                blur=28,
-                offset=(0, 6),
-                color=QColor(31, 45, 61, 40),
-            )
-            self._key = key
-        painter = QPainter(self)
-        painter.drawPixmap(QPoint(self.MARGIN, self.MARGIN) + self._offset, self._image)
-        painter.end()
-
-
 class HistoryPanel(QFrame):
-    """Past translations to search, read and copy without leaving the window.
+    """Past translations to search, read and copy beside the main window.
 
-    It never touches the window's panes or a running translation itself;
-    open_requested asks the window to open an entry, and only after the
-    person agreed to stop a translation that is running. A press anywhere
-    else in the window closes it and still reaches what was pressed;
-    toggle, the History button, opens and closes it itself.
+    A tool window of the main window: it stays just above it, leaves the
+    taskbar alone, and stays open while you click and type in the main
+    window. It opens beside the main window and moves with it until you
+    move or resize it yourself. It never touches the window's panes or a
+    running translation itself; open_requested asks the window to open an
+    entry, and only after the person agreed to stop a translation.
     """
 
     open_requested = pyqtSignal(dict)
@@ -503,26 +484,20 @@ class HistoryPanel(QFrame):
 
     COPIED_MS = 900
 
-    def __init__(
-        self,
-        parent: QWidget,
-        render: Callable[[QTextEdit, str, str], object],
-        *,
-        toggle: QWidget | None = None,
-    ):
-        super().__init__(parent)
+    def __init__(self, parent: QWidget, render: Callable[[QTextEdit, str, str], object]):
+        super().__init__(parent, Qt.WindowType.Tool)
         self.setObjectName("historyPanel")
         self.setStyleSheet(PANEL_STYLE)
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.setMinimumSize(320, MIN_HEIGHT)
+        self.resize(DEFAULT_WIDTH, 640)
         self._render = render
-        self._toggle = toggle
-        self._watching_clicks = False
         self._entries: list[dict] = []
         self._entry: dict | None = None
         self._translating = False
         self._added = False
-        self._return_focus: QWidget | None = None
-        self._shadow = _PanelShadow(parent)
+        # The frame it was last put beside the main window at.
+        self._placed: QRect | None = None
 
         self.pages = QStackedWidget(self)
         layout = QVBoxLayout(self)
@@ -537,8 +512,9 @@ class HistoryPanel(QFrame):
         self._copied_timer.timeout.connect(self._show_copy_text)
 
         self.retranslate()
-        self._shadow.hide()
         self.hide()
+        # It may sit on another monitor than the main window.
+        use_even_text_strokes(self, own_screen=True)
 
     # ----- Building -----
 
@@ -725,24 +701,47 @@ class HistoryPanel(QFrame):
     def is_translating(self) -> bool:
         return self._translating
 
-    def place(self, anchor: QRect, bounds: QRect) -> None:
-        """Sit above anchor, the History button, within bounds, the card.
+    def place_beside(self, owner: QWidget) -> None:
+        """Put the window beside owner, as tall as it, on owner's screen."""
+        # With its native window made, Qt knows how wide its frame is.
+        self.winId()
+        handle = self.windowHandle()
+        margins = handle.frameMargins() if handle is not None else None
+        sides = margins.left() + margins.right() if margins is not None else 0
+        ends = margins.top() + margins.bottom() if margins is not None else 0
+        owner_frame = owner.frameGeometry()
+        screen = owner.screen()
+        area = screen.availableGeometry() if screen is not None else owner_frame
+        width = self.width()
+        frame = beside_frame(owner_frame, area, width + sides)
+        self.resize(width, max(self.minimumHeight(), frame.height() - ends))
+        self.move(frame.topLeft())
+        self._placed = QRect(self.frameGeometry())
 
-        Both are in the parent's coordinates. The panel grows up from the
-        button, stays inside the card, and keeps to its size limits on a
-        large or maximized window.
-        """
-        width = min(bounds.width() - 2 * EDGE, MAX_WIDTH)
-        bottom = anchor.top() - EDGE
-        height = min(bottom - (bounds.top() + EDGE), MAX_HEIGHT)
-        height = max(height, min(MIN_HEIGHT, bottom))
-        left = anchor.center().x() - width // 2
-        left = max(bounds.left() + EDGE, min(left, bounds.right() + 1 - EDGE - width))
-        self.setGeometry(left, bottom - height, width, height)
+    def is_docked(self) -> bool:
+        """Whether it is still where it was put beside the main window."""
+        placed = self._placed
+        if placed is None:
+            return False
+        now = self.frameGeometry()
+        return all(
+            abs(a - b) <= DOCK_SLACK
+            for a, b in (
+                (now.left(), placed.left()),
+                (now.top(), placed.top()),
+                (now.width(), placed.width()),
+                (now.height(), placed.height()),
+            )
+        )
+
+    def follow(self) -> None:
+        """Keep beside the main window as it moves, unless moved away by hand."""
+        owner = self.parentWidget()
+        if owner is not None and not self.isHidden() and self.is_docked():
+            self.place_beside(owner)
 
     def open_panel(self) -> None:
-        focus = QApplication.focusWidget()
-        self._return_focus = focus if focus is not None and not self.isAncestorOf(focus) else None
+        """Show History beside the main window, or where you last moved it."""
         self.search.blockSignals(True)
         self.search.clear()
         self.search.blockSignals(False)
@@ -754,31 +753,33 @@ class HistoryPanel(QFrame):
         self.list.setCurrentRow(-1)
         self.list.scrollToTop()
         self._update_status()
-        self._shadow.follow(self.geometry())
-        self._shadow.show()
-        self._shadow.raise_()
+        owner = self.parentWidget()
+        on_screen = QApplication.screenAt(self.frameGeometry().center()) is not None
+        dock = owner is not None and (self._placed is None or self.is_docked() or not on_screen)
+        if dock:
+            self.place_beside(owner)
         self.show()
+        if dock:
+            # Qt may rescale a window shown again on a screen of another
+            # scale, and only now knows its frame for certain.
+            self.place_beside(owner)
         self.raise_()
+        self.activateWindow()
         self.search.setFocus()
-        if not self._watching_clicks:
-            QApplication.instance().installEventFilter(self)
-            self._watching_clicks = True
 
-    def close_panel(self, *, restore_focus: bool = True) -> None:
-        """Close; focus goes back where it was unless a click put it elsewhere."""
-        self._stop_watching_clicks()
+    def close_panel(self) -> None:
         if self.isHidden():
             return
         self.hide()
-        self._shadow.hide()
+        self._closed()
+
+    def _closed(self) -> None:
         self._added = False
         self._copied_timer.stop()
-        focus, self._return_focus = self._return_focus, None
-        if restore_focus and focus is not None and focus.isVisible():
-            focus.setFocus()
         self.closed.emit()
 
     def retranslate(self) -> None:
+        self.setWindowTitle(tr("main.history.window_title"))
         self.search.setPlaceholderText(tr("main.history.search"))
         self.btn_clear.setText(tr("main.history.clear"))
         self.btn_back.setText("\N{LEFTWARDS ARROW} " + tr("main.history"))
@@ -991,35 +992,11 @@ class HistoryPanel(QFrame):
 
     # ----- Events -----
 
-    def _stop_watching_clicks(self) -> None:
-        if self._watching_clicks:
-            QApplication.instance().removeEventFilter(self)
-            self._watching_clicks = False
-
-    def _is_outside(self, point: QPoint) -> bool:
-        """Whether a press at point, on the screen, is off the panel and toggle."""
-        if self.rect().contains(self.mapFromGlobal(point)):
-            return False
-        toggle = self._toggle
-        return not (
-            toggle is not None
-            and toggle.isVisible()
-            and toggle.rect().contains(toggle.mapFromGlobal(point))
-        )
-
-    def eventFilter(self, watched, event):
-        # Watches the whole app while open. A press reaches the pressed widget
-        # and then, unless taken, each parent in turn; judged by where it
-        # landed, they all agree. Menus and dialogs are windows of their own.
-        # Qt has already focused the pressed widget, so focus stays there.
-        if (
-            event.type() == QEvent.Type.MouseButtonPress
-            and isinstance(watched, QWidget)
-            and watched.window() is self.window()
-            and self._is_outside(event.globalPosition().toPoint())
-        ):
-            self.close_panel(restore_focus=False)
-        return super().eventFilter(watched, event)
+    def closeEvent(self, event):
+        # Its title bar's close button.
+        super().closeEvent(event)
+        if event.isAccepted():
+            self._closed()
 
     def keyPressEvent(self, event):
         key = event.key()
@@ -1038,11 +1015,6 @@ class HistoryPanel(QFrame):
             return
         super().keyPressEvent(event)
 
-    def moveEvent(self, event):
-        super().moveEvent(event)
-        self._shadow.follow(self.geometry())
-
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._shadow.follow(self.geometry())
         self._fit_source()

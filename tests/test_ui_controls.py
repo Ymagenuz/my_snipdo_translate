@@ -493,6 +493,37 @@ def test_text_at_100_percent_is_hinted_to_whole_pixels_again(styled_window, qapp
     assert styled_window.styled.font().pixelSize() == 10
 
 
+def test_a_window_on_its_own_screen_keeps_its_own_hinting(styled_window, qapp, monkeypatch):
+    # History may sit on the 100% monitor while the main window is on the
+    # 150% one, or the other way round.
+    hinted = QFont.HintingPreference.PreferFullHinting
+    unhinted = QFont.HintingPreference.PreferNoHinting
+    side = QWidget()
+    side_text = QLabel("History", side)
+    main_widgets = [styled_window.window, *styled_window.window.findChildren(QWidget)]
+    monkeypatch.setattr(
+        ui_controls.QApplication,
+        "allWidgets",
+        lambda: [*main_widgets, side, side_text],
+    )
+    monkeypatch.setattr(side, "screen", lambda: _Screen(1.0))
+
+    use_even_text_strokes(side, own_screen=True)
+    suit_text_to_screen(_Screen(1.5))
+
+    assert _hinting(styled_window) == [unhinted] * 4
+    assert side_text.font().hintingPreference() == hinted
+
+    # Its own screen's scale changes only its own text.
+    monkeypatch.setattr(side, "screen", lambda: _Screen(1.5))
+    QApplication.sendEvent(side, QEvent(QEvent.Type.DevicePixelRatioChange))
+    assert side_text.font().hintingPreference() == unhinted
+    suit_text_to_screen(_Screen(1.0))
+    assert _hinting(styled_window) == [hinted] * 4
+    assert side_text.font().hintingPreference() == unhinted
+    side.deleteLater()
+
+
 def test_text_follows_the_window_to_another_screen(qapp, monkeypatch):
     screens = []
     monkeypatch.setattr(ui_controls, "suit_text_to_screen", screens.append)
