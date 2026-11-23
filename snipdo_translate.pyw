@@ -150,7 +150,11 @@ from ui_ocr import (
     has_incoming_image,
     incoming_image,
 )
-from ui_rich_text import MarkdownEditing, is_markdown_structured_text
+from ui_rich_text import (
+    MarkdownEditing,
+    is_markdown_structured_text,
+    set_view_markdown,
+)
 from window_placement import (
     WINDOW_PLACEMENT_FILE_NAME,
     WindowPlacement,
@@ -5656,7 +5660,9 @@ class TranslationWindow(QWidget):
             if plain_text:
                 widget.setPlainText(document_text)
             else:
-                widget.setMarkdown(document_text)
+                # Qt alone misses bold beside Chinese punctuation, as in
+                # **注意：**请勿关闭.
+                set_view_markdown(widget, document_text)
 
             # One edit block: outside it Qt lays the whole document out again
             # after every block format, so long texts took seconds to render.

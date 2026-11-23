@@ -888,6 +888,48 @@ def test_dictionary_markdown_renders_as_distinct_sections(app, qapp):
     assert "译文：我们因缘际会地相遇了。" in widget.toPlainText()
 
 
+def test_translation_shows_bold_beside_chinese_punctuation(app, qapp):
+    markdown = (
+        "**注意：**请勿关闭。这是**“引号”**文字和**粗体**。\n\n"
+        "Keep **this** bold and *this* italic."
+    )
+    widget = app.QTextEdit()
+    window = SimpleNamespace(
+        apply_markdown_document_style=lambda *_args: None,
+        compact_markdown_list_indents=lambda *_args: None,
+        apply_markdown_block_formats=lambda *_args: None,
+    )
+
+    assert app.TranslationWindow.render_markdown_text(
+        window, widget, markdown, "result",
+    ) is True
+
+    runs = []
+    block = widget.document().begin()
+    while block.isValid():
+        iterator = block.begin()
+        while not iterator.atEnd():
+            fragment = iterator.fragment()
+            fmt = fragment.charFormat()
+            if fmt.fontWeight() >= app.QFont.Weight.DemiBold.value:
+                runs.append(("bold", fragment.text()))
+            elif fmt.fontItalic():
+                runs.append(("italic", fragment.text()))
+            iterator += 1
+        block = block.next()
+
+    assert runs == [
+        ("bold", "注意："),
+        ("bold", "“引号”"),
+        ("bold", "粗体"),
+        ("bold", "this"),
+        ("italic", "this"),
+    ]
+    assert "*" not in widget.toPlainText()
+    # The spaces that told Qt which way each mark faces are gone again.
+    assert "请勿关闭。这是“引号”文字和粗体。" in widget.toPlainText()
+
+
 @pytest.mark.parametrize(
     "text",
     (

@@ -166,6 +166,27 @@ def test_loaded_source_comes_back_as_given_until_it_is_edited(editor):
     assert editor.source_text() == "- xstarred item\n- another\n\n**strong** words"
 
 
+def test_bold_beside_chinese_punctuation_loads_as_bold_and_reads_back(editor):
+    source = "**注意：**这是**“引号”**文字和**粗体**。"
+    editor.set_source_text(source)
+
+    assert editor.toPlainText() == "注意：这是“引号”文字和粗体。"
+    bold = [
+        text
+        for _block, text, fmt in _runs(editor)
+        if fmt.fontWeight() >= QFont.Weight.DemiBold.value
+    ]
+    assert bold == ["注意：", "“引号”", "粗体"]
+    assert editor.source_text() == source
+
+    # Once edited, the box writes its own Markdown, which reads back the same.
+    cursor = editor.textCursor()
+    cursor.movePosition(QTextCursor.MoveOperation.End)
+    editor.setTextCursor(cursor)
+    QTest.keyClicks(editor, " OK")
+    assert editor.source_text() == source + " OK"
+
+
 def test_latex_without_markdown_loads_as_plain_source(editor):
     source = r"\section{Intro} Let $x_1 * y$ be **this**."
     editor.set_source_text(source)

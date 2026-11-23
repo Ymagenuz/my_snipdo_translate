@@ -39,6 +39,7 @@ from PyQt6.QtGui import (
 from app_i18n import tr
 from latex_renderer import prepare_latex_math_for_document
 from latex_support import is_latex_text
+from markdown_emphasis import prepare_cjk_emphasis
 
 
 HEADING_PIXEL_SIZES = {1: 20, 2: 18, 3: 16, 4: 15, 5: 15, 6: 15}
@@ -159,6 +160,48 @@ def shows_as_markdown(text: str) -> bool:
     )
 
 
+def _remove_marker(document, marker: str):
+    """Take out the spaces that only told Qt which way each mark faces."""
+    cursor = QTextCursor(document)
+    cursor.beginEditBlock()
+    found = document.find(marker, 0, QTextDocument.FindFlag.FindCaseSensitively)
+    while not found.isNull():
+        found.removeSelectedText()
+        found = document.find(
+            marker, found.position(), QTextDocument.FindFlag.FindCaseSensitively
+        )
+    cursor.endEditBlock()
+
+
+def set_document_markdown(document, text: str):
+    """Read Markdown into a document, as GitHub does, with bold and italic
+    beside Chinese, Japanese and Korean text read as the writer meant."""
+    prepared, marker = prepare_cjk_emphasis(text)
+    document.setMarkdown(prepared, _MARKDOWN_FEATURES)
+    if marker:
+        _remove_marker(document, marker)
+
+
+def set_view_markdown(view, text: str):
+    """Show Markdown in a text view, with bold and italic beside Chinese,
+    Japanese and Korean text read as the writer meant.
+
+    The view reads it through its own setMarkdown. Filled any other way,
+    through QTextDocument.setMarkdown or a fragment, the translation view
+    crashed the test run once its fade ran, for reasons not found.
+    """
+    prepared, marker = prepare_cjk_emphasis(text)
+    view.setMarkdown(prepared)
+    if not marker:
+        return
+    document = view.document()
+    undo_enabled = document.isUndoRedoEnabled()
+    document.setUndoRedoEnabled(False)
+    _remove_marker(document, marker)
+    document.setUndoRedoEnabled(undo_enabled)
+    document.setModified(False)
+
+
 def markdown_fragment(text: str) -> QTextDocumentFragment:
     """Markdown as formatting, with its LaTeX kept as source."""
     formulas = []
@@ -166,7 +209,7 @@ def markdown_fragment(text: str) -> QTextDocumentFragment:
     if is_latex_text(text):
         document_text, formulas = prepare_latex_math_for_document(text)
     scratch = QTextDocument()
-    scratch.setMarkdown(document_text, _MARKDOWN_FEATURES)
+    set_document_markdown(scratch, document_text)
     search_from = 0
     for formula in formulas:
         found = scratch.find(formula.placeholder, search_from)
