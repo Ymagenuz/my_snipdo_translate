@@ -4,6 +4,11 @@
 
 What changed in each SnipDo Translate release. The app shows this list on the **About** page in Settings.
 
+## 13.3.1 — 2026-11-23
+
+- **Bold beside Chinese punctuation shows as bold.** When a translation marked text bold right next to punctuation, as in `**注意：**请勿关闭` or `这是**“引号”**文字`, the asterisks showed and nothing turned bold. It now shows in bold in the translation, the back-translation, **History** and the input box, and the same goes for Japanese and Korean.
+- **Bold lands on the words meant.** One of those marks could pair with the next bold in the line and make the words in between bold instead; each bold now covers just its own words.
+
 ## 13.3.0 — 2026-11-18
 
 - **History opens beside the window.** **History** is now a small window of its own next to the main window, so you can keep it open and refer to it while you type; clicking or typing in the main window no longer closes it. It opens on whichever side has room, as tall as the main window, and moves with it.
